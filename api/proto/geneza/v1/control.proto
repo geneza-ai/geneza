@@ -1,0 +1,301 @@
+// Geneza control-plane API (gateway gRPC over mTLS).
+//
+// Three trust levels share one listener:
+//   - Enrollment: no client cert (one-time token / provider document).
+//   - UserAPI.Login: no client cert (OIDC token or local credentials).
+//   - NodeControl: node mTLS cert required (URI geneza://node/<id>).
+//   - UserAPI (rest) / AdminAPI: user mTLS cert required (URI geneza://user/<name>).
+// Enforcement is per-RPC in the gateway auth interceptor.
+syntax = "proto3";
+
+package geneza.v1;
+
+option go_package = "osie.cloud/geneza/internal/pb/geneza/v1;genezav1";
+
+// ---------------------------------------------------------------------------
+// Enrollment (machine identity bootstrap)
+// ---------------------------------------------------------------------------
+
+service Enrollment {
+  rpc Enroll(EnrollRequest) returns (EnrollResponse);
+}
+
+message EnrollRequest {
+  // Enrollment provider: "token" today; "openstack-metadata" (instance
+  // identity document) is the reserved seam for the OpenStack PoC.
+  string provider = 1;
+  string token = 2;                  // provider=token: one-time join token
+  bytes provider_document = 3;       // provider-specific identity document
+  string requested_name = 4;
+  bytes csr_pem = 5;                 // PKCS10 CSR for the node key (P-256)
+  bytes noise_static_pub = 6;        // 32-byte Curve25519 static public key
+  map<string, string> labels = 7;
+  PlatformInfo platform = 8;
+}
+
+message PlatformInfo {
+  string os = 1;
+  string arch = 2;
+  string hostname = 3;
+  string agent_version = 4;
+}
+
+message EnrollResponse {
+  string node_id = 1;
+  bytes node_cert_pem = 2;
+  bytes ca_roots_pem = 3;
+  bytes signed_cluster_config = 4;   // JSON types.Signed wrapping types.ClusterConfig
+}
+
+// ---------------------------------------------------------------------------
+// NodeControl (persistent agent control channel; node mTLS)
+// ---------------------------------------------------------------------------
+
+service NodeControl {
+  // Persistent bidirectional control channel. First AgentMsg MUST be hello.
+  rpc Stream(stream AgentMsg) returns (stream GatewayMsg);
+  rpc RenewCert(RenewCertRequest) returns (RenewCertResponse);
+  // Upload an asciicast v2 session recording (recorded at the agent).
+  rpc UploadRecording(stream RecordingChunk) returns (UploadAck);
+}
+
+message AgentMsg {
+  oneof msg {
+    AgentHello hello = 1;
+    Heartbeat heartbeat = 2;
+    SessionEvent session_event = 3;
+    SessionOfferAck offer_ack = 4;
+  }
+}
+
+message GatewayMsg {
+  oneof msg {
+    SessionOffer session_offer = 1;
+    bytes cluster_config = 2;        // JSON types.Signed wrapping types.ClusterConfig
+    Ping ping = 3;
+  }
+}
+
+message AgentHello {
+  string node_id = 1;
+  string version = 2;
+  map<string, string> labels = 3;
+  repeated string capabilities = 4;  // e.g. "shell","exec","sftp","forward","attach"
+  int64 cluster_config_version = 5;  // version agent currently holds
+}
+
+message Heartbeat {
+  int64 unix_ms = 1;
+  uint32 active_sessions = 2;
+  uint32 detached_sessions = 3;
+  string version = 4;
+  bool healthy = 5;
+}
+
+// signed_grant is a JSON types.Signed wrapping types.SessionGrant; it contains
+// everything the agent needs (relay addr+token, client noise key, scope).
+message SessionOffer {
+  bytes signed_grant = 1;
+}
+
+message SessionOfferAck {
+  string session_id = 1;
+  bool accepted = 2;
+  string reason = 3;
+}
+
+// Session lifecycle events for the audit trail (emitted by the agent).
+// event: offered|established|attached|detached|ended|rejected
+message SessionEvent {
+  string session_id = 1;
+  string event = 2;
+  string detail = 3;
+  int64 unix_ms = 4;
+  string host_session_id = 5;
+  int32 exit_code = 6;
+}
+
+message RecordingChunk {
+  string session_id = 1;
+  bytes data = 2;
+  bool eof = 3;
+}
+
+message UploadAck {
+  bool ok = 1;
+}
+
+message RenewCertRequest {
+  bytes csr_pem = 1;
+}
+
+message RenewCertResponse {
+  bytes node_cert_pem = 1;
+  bytes ca_roots_pem = 2;
+}
+
+message Ping {
+  int64 unix_ms = 1;
+}
+
+// ---------------------------------------------------------------------------
+// UserAPI (operator-facing; Login is cert-less, the rest require user mTLS)
+// ---------------------------------------------------------------------------
+
+service UserAPI {
+  rpc Login(LoginRequest) returns (LoginResponse);
+  rpc ListNodes(ListNodesRequest) returns (ListNodesResponse);
+  rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse);
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
+  rpc WhoAmI(Empty) returns (WhoAmIResponse);
+}
+
+message LoginRequest {
+  string provider = 1;       // "oidc" | "local"
+  string oidc_id_token = 2;  // provider=oidc: raw ID token JWT (client ran the flow)
+  string username = 3;       // provider=local
+  string password = 4;
+  bytes csr_pem = 5;         // PKCS10 CSR for the client-held key
+}
+
+message LoginResponse {
+  bytes user_cert_pem = 1;
+  bytes ca_roots_pem = 2;
+  string user = 3;
+  repeated string roles = 4;
+  int64 expires_unix = 5;
+}
+
+message NodeSummary {
+  string node_id = 1;
+  string name = 2;
+  map<string, string> labels = 3;
+  bool online = 4;
+  string version = 5;
+  string os = 6;
+  string arch = 7;
+  int64 last_seen_unix = 8;
+  uint32 active_sessions = 9;
+  uint32 detached_sessions = 10;
+}
+
+message ListNodesRequest {}
+
+message ListNodesResponse {
+  repeated NodeSummary nodes = 1;
+}
+
+message CreateSessionRequest {
+  string node = 1;             // node id or name
+  string action = 2;           // shell|exec|sftp|forward|attach
+  string command = 3;          // action=exec
+  bool want_pty = 4;
+  bool want_detachable = 5;
+  string attach_session_id = 6; // action=attach: host session id to reattach
+  string forward_target = 7;    // action=forward: host:port on the node side
+  bytes client_noise_pub = 8;   // 32-byte Curve25519 static public key
+  string client_path = 9;       // "native" | "web"
+}
+
+message CreateSessionResponse {
+  bytes signed_grant = 1;      // JSON types.Signed wrapping types.SessionGrant
+  string relay_addr = 2;
+  string relay_token = 3;
+  bytes agent_noise_pub = 4;
+  string session_id = 5;
+}
+
+message SessionInfo {
+  string session_id = 1;
+  string node_id = 2;
+  string node_name = 3;
+  string user = 4;
+  string action = 5;
+  string state = 6;            // pending|active|detached|ended
+  int64 started_unix = 7;
+  string host_session_id = 8;
+  bool detachable = 9;
+}
+
+message ListSessionsRequest {
+  bool mine_only = 1;
+}
+
+message ListSessionsResponse {
+  repeated SessionInfo sessions = 1;
+}
+
+message WhoAmIResponse {
+  string user = 1;
+  repeated string roles = 2;
+  int64 cert_expires_unix = 3;
+}
+
+// ---------------------------------------------------------------------------
+// AdminAPI (requires user mTLS with role "admin")
+// ---------------------------------------------------------------------------
+
+service AdminAPI {
+  rpc CreateJoinToken(CreateJoinTokenRequest) returns (CreateJoinTokenResponse);
+  rpc PublishArtifact(stream ArtifactChunk) returns (PublishArtifactResponse);
+  rpc SetDesiredVersion(SetDesiredVersionRequest) returns (Empty);
+  rpc GetFleetStatus(Empty) returns (FleetStatus);
+  rpc ReloadPolicy(Empty) returns (Empty);
+  rpc QueryAudit(QueryAuditRequest) returns (QueryAuditResponse);
+}
+
+message CreateJoinTokenRequest {
+  int64 ttl_seconds = 1;            // default 3600
+  map<string, string> labels = 2;   // labels stamped onto the enrolling node
+  int32 max_uses = 3;               // default 1
+}
+
+message CreateJoinTokenResponse {
+  string token = 1;
+  int64 expires_unix = 2;
+}
+
+// First chunk must carry signed_manifest (JSON types.Signed wrapping
+// types.Manifest, signed OFFLINE by the artifact key); the gateway verifies
+// the blob hash against the manifest before accepting. The gateway does NOT
+// hold the artifact signing key.
+message ArtifactChunk {
+  bytes signed_manifest = 1;
+  bytes data = 2;
+  bool eof = 3;
+}
+
+message PublishArtifactResponse {
+  string version = 1;
+  string sha256 = 2;
+}
+
+message SetDesiredVersionRequest {
+  string ring = 1;     // "canary" | "stable"
+  string version = 2;
+  repeated string canary_nodes = 3; // optional: set the canary ring membership
+}
+
+message FleetStatus {
+  repeated NodeSummary nodes = 1;
+  string stable_version = 2;
+  string canary_version = 3;
+  repeated string canary_nodes = 4;
+}
+
+message QueryAuditRequest {
+  int64 since_unix = 1;
+  string type_filter = 2;
+  int32 limit = 3;       // default 100
+}
+
+message AuditRecord {
+  bytes json = 1;        // raw audit record (hash-chained JSONL line)
+}
+
+message QueryAuditResponse {
+  repeated AuditRecord records = 1;
+  bool chain_ok = 2;
+}
+
+message Empty {}
