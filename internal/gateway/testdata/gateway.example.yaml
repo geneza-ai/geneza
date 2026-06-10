@@ -1,0 +1,77 @@
+# Geneza gateway configuration (example).
+#
+# Initialize once:   geneza-gateway init  --config /etc/geneza/gateway.yaml
+# Run the daemon:    geneza-gateway serve --config /etc/geneza/gateway.yaml
+#
+# Unknown keys are rejected at load time.
+
+# State root: CA, grant signing key, TLS keypairs, bbolt store, audit log,
+# artifact blobs and session recordings all live under here.
+data_dir: /var/lib/geneza/gateway
+
+# mTLS gRPC listener (enrollment, node control, user/admin API).
+grpc_listen: ":7401"
+# HTTPS listener (CA roots, auth-config, desired-version, artifact blobs).
+http_listen: ":7402"
+
+# Stamped into CA subject names and server cert identities.
+cluster_name: geneza1
+
+# SANs for the gateway and relay TLS server certs issued at init.
+# localhost/127.0.0.1/::1 are always added on top.
+advertise:
+  dns_names:
+    - gateway.example.internal
+  ips:
+    - 192.0.2.10
+
+# Relays handed to clients/agents in session grants and cluster config.
+# The first entry is used for new session rendezvous.
+relay_addrs:
+  - 192.0.2.10:7403
+
+# Policy-as-data document (roles, bindings, allow rules). Reloadable at
+# runtime via the admin API without restarting.
+policy_file: /etc/geneza/policy.yaml
+
+# Short-TTL certificate lifetimes: expiry is revocation.
+cert_ttl:
+  node: 24h
+  user: 8h
+
+# How long a signed session grant stays valid — only the window to complete
+# the relay rendezvous and Noise handshake, not the session lifetime.
+grant_ttl: 2m
+
+# Cap applied to sessions when policy does not set a tighter one.
+default_max_session_ttl: 12h
+
+# Human SSO via the customer IdP (optional block; omit to disable OIDC).
+# The CLI runs the browser flow and presents the ID token at Login.
+oidc:
+  issuer: https://idp.example.com/realms/example
+  client_id: geneza-cli
+  username_claim: preferred_username
+  groups_claim: groups
+
+# Local accounts (optional; mainly bootstrap/break-glass). Generate hashes
+# with: geneza-gateway hash-password
+local_users:
+  - username: admin
+    password_bcrypt: "$2a$10$replace-me-with-real-hash"
+    groups: [admins]
+
+# Session-host guardrails pushed to every agent in the signed cluster
+# config. Zero values fall back to agent built-in defaults.
+agent_policy:
+  forbid_detach: false
+  max_sessions: 64
+  max_detached: 16
+  ring_buffer_bytes: 262144
+  detached_ttl_sec: 86400
+  idle_reap_sec: 0
+
+# Public half of the OFFLINE artifact signing key (geneza-sign). When set,
+# PublishArtifact refuses manifests that do not verify against it. The
+# private key must never be on the gateway.
+artifact_pubkey_file: /etc/geneza/artifact.pub

@@ -1,0 +1,371 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/spf13/cobra"
+
+	"osie.cloud/geneza/internal/client"
+	"osie.cloud/geneza/internal/types"
+
+	genezav1 "osie.cloud/geneza/internal/pb/geneza/v1"
+)
+
+func newAdminCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "admin",
+		Short: "Fleet administration (requires the admin role)",
+	}
+	tokens := &cobra.Command{Use: "tokens", Short: "Join-token management"}
+	tokens.AddCommand(newTokensNewCmd())
+	cmd.AddCommand(
+		tokens,
+		newFleetCmd(),
+		newPublishCmd(),
+		newDesiredCmd(),
+		newPolicyReloadCmd(),
+		newAuditCmd(),
+	)
+	return cmd
+}
+
+func parseLabels(s string) (map[string]string, error) {
+	if s == "" {
+		return nil, nil
+	}
+	out := map[string]string{}
+	for _, kv := range strings.Split(s, ",") {
+		k, v, ok := strings.Cut(strings.TrimSpace(kv), "=")
+		if !ok || k == "" {
+			return nil, fmt.Errorf("bad label %q (want k=v,...)", kv)
+		}
+		out[k] = v
+	}
+	return out, nil
+}
+
+func newTokensNewCmd() *cobra.Command {
+	var (
+		ttl    time.Duration
+		uses   int
+		labels string
+	)
+	cmd := &cobra.Command{
+		Use:   "new",
+		Short: "Mint a one-time enrollment token",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			lbls, err := parseLabels(labels)
+			if err != nil {
+				return err
+			}
+			e, err := loadEnv()
+			if err != nil {
+				return err
+			}
+			cc, api, err := dialAdmin(e)
+			if err != nil {
+				return err
+			}
+			defer cc.Close()
+			ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
+			defer cancel()
+			resp, err := api.CreateJoinToken(ctx, &genezav1.CreateJoinTokenRequest{
+				TtlSeconds: int64(ttl.Seconds()),
+				Labels:     lbls,
+				MaxUses:    int32(uses),
+			})
+			if err != nil {
+				return client.Humanize(err)
+			}
+			fmt.Printf("Token:   %s\n", resp.GetToken())
+			fmt.Printf("Expires: %s\n", time.Unix(resp.GetExpiresUnix(), 0).Local().Format(time.RFC3339))
+			return nil
+		},
+	}
+	cmd.Flags().DurationVar(&ttl, "ttl", time.Hour, "token lifetime")
+	cmd.Flags().IntVar(&uses, "uses", 1, "maximum enrollments with this token")
+	cmd.Flags().StringVar(&labels, "labels", "", "labels stamped onto enrolling nodes (k=v,...)")
+	return cmd
+}
+
+func newFleetCmd() *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "fleet",
+		Short: "Fleet status: nodes plus desired versions per ring",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			e, err := loadEnv()
+			if err != nil {
+				return err
+			}
+			cc, api, err := dialAdmin(e)
+			if err != nil {
+				return err
+			}
+			defer cc.Close()
+			ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
+			defer cancel()
+			resp, err := api.GetFleetStatus(ctx, &genezav1.Empty{})
+			if err != nil {
+				return client.Humanize(err)
+			}
+			if asJSON {
+				return printJSON(resp)
+			}
+			fmt.Printf("Desired versions: stable=%s canary=%s\n",
+				orDash(resp.GetStableVersion()), orDash(resp.GetCanaryVersion()))
+			if len(resp.GetCanaryNodes()) > 0 {
+				fmt.Printf("Canary nodes:     %s\n", strings.Join(resp.GetCanaryNodes(), ", "))
+			}
+			fmt.Println()
+			rows := make([][]string, 0, len(resp.GetNodes()))
+			for _, n := range resp.GetNodes() {
+				rows = append(rows, []string{
+					n.GetName(),
+					n.GetNodeId(),
+					onlineStr(n.GetOnline()),
+					n.GetVersion(),
+					n.GetOs() + "/" + n.GetArch(),
+					client.FormatLabels(n.GetLabels()),
+					client.Ago(n.GetLastSeenUnix()),
+				})
+			}
+			client.PrintTable(os.Stdout,
+				[]string{"NAME", "NODE-ID", "ONLINE", "VERSION", "PLATFORM", "LABELS", "LAST-SEEN"}, rows)
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "JSON output")
+	return cmd
+}
+
+func orDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
+const publishChunkSize = 64 * 1024
+
+func newPublishCmd() *cobra.Command {
+	var (
+		manifestPath string
+		binaryPath   string
+	)
+	cmd := &cobra.Command{
+		Use:   "publish --manifest signed.json --binary PATH",
+		Short: "Upload an offline-signed agent artifact to the gateway",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			manifestBytes, err := os.ReadFile(manifestPath)
+			if err != nil {
+				return err
+			}
+			// Sanity-check locally before shipping: the envelope must decode
+			// and its payload must be a Manifest. (Signature verification is
+			// the gateway's and the bootstrap's job — the CLI may not even
+			// know the artifact key.)
+			signed, err := types.DecodeSigned(manifestBytes)
+			if err != nil {
+				return fmt.Errorf("%s: %w", manifestPath, err)
+			}
+			var m types.Manifest
+			if err := json.Unmarshal(signed.Payload, &m); err != nil {
+				return fmt.Errorf("%s: payload is not a manifest: %w", manifestPath, err)
+			}
+
+			f, err := os.Open(binaryPath)
+			if err != nil {
+				return err
+			}
+			defer f.Close()
+
+			e, err := loadEnv()
+			if err != nil {
+				return err
+			}
+			cc, api, err := dialAdmin(e)
+			if err != nil {
+				return err
+			}
+			defer cc.Close()
+
+			stream, err := api.PublishArtifact(cmd.Context())
+			if err != nil {
+				return client.Humanize(err)
+			}
+			// Manifest first, then 64KB data chunks, then EOF.
+			if err := stream.Send(&genezav1.ArtifactChunk{SignedManifest: manifestBytes}); err != nil {
+				return client.Humanize(err)
+			}
+			buf := make([]byte, publishChunkSize)
+			var sent int64
+			for {
+				n, rerr := f.Read(buf)
+				if n > 0 {
+					if err := stream.Send(&genezav1.ArtifactChunk{Data: buf[:n]}); err != nil {
+						return client.Humanize(err)
+					}
+					sent += int64(n)
+				}
+				if rerr == io.EOF {
+					break
+				}
+				if rerr != nil {
+					return rerr
+				}
+			}
+			if err := stream.Send(&genezav1.ArtifactChunk{Eof: true}); err != nil {
+				return client.Humanize(err)
+			}
+			resp, err := stream.CloseAndRecv()
+			if err != nil {
+				return client.Humanize(err)
+			}
+			fmt.Printf("Published %s %s (%s/%s): %d bytes, sha256 %s\n",
+				m.Product, resp.GetVersion(), m.OS, m.Arch, sent, resp.GetSha256())
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&manifestPath, "manifest", "", "offline-signed manifest (types.Signed JSON)")
+	cmd.Flags().StringVar(&binaryPath, "binary", "", "agent binary blob")
+	cmd.MarkFlagRequired("manifest") //nolint:errcheck
+	cmd.MarkFlagRequired("binary")   //nolint:errcheck
+	return cmd
+}
+
+func newDesiredCmd() *cobra.Command {
+	var (
+		ring        string
+		ver         string
+		canaryNodes string
+	)
+	cmd := &cobra.Command{
+		Use:   "desired --ring stable|canary --version V",
+		Short: "Set the desired agent version for a rollout ring",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if ring != "stable" && ring != "canary" {
+				return errors.New("--ring must be stable or canary")
+			}
+			var nodes []string
+			if canaryNodes != "" {
+				for _, n := range strings.Split(canaryNodes, ",") {
+					if n = strings.TrimSpace(n); n != "" {
+						nodes = append(nodes, n)
+					}
+				}
+			}
+			e, err := loadEnv()
+			if err != nil {
+				return err
+			}
+			cc, api, err := dialAdmin(e)
+			if err != nil {
+				return err
+			}
+			defer cc.Close()
+			ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
+			defer cancel()
+			if _, err := api.SetDesiredVersion(ctx, &genezav1.SetDesiredVersionRequest{
+				Ring:        ring,
+				Version:     ver,
+				CanaryNodes: nodes,
+			}); err != nil {
+				return client.Humanize(err)
+			}
+			fmt.Printf("Desired version for %s set to %s\n", ring, ver)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&ring, "ring", "", "rollout ring: stable|canary")
+	cmd.Flags().StringVar(&ver, "version", "", "desired agent version")
+	cmd.Flags().StringVar(&canaryNodes, "canary-nodes", "", "set canary ring membership (node ids, comma-separated)")
+	cmd.MarkFlagRequired("ring")    //nolint:errcheck
+	cmd.MarkFlagRequired("version") //nolint:errcheck
+	return cmd
+}
+
+func newPolicyReloadCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "policy-reload",
+		Short: "Reload the gateway policy document",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			e, err := loadEnv()
+			if err != nil {
+				return err
+			}
+			cc, api, err := dialAdmin(e)
+			if err != nil {
+				return err
+			}
+			defer cc.Close()
+			ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
+			defer cancel()
+			if _, err := api.ReloadPolicy(ctx, &genezav1.Empty{}); err != nil {
+				return client.Humanize(err)
+			}
+			fmt.Println("Policy reloaded.")
+			return nil
+		},
+	}
+}
+
+func newAuditCmd() *cobra.Command {
+	var (
+		since      time.Duration
+		limit      int
+		typeFilter string
+	)
+	cmd := &cobra.Command{
+		Use:   "audit",
+		Short: "Query the hash-chained audit log",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			e, err := loadEnv()
+			if err != nil {
+				return err
+			}
+			cc, api, err := dialAdmin(e)
+			if err != nil {
+				return err
+			}
+			defer cc.Close()
+			ctx, cancel := context.WithTimeout(cmd.Context(), 60*time.Second)
+			defer cancel()
+			resp, err := api.QueryAudit(ctx, &genezav1.QueryAuditRequest{
+				SinceUnix:  time.Now().Add(-since).Unix(),
+				TypeFilter: typeFilter,
+				Limit:      int32(limit),
+			})
+			if err != nil {
+				return client.Humanize(err)
+			}
+			for _, r := range resp.GetRecords() {
+				fmt.Println(strings.TrimRight(string(r.GetJson()), "\n"))
+			}
+			if !resp.GetChainOk() {
+				// Tamper evidence is the whole point of the chain: scream.
+				fmt.Fprintln(os.Stderr, "audit: HASH CHAIN BROKEN — records may have been tampered with")
+				os.Exit(1)
+			}
+			fmt.Fprintf(os.Stderr, "audit: %d records, hash chain OK\n", len(resp.GetRecords()))
+			return nil
+		},
+	}
+	cmd.Flags().DurationVar(&since, "since", time.Hour, "how far back to query")
+	cmd.Flags().IntVar(&limit, "limit", 100, "maximum records")
+	cmd.Flags().StringVar(&typeFilter, "type", "", "filter by record type")
+	return cmd
+}

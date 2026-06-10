@@ -1,0 +1,11 @@
+/bin/
+*.test
+*.out
+# Never commit private keys or issued material.
+*.key
+!testdata/**/*.key
+ca-roots.pem
+*.crt
+state.db
+audit.jsonl
+/secrets/

@@ -1,0 +1,41 @@
+# Geneza agent configuration (/etc/geneza/agent.yaml).
+#
+# Only gateway_grpc_addr is strictly required; everything else has the
+# defaults shown. Values here come from your deployment, never hardcoded.
+
+# Gateway control-plane gRPC endpoint (mTLS): enrollment + node control.
+gateway_grpc_addr: "gateway.example.internal:7401"
+
+# Gateway HTTPS endpoint, used at enroll time to fetch the CA roots bundle
+# when state_dir/ca-roots.pem was not pre-placed (TOFU; the fingerprint is
+# logged for out-of-band verification). Derived from gateway_grpc_addr host
+# + port 7402 when omitted.
+gateway_http_url: "https://gateway.example.internal:7402"
+
+# Where enrollment artifacts live: node.key, node.crt, ca-roots.pem,
+# noise.json, node-id, cluster-config.json.
+state_dir: /var/lib/geneza/agent
+
+# Node name requested at enrollment (defaults to the hostname).
+name: web-1
+
+# Labels stamped onto the node; policy rules match on these.
+labels:
+  env: prod
+  role: web
+
+# Unix socket of the session-host gRPC API.
+session_host_socket: /run/geneza/session-host.sock
+
+# Spool directory shared with the session host: finished session recordings
+# (<id>.cast + <id>.done) are picked up here and uploaded to the gateway.
+spool_dir: /var/lib/geneza/spool
+
+# Touched every 10s while the worker event loop is alive; the bootstrap's
+# health gate watches it. Written regardless of gateway reachability.
+health_file: /run/geneza/worker.health
+
+# Whether the worker spawns and supervises the session host itself. Set to
+# false (or run the worker with --no-spawn-session-host) when the bootstrap
+# supervises the session host directly.
+spawn_session_host: true
