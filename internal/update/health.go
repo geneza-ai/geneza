@@ -6,13 +6,17 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"osie.cloud/geneza/internal/defaults"
 )
 
 // WorkerHealthFileName is the file the worker touches inside run_dir once it
 // is up and has checked in healthy. The bootstrap removes the stale file
 // before swapping workers, so its (re)appearance with a fresh mtime is proof
-// the NEW binary came up — the signal that gates commit-vs-rollback.
-const WorkerHealthFileName = "worker-health"
+// the NEW binary came up — the signal that gates commit-vs-rollback. The name
+// is defined in the shared defaults package so the worker and bootstrap cannot
+// disagree on it (they once did: worker.health vs worker-health).
+const WorkerHealthFileName = defaults.WorkerHealthFileName
 
 // WorkerHealthFile returns the conventional health file path for a run dir.
 func WorkerHealthFile(runDir string) string {

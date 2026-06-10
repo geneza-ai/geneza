@@ -19,6 +19,14 @@ const (
 	SessionHostSock = "/run/geneza/session-host.sock"
 )
 
+// WorkerHealthFileName is the liveness file the worker touches inside run_dir
+// and the bootstrap's health gate watches after a binary swap. Both sides MUST
+// agree on this name — it lives here so they cannot drift.
+const WorkerHealthFileName = "worker.health"
+
+// WorkerHealthFile is the conventional absolute path under the default run dir.
+const WorkerHealthFile = RunDir + "/" + WorkerHealthFileName
+
 // Signed-envelope domain-separation contexts (types.Sign / types.Verify).
 const (
 	ContextGrant         = "grant"

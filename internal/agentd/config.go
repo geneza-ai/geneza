@@ -59,7 +59,7 @@ func (c *Config) applyDefaults() {
 		c.SpoolDir = defaults.VarDir + "/spool"
 	}
 	if c.HealthFile == "" {
-		c.HealthFile = defaults.RunDir + "/worker.health"
+		c.HealthFile = defaults.WorkerHealthFile
 	}
 }
 
