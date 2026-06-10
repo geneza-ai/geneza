@@ -60,6 +60,7 @@ func parseLabels(s string) (map[string]string, error) {
 func enrollCmd() *cobra.Command {
 	var (
 		configPath string
+		provider   string
 		token      string
 		gateway    string
 		name       string
@@ -68,7 +69,7 @@ func enrollCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "enroll",
-		Short: "Enroll this node with the gateway (one-time token)",
+		Short: "Enroll this node with the gateway (token, or openstack-metadata PoC seam)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := agentd.LoadConfig(configPath)
 			if err != nil {
@@ -79,15 +80,17 @@ func enrollCmd() *cobra.Command {
 				return err
 			}
 			return agentd.Enroll(signalContext(), newLogger(), cfg, agentd.EnrollOptions{
-				Token:   token,
-				Gateway: gateway,
-				Name:    name,
-				Labels:  labels,
-				Force:   force,
+				Provider: provider,
+				Token:    token,
+				Gateway:  gateway,
+				Name:     name,
+				Labels:   labels,
+				Force:    force,
 			})
 		},
 	}
 	cmd.Flags().StringVar(&configPath, "config", defaults.EtcDir+"/agent.yaml", "agent config file")
+	cmd.Flags().StringVar(&provider, "provider", "token", "enrollment provider: token | openstack-metadata")
 	cmd.Flags().StringVar(&token, "token", "", "one-time join token (gz-...)")
 	cmd.Flags().StringVar(&gateway, "gateway", "", "gateway gRPC address host:port (overrides config)")
 	cmd.Flags().StringVar(&name, "name", "", "requested node name (default: hostname)")

@@ -30,11 +30,12 @@ import (
 
 // EnrollOptions are the flag overrides for 'geneza-agent enroll'.
 type EnrollOptions struct {
-	Token   string
-	Gateway string // host:port; overrides config gateway_grpc_addr
-	Name    string
-	Labels  map[string]string
-	Force   bool
+	Provider string // "token" (default) | "openstack-metadata" (PoC seam)
+	Token    string
+	Gateway  string // host:port; overrides config gateway_grpc_addr
+	Name     string
+	Labels   map[string]string
+	Force    bool
 }
 
 // Enroll performs the one-time machine-identity bootstrap: generate node key
@@ -45,8 +46,21 @@ type EnrollOptions struct {
 // Nothing is persisted unless every verification step succeeds; node-id is
 // written last and is the idempotence marker.
 func Enroll(ctx context.Context, log *slog.Logger, cfg *Config, opts EnrollOptions) error {
-	if opts.Token == "" {
-		return errors.New("--token is required")
+	provider := opts.Provider
+	if provider == "" {
+		provider = "token"
+	}
+	switch provider {
+	case "token":
+		if opts.Token == "" {
+			return errors.New("--token is required for provider=token")
+		}
+	case "openstack-metadata":
+		// The instance authenticates with its own identity document; no token.
+		// Server-side this provider is the reserved PoC seam (Unimplemented)
+		// until wired — see docs/openstack-integration.md.
+	default:
+		return fmt.Errorf("unknown enrollment provider %q (token|openstack-metadata)", provider)
 	}
 	gateway := opts.Gateway
 	if gateway == "" {
@@ -112,7 +126,7 @@ func Enroll(ctx context.Context, log *slog.Logger, cfg *Config, opts EnrollOptio
 	rctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	resp, err := genezav1.NewEnrollmentClient(conn).Enroll(rctx, &genezav1.EnrollRequest{
-		Provider:       "token",
+		Provider:       provider,
 		Token:          opts.Token,
 		RequestedName:  name,
 		CsrPem:         csrPEM,
