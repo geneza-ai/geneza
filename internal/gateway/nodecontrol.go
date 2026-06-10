@@ -125,6 +125,12 @@ func (n *nodeControlService) handleSessionEvent(nodeID string, ev *genezav1.Sess
 			if r.NodeID != nodeID {
 				return // a node may only move its own sessions
 			}
+			// The agent emits "established" at tunnel setup (before it has a
+			// host session id) and fills it in on "attached"; persist it from
+			// whichever event first carries it so reattach can find it.
+			if hsid := ev.GetHostSessionId(); hsid != "" {
+				r.HostSessionID = hsid
+			}
 			fn(r)
 		})
 		if err != nil {
@@ -136,7 +142,6 @@ func (n *nodeControlService) handleSessionEvent(nodeID string, ev *genezav1.Sess
 	case "established":
 		update(func(r *SessionRecord) {
 			r.State = SessionActive
-			r.HostSessionID = ev.GetHostSessionId()
 		})
 	case "attached":
 		update(func(r *SessionRecord) { r.State = SessionActive })

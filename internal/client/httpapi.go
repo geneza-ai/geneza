@@ -13,12 +13,36 @@ import (
 	"osie.cloud/geneza/internal/ca"
 )
 
-// AuthConfig is the gateway's GET /v1/auth-config document. It tells the CLI
-// which login providers exist and, for OIDC, where to run the flow.
+// AuthConfig is the gateway's GET /v1/auth-config document, normalized for the
+// CLI. The gateway emits {"oidc":{"issuer","client_id"}|null,"local_enabled":bool};
+// UnmarshalJSON maps that onto a flat providers list the login flow consumes.
 type AuthConfig struct {
-	Providers    []string `json:"providers"` // subset of {"oidc","local"}
-	OIDCIssuer   string   `json:"oidc_issuer,omitempty"`
-	OIDCClientID string   `json:"oidc_client_id,omitempty"`
+	Providers    []string // subset of {"oidc","local"}
+	OIDCIssuer   string
+	OIDCClientID string
+}
+
+func (a *AuthConfig) UnmarshalJSON(b []byte) error {
+	var wire struct {
+		OIDC *struct {
+			Issuer   string `json:"issuer"`
+			ClientID string `json:"client_id"`
+		} `json:"oidc"`
+		LocalEnabled bool `json:"local_enabled"`
+	}
+	if err := json.Unmarshal(b, &wire); err != nil {
+		return err
+	}
+	a.Providers = a.Providers[:0]
+	if wire.OIDC != nil {
+		a.Providers = append(a.Providers, "oidc")
+		a.OIDCIssuer = wire.OIDC.Issuer
+		a.OIDCClientID = wire.OIDC.ClientID
+	}
+	if wire.LocalEnabled {
+		a.Providers = append(a.Providers, "local")
+	}
+	return nil
 }
 
 const maxHTTPBody = 1 << 20

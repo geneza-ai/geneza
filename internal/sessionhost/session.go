@@ -237,6 +237,11 @@ func (s *session) attach(cl *attachedClient, lastSeen uint64) (initial []*geneza
 	s.client = cl
 	s.state = stateAttached
 	s.detachedSince = time.Time{}
+	// Input numbering is per-attachment: a fresh client starts its input seq
+	// at 1, so reset the dedupe baseline or every keystroke from a reattached
+	// client would be dropped as "already applied". (In-stream dedupe of an
+	// in-flight reconnect still works — seqs only rise within one attach.)
+	s.lastInputSeq = 0
 
 	cur := s.seq
 	chunks, ok := s.ring.deltaFrom(lastSeen, cur)
