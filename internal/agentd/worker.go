@@ -68,6 +68,40 @@ type Worker struct {
 	// Ephemeral SSH host key for sessions inside the tunnel. Identity is
 	// proven by the Noise layer + signed grant, not by this key.
 	hostSigner ssh.Signer
+
+	// live tracks established sessions by id so a gateway SessionRevoke
+	// (continuous authorization) can tear one down immediately.
+	liveMu sync.Mutex
+	live   map[string]context.CancelFunc
+}
+
+// registerLive records a live session's cancel func for revocation.
+func (w *Worker) registerLive(id string, cancel context.CancelFunc) {
+	w.liveMu.Lock()
+	defer w.liveMu.Unlock()
+	if w.live == nil {
+		w.live = map[string]context.CancelFunc{}
+	}
+	w.live[id] = cancel
+}
+
+func (w *Worker) unregisterLive(id string) {
+	w.liveMu.Lock()
+	defer w.liveMu.Unlock()
+	delete(w.live, id)
+}
+
+// revokeLive tears down a live session by id (gateway-driven continuous authz).
+func (w *Worker) revokeLive(id, reason string) {
+	w.liveMu.Lock()
+	cancel := w.live[id]
+	w.liveMu.Unlock()
+	if cancel == nil {
+		return // not here (maybe already ended, or on another node)
+	}
+	w.log.Warn("session revoked by gateway", "session", id, "reason", reason)
+	cancel()
+	w.emitEvent(&genezav1.SessionEvent{SessionId: id, Event: "revoked", Detail: reason})
 }
 
 // NewWorker loads persisted state and prepares the worker. It fails with a
@@ -398,6 +432,8 @@ func (w *Worker) streamOnce(ctx context.Context) error {
 		switch m := gw.Msg.(type) {
 		case *genezav1.GatewayMsg_SessionOffer:
 			w.handleSessionOffer(ctx, m.SessionOffer, send)
+		case *genezav1.GatewayMsg_SessionRevoke:
+			w.revokeLive(m.SessionRevoke.GetSessionId(), m.SessionRevoke.GetReason())
 		case *genezav1.GatewayMsg_ClusterConfig:
 			w.handleClusterConfig(ctx, m.ClusterConfig)
 		case *genezav1.GatewayMsg_Ping:

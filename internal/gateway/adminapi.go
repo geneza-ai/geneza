@@ -295,7 +295,41 @@ func (a *adminAPIService) ReloadPolicy(ctx context.Context, _ *genezav1.Empty) (
 		return nil, status.Errorf(codes.Internal, "audit append: %v", err)
 	}
 	slog.Info("policy reloaded", "file", s.cfg.PolicyFile)
+	// Re-evaluate live sessions immediately so a policy tightening takes effect
+	// now rather than on the next continuous-authz tick.
+	go s.reauthSweep()
 	return &genezav1.Empty{}, nil
+}
+
+// RevokeSession force-terminates one live session (admin "kick").
+func (a *adminAPIService) RevokeSession(ctx context.Context, req *genezav1.RevokeSessionRequest) (*genezav1.Empty, error) {
+	if req.GetSessionId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "session_id required")
+	}
+	reason := req.GetReason()
+	if reason == "" {
+		reason = "revoked by admin"
+	}
+	if err := a.s.revokeByID(req.GetSessionId(), "admin "+adminActor(ctx)+": "+reason); err != nil {
+		return nil, status.Errorf(codes.NotFound, "revoke session: %v", err)
+	}
+	return &genezav1.Empty{}, nil
+}
+
+// RevokeUser force-terminates all of a user's live sessions.
+func (a *adminAPIService) RevokeUser(ctx context.Context, req *genezav1.RevokeUserRequest) (*genezav1.RevokeCountResponse, error) {
+	if req.GetUser() == "" {
+		return nil, status.Error(codes.InvalidArgument, "user required")
+	}
+	reason := req.GetReason()
+	if reason == "" {
+		reason = "user access revoked by admin"
+	}
+	n, err := a.s.revokeUser(req.GetUser(), "admin "+adminActor(ctx)+": "+reason)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "revoke user: %v", err)
+	}
+	return &genezav1.RevokeCountResponse{Revoked: int32(n)}, nil
 }
 
 func (a *adminAPIService) QueryAudit(ctx context.Context, req *genezav1.QueryAuditRequest) (*genezav1.QueryAuditResponse, error) {

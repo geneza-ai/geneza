@@ -208,6 +208,10 @@ func (b *Broker) CreateSession(ctx context.Context, ident *ca.Identity, req *gen
 		StartedUnix:   now.Unix(),
 		Detachable:    grant.AllowDetach,
 		HostSessionID: grant.AttachID,
+		Roles:         ident.Roles,
+		ClientPath:    clientPath,
+		Service:       grant.Service,
+		ServiceKind:   grant.ServiceKind,
 	}
 	if err := b.store.PutSession(sessRec); err != nil {
 		return nil, status.Errorf(codes.Internal, "store session: %v", err)

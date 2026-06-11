@@ -64,6 +64,7 @@ func (c *consoleAPI) handler() http.Handler {
 	mux.Handle("GET /api/v1/policy", c.auth(c.handlePolicy))
 	mux.Handle("GET /api/v1/audit", c.auth(c.handleAudit))
 	mux.Handle("POST /api/v1/tokens", c.authAdmin(c.handleMintToken))
+	mux.Handle("DELETE /api/v1/sessions/{id}", c.authAdmin(c.handleRevokeSession))
 	mux.HandleFunc("/", c.serveSPA)
 	return secHeaders(mux)
 }
@@ -280,6 +281,20 @@ func (c *consoleAPI) handleMintToken(w http.ResponseWriter, r *http.Request, u *
 		"max_uses":    strconv.FormatInt(int64(req.MaxUses), 10),
 	})
 	writeJSON(w, map[string]any{"token": token, "expiresUnix": expires})
+}
+
+// handleRevokeSession lets an admin kick a live session from the console.
+func (c *consoleAPI) handleRevokeSession(w http.ResponseWriter, r *http.Request, u *consoleUser) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeErr(w, http.StatusBadRequest, "session id required")
+		return
+	}
+	if err := c.s.revokeByID(id, "console "+u.Name+": revoked by admin"); err != nil {
+		writeErr(w, http.StatusNotFound, "revoke: "+err.Error())
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true})
 }
 
 // serveSPA serves the built static SPA, falling back to index.html for client

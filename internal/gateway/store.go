@@ -75,6 +75,7 @@ const (
 	SessionActive   = "active"
 	SessionDetached = "detached"
 	SessionEnded    = "ended"
+	SessionRevoked  = "revoked"
 )
 
 type SessionRecord struct {
@@ -89,6 +90,13 @@ type SessionRecord struct {
 	EndedUnix     int64  `json:"ended_unix,omitempty"`
 	ExitCode      int32  `json:"exit_code,omitempty"`
 	Detachable    bool   `json:"detachable,omitempty"`
+	// Captured for continuous re-authorization (re-evaluating a live session
+	// against current policy) and the audit trail.
+	Roles         []string          `json:"roles,omitempty"`
+	Service       string            `json:"service,omitempty"`
+	ServiceKind   string            `json:"service_kind,omitempty"`
+	ServiceLabels map[string]string `json:"service_labels,omitempty"`
+	ClientPath    string            `json:"client_path,omitempty"`
 }
 
 func OpenStore(path string) (*Store, error) {

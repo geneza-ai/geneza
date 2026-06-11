@@ -316,6 +316,9 @@ func (s *Server) Run(ctx context.Context) error {
 		return fmt.Errorf("console: %w", err)
 	}
 
+	// Continuous authorization: re-evaluate live sessions against current policy.
+	go s.runContinuousAuthz(ctx, s.cfg.ReauthInterval.D())
+
 	errCh := make(chan error, 3)
 	go func() {
 		slog.Info("gRPC listening", "addr", s.cfg.GRPCListen, "cluster", s.cfg.ClusterName, "version", version.Version)

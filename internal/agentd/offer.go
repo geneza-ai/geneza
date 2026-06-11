@@ -174,7 +174,10 @@ func (w *Worker) runSession(ctx context.Context, grant *types.SessionGrant) {
 
 	sctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	go func() { // worker shutdown tears down the tunnel
+	// Register for gateway-driven revocation (continuous authorization).
+	w.registerLive(grant.ID, cancel)
+	defer w.unregisterLive(grant.ID)
+	go func() { // worker shutdown / revoke tears down the tunnel
 		<-sctx.Done()
 		_ = tconn.Close()
 	}()

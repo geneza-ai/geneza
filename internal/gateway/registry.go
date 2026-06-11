@@ -175,6 +175,20 @@ func (r *Registry) SendOffer(ctx context.Context, nodeID, sessionID string, sign
 	}
 }
 
+// SendRevoke tells the node to immediately terminate a live session
+// (continuous authorization). Returns an error if the node is not connected.
+func (r *Registry) SendRevoke(nodeID, sessionID, reason string) error {
+	h := r.get(nodeID)
+	if h == nil {
+		return fmt.Errorf("node %s is not connected", nodeID)
+	}
+	return h.send(&genezav1.GatewayMsg{
+		Msg: &genezav1.GatewayMsg_SessionRevoke{
+			SessionRevoke: &genezav1.SessionRevoke{SessionId: sessionID, Reason: reason},
+		},
+	})
+}
+
 // Broadcast pushes a (signed) cluster config to every connected agent.
 // Best-effort: agents that miss it reconcile on their next hello.
 func (r *Registry) Broadcast(signedClusterConfig []byte) {

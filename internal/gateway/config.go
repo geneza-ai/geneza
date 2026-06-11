@@ -97,6 +97,7 @@ type Config struct {
 	CertTTL              CertTTLConfig     `yaml:"cert_ttl"`
 	GrantTTL             Duration          `yaml:"grant_ttl"`
 	DefaultMaxSessionTTL Duration          `yaml:"default_max_session_ttl"`
+	ReauthInterval       Duration          `yaml:"reauth_interval"` // continuous-authz sweep period (default 15s)
 	OIDC                 *OIDCConfig       `yaml:"oidc"`
 	LocalUsers           []LocalUser       `yaml:"local_users"`
 	AgentPolicy          AgentPolicyConfig `yaml:"agent_policy"`
