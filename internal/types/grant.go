@@ -14,6 +14,7 @@ const (
 	ActionSFTP    = "sftp"
 	ActionForward = "forward"
 	ActionAttach  = "attach"
+	ActionVPN     = "vpn" // L3 packet routing (subnet-route / exit-node)
 )
 
 // Client paths (trust distinction between native E2E and web-proxy).
@@ -47,6 +48,14 @@ type SessionGrant struct {
 	ExpiresAt      time.Time     `json:"exp"` // grant validity (rendezvous window)
 	MaxSessionTTL  time.Duration `json:"max_session_ttl,omitempty"`
 	Record         bool          `json:"record,omitempty"`
+	// Service access: the named service this grant authorizes (empty for plain
+	// node access). The agent enforces ForwardTarget/Routes derived from it.
+	Service     string `json:"service,omitempty"`
+	ServiceKind string `json:"service_kind,omitempty"`
+	// VPN (action=vpn): the CIDRs the agent will route for this client and the
+	// overlay IP assigned to the client. Routes/exit-node = ["0.0.0.0/0"].
+	Routes    []string `json:"routes,omitempty"`
+	OverlayIP string   `json:"overlay_ip,omitempty"`
 }
 
 // Validate performs the agent-side checks that do not depend on the tunnel.
@@ -71,7 +80,7 @@ func (g *SessionGrant) Validate(nodeID string, agentNoisePub []byte, now time.Ti
 		return fmt.Errorf("grant has invalid client noise key")
 	}
 	switch g.Action {
-	case ActionShell, ActionExec, ActionSFTP, ActionForward, ActionAttach:
+	case ActionShell, ActionExec, ActionSFTP, ActionForward, ActionAttach, ActionVPN:
 	default:
 		return fmt.Errorf("unknown action %q", g.Action)
 	}
@@ -83,6 +92,9 @@ func (g *SessionGrant) Validate(nodeID string, agentNoisePub []byte, now time.Ti
 	}
 	if g.Action == ActionForward && g.ForwardTarget == "" {
 		return fmt.Errorf("forward grant without target")
+	}
+	if g.Action == ActionVPN && len(g.Routes) == 0 {
+		return fmt.Errorf("vpn grant without routes")
 	}
 	return nil
 }

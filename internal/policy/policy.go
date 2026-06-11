@@ -29,9 +29,16 @@ type Input struct {
 	NodeID     string
 	NodeName   string
 	NodeLabels map[string]string
-	Action     string // shell|exec|sftp|forward|attach
+	Action     string // shell|exec|sftp|forward|attach|vpn
 	ClientPath string // native|web
-	Now        time.Time
+	// Service access (empty for plain node access): the specific service the
+	// request targets. Rules can gate by service name, kind, and labels — so an
+	// admin can authorize "the postgres service" or "rdp on workstations" or "the
+	// 10.0.0.0/24 subnet route" rather than a blanket forward/vpn action.
+	Service       string
+	ServiceKind   string
+	ServiceLabels map[string]string
+	Now           time.Time
 }
 
 // Decision is the result of evaluation.
@@ -60,6 +67,15 @@ type Role struct {
 type Rule struct {
 	// Actions: list of session actions, "*" for all.
 	Actions []string `yaml:"actions"`
+	// Services / ServiceKinds / ServiceLabels gate access to specific services
+	// inside a node (rdp, postgres, an http app, a subnet route, an exit node,
+	// ...). If any is set, the request MUST target a matching service; if none
+	// are set the rule applies to plain node access (and to any service, by its
+	// action). "*" matches any. This is what turns node-as-workload policy into
+	// service-level zero-trust policy.
+	Services      []string          `yaml:"services,omitempty"`
+	ServiceKinds  []string          `yaml:"service_kinds,omitempty"`
+	ServiceLabels map[string]string `yaml:"service_labels,omitempty"`
 	// NodeLabels must all match the node's labels. Value "*" matches any
 	// value; key "*" (with value "*") matches any node.
 	NodeLabels map[string]string `yaml:"node_labels"`
@@ -207,6 +223,16 @@ func (s *Static) Evaluate(in Input) Decision {
 	return best
 }
 
+// matchList reports whether v is in list, with "*" matching anything.
+func matchList(list []string, v string) bool {
+	for _, x := range list {
+		if x == "*" || x == v {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *Rule) matches(in Input, now time.Time) bool {
 	// Fail closed: a require_native rule grants ONLY when the path is proven
 	// native. An empty/unknown client_path must not satisfy it — otherwise the
@@ -215,7 +241,9 @@ func (r *Rule) matches(in Input, now time.Time) bool {
 	if r.RequireNative && in.ClientPath != "native" {
 		return false
 	}
-	actionOK := false
+	// An empty actions list means "any action" (the rule is scoped by its other
+	// constraints, e.g. service_kinds or node_labels).
+	actionOK := len(r.Actions) == 0
 	for _, a := range r.Actions {
 		if a == "*" || a == in.Action {
 			actionOK = true
@@ -229,6 +257,27 @@ func (r *Rule) matches(in Input, now time.Time) bool {
 	}
 	if !actionOK {
 		return false
+	}
+	// Service constraints: if a rule names services/kinds/labels, the request
+	// MUST target a matching service (so a service-scoped rule never grants
+	// plain node access, and vice versa).
+	if len(r.Services) > 0 && !matchList(r.Services, in.Service) {
+		return false
+	}
+	if len(r.ServiceKinds) > 0 && !matchList(r.ServiceKinds, in.ServiceKind) {
+		return false
+	}
+	for k, v := range r.ServiceLabels {
+		if k == "*" {
+			continue
+		}
+		got, ok := in.ServiceLabels[k]
+		if !ok {
+			return false
+		}
+		if v != "*" && got != v {
+			return false
+		}
 	}
 	for k, v := range r.NodeLabels {
 		if k == "*" {

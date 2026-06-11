@@ -73,15 +73,36 @@ message GatewayMsg {
     SessionOffer session_offer = 1;
     bytes cluster_config = 2;        // JSON types.Signed wrapping types.ClusterConfig
     Ping ping = 3;
+    SessionRevoke session_revoke = 4; // continuous authz: tear down a live session
   }
+}
+
+// SessionRevoke tells the agent to immediately terminate a live session: the
+// gateway re-evaluated it and access is no longer permitted (policy change,
+// time-window expiry, explicit admin revoke).
+message SessionRevoke {
+  string session_id = 1;
+  string reason = 2;
+}
+
+// ServiceAdvert is one service a node exposes (declared in agent config or
+// implicit). kind: shell|exec|sftp|tcp|rdp|vnc|http|postgres|mysql|
+// subnet-route|exit-node. addr is host:port for forwarded services, a CIDR for
+// subnet-route, or empty for exit-node / implicit host services.
+message ServiceAdvert {
+  string name = 1;
+  string kind = 2;
+  string addr = 3;
+  map<string, string> labels = 4;
 }
 
 message AgentHello {
   string node_id = 1;
   string version = 2;
   map<string, string> labels = 3;
-  repeated string capabilities = 4;  // e.g. "shell","exec","sftp","forward","attach"
+  repeated string capabilities = 4;  // e.g. "shell","exec","sftp","forward","attach","vpn"
   int64 cluster_config_version = 5;  // version agent currently holds
+  repeated ServiceAdvert services = 6;
 }
 
 message Heartbeat {
@@ -145,6 +166,7 @@ message Ping {
 service UserAPI {
   rpc Login(LoginRequest) returns (LoginResponse);
   rpc ListNodes(ListNodesRequest) returns (ListNodesResponse);
+  rpc ListServices(ListServicesRequest) returns (ListServicesResponse);
   rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse);
   rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
   rpc WhoAmI(Empty) returns (WhoAmIResponse);
@@ -187,7 +209,7 @@ message ListNodesResponse {
 
 message CreateSessionRequest {
   string node = 1;             // node id or name
-  string action = 2;           // shell|exec|sftp|forward|attach
+  string action = 2;           // shell|exec|sftp|forward|attach|connect|vpn
   string command = 3;          // action=exec
   bool want_pty = 4;
   bool want_detachable = 5;
@@ -195,6 +217,7 @@ message CreateSessionRequest {
   string forward_target = 7;    // action=forward: host:port on the node side
   bytes client_noise_pub = 8;   // 32-byte Curve25519 static public key
   string client_path = 9;       // "native" | "web"
+  string service = 10;          // action=connect|vpn: named service on the node
 }
 
 message CreateSessionResponse {
@@ -211,10 +234,29 @@ message SessionInfo {
   string node_name = 3;
   string user = 4;
   string action = 5;
-  string state = 6;            // pending|active|detached|ended
+  string state = 6;            // pending|active|detached|ended|revoked
   int64 started_unix = 7;
   string host_session_id = 8;
   bool detachable = 9;
+  string service = 10;
+}
+
+message ServiceInfo {
+  string name = 1;
+  string kind = 2;
+  string addr = 3;
+  string node_id = 4;
+  string node_name = 5;
+  map<string, string> labels = 6;
+  bool online = 7;
+}
+
+message ListServicesRequest {
+  string node = 1; // optional: filter to one node (id or name)
+}
+
+message ListServicesResponse {
+  repeated ServiceInfo services = 1;
 }
 
 message ListSessionsRequest {
@@ -242,6 +284,24 @@ service AdminAPI {
   rpc GetFleetStatus(Empty) returns (FleetStatus);
   rpc ReloadPolicy(Empty) returns (Empty);
   rpc QueryAudit(QueryAuditRequest) returns (QueryAuditResponse);
+  // RevokeSession force-terminates a live session (admin "kick"). RevokeUser
+  // revokes all of a user's sessions.
+  rpc RevokeSession(RevokeSessionRequest) returns (Empty);
+  rpc RevokeUser(RevokeUserRequest) returns (RevokeCountResponse);
+}
+
+message RevokeSessionRequest {
+  string session_id = 1;
+  string reason = 2;
+}
+
+message RevokeUserRequest {
+  string user = 1;
+  string reason = 2;
+}
+
+message RevokeCountResponse {
+  int32 revoked = 1;
 }
 
 message CreateJoinTokenRequest {

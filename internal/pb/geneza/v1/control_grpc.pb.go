@@ -302,6 +302,7 @@ var NodeControl_ServiceDesc = grpc.ServiceDesc{
 const (
 	UserAPI_Login_FullMethodName         = "/geneza.v1.UserAPI/Login"
 	UserAPI_ListNodes_FullMethodName     = "/geneza.v1.UserAPI/ListNodes"
+	UserAPI_ListServices_FullMethodName  = "/geneza.v1.UserAPI/ListServices"
 	UserAPI_CreateSession_FullMethodName = "/geneza.v1.UserAPI/CreateSession"
 	UserAPI_ListSessions_FullMethodName  = "/geneza.v1.UserAPI/ListSessions"
 	UserAPI_WhoAmI_FullMethodName        = "/geneza.v1.UserAPI/WhoAmI"
@@ -313,6 +314,7 @@ const (
 type UserAPIClient interface {
 	Login(ctx context.Context, in *LoginRequest, opts ...grpc.CallOption) (*LoginResponse, error)
 	ListNodes(ctx context.Context, in *ListNodesRequest, opts ...grpc.CallOption) (*ListNodesResponse, error)
+	ListServices(ctx context.Context, in *ListServicesRequest, opts ...grpc.CallOption) (*ListServicesResponse, error)
 	CreateSession(ctx context.Context, in *CreateSessionRequest, opts ...grpc.CallOption) (*CreateSessionResponse, error)
 	ListSessions(ctx context.Context, in *ListSessionsRequest, opts ...grpc.CallOption) (*ListSessionsResponse, error)
 	WhoAmI(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*WhoAmIResponse, error)
@@ -340,6 +342,16 @@ func (c *userAPIClient) ListNodes(ctx context.Context, in *ListNodesRequest, opt
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListNodesResponse)
 	err := c.cc.Invoke(ctx, UserAPI_ListNodes_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userAPIClient) ListServices(ctx context.Context, in *ListServicesRequest, opts ...grpc.CallOption) (*ListServicesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListServicesResponse)
+	err := c.cc.Invoke(ctx, UserAPI_ListServices_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -382,6 +394,7 @@ func (c *userAPIClient) WhoAmI(ctx context.Context, in *Empty, opts ...grpc.Call
 type UserAPIServer interface {
 	Login(context.Context, *LoginRequest) (*LoginResponse, error)
 	ListNodes(context.Context, *ListNodesRequest) (*ListNodesResponse, error)
+	ListServices(context.Context, *ListServicesRequest) (*ListServicesResponse, error)
 	CreateSession(context.Context, *CreateSessionRequest) (*CreateSessionResponse, error)
 	ListSessions(context.Context, *ListSessionsRequest) (*ListSessionsResponse, error)
 	WhoAmI(context.Context, *Empty) (*WhoAmIResponse, error)
@@ -400,6 +413,9 @@ func (UnimplementedUserAPIServer) Login(context.Context, *LoginRequest) (*LoginR
 }
 func (UnimplementedUserAPIServer) ListNodes(context.Context, *ListNodesRequest) (*ListNodesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListNodes not implemented")
+}
+func (UnimplementedUserAPIServer) ListServices(context.Context, *ListServicesRequest) (*ListServicesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListServices not implemented")
 }
 func (UnimplementedUserAPIServer) CreateSession(context.Context, *CreateSessionRequest) (*CreateSessionResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CreateSession not implemented")
@@ -463,6 +479,24 @@ func _UserAPI_ListNodes_Handler(srv interface{}, ctx context.Context, dec func(i
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(UserAPIServer).ListNodes(ctx, req.(*ListNodesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserAPI_ListServices_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListServicesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserAPIServer).ListServices(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserAPI_ListServices_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserAPIServer).ListServices(ctx, req.(*ListServicesRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -537,6 +571,10 @@ var UserAPI_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _UserAPI_ListNodes_Handler,
 		},
 		{
+			MethodName: "ListServices",
+			Handler:    _UserAPI_ListServices_Handler,
+		},
+		{
 			MethodName: "CreateSession",
 			Handler:    _UserAPI_CreateSession_Handler,
 		},
@@ -560,6 +598,8 @@ const (
 	AdminAPI_GetFleetStatus_FullMethodName    = "/geneza.v1.AdminAPI/GetFleetStatus"
 	AdminAPI_ReloadPolicy_FullMethodName      = "/geneza.v1.AdminAPI/ReloadPolicy"
 	AdminAPI_QueryAudit_FullMethodName        = "/geneza.v1.AdminAPI/QueryAudit"
+	AdminAPI_RevokeSession_FullMethodName     = "/geneza.v1.AdminAPI/RevokeSession"
+	AdminAPI_RevokeUser_FullMethodName        = "/geneza.v1.AdminAPI/RevokeUser"
 )
 
 // AdminAPIClient is the client API for AdminAPI service.
@@ -572,6 +612,10 @@ type AdminAPIClient interface {
 	GetFleetStatus(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*FleetStatus, error)
 	ReloadPolicy(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*Empty, error)
 	QueryAudit(ctx context.Context, in *QueryAuditRequest, opts ...grpc.CallOption) (*QueryAuditResponse, error)
+	// RevokeSession force-terminates a live session (admin "kick"). RevokeUser
+	// revokes all of a user's sessions.
+	RevokeSession(ctx context.Context, in *RevokeSessionRequest, opts ...grpc.CallOption) (*Empty, error)
+	RevokeUser(ctx context.Context, in *RevokeUserRequest, opts ...grpc.CallOption) (*RevokeCountResponse, error)
 }
 
 type adminAPIClient struct {
@@ -645,6 +689,26 @@ func (c *adminAPIClient) QueryAudit(ctx context.Context, in *QueryAuditRequest, 
 	return out, nil
 }
 
+func (c *adminAPIClient) RevokeSession(ctx context.Context, in *RevokeSessionRequest, opts ...grpc.CallOption) (*Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Empty)
+	err := c.cc.Invoke(ctx, AdminAPI_RevokeSession_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *adminAPIClient) RevokeUser(ctx context.Context, in *RevokeUserRequest, opts ...grpc.CallOption) (*RevokeCountResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RevokeCountResponse)
+	err := c.cc.Invoke(ctx, AdminAPI_RevokeUser_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AdminAPIServer is the server API for AdminAPI service.
 // All implementations must embed UnimplementedAdminAPIServer
 // for forward compatibility.
@@ -655,6 +719,10 @@ type AdminAPIServer interface {
 	GetFleetStatus(context.Context, *Empty) (*FleetStatus, error)
 	ReloadPolicy(context.Context, *Empty) (*Empty, error)
 	QueryAudit(context.Context, *QueryAuditRequest) (*QueryAuditResponse, error)
+	// RevokeSession force-terminates a live session (admin "kick"). RevokeUser
+	// revokes all of a user's sessions.
+	RevokeSession(context.Context, *RevokeSessionRequest) (*Empty, error)
+	RevokeUser(context.Context, *RevokeUserRequest) (*RevokeCountResponse, error)
 	mustEmbedUnimplementedAdminAPIServer()
 }
 
@@ -682,6 +750,12 @@ func (UnimplementedAdminAPIServer) ReloadPolicy(context.Context, *Empty) (*Empty
 }
 func (UnimplementedAdminAPIServer) QueryAudit(context.Context, *QueryAuditRequest) (*QueryAuditResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method QueryAudit not implemented")
+}
+func (UnimplementedAdminAPIServer) RevokeSession(context.Context, *RevokeSessionRequest) (*Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method RevokeSession not implemented")
+}
+func (UnimplementedAdminAPIServer) RevokeUser(context.Context, *RevokeUserRequest) (*RevokeCountResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RevokeUser not implemented")
 }
 func (UnimplementedAdminAPIServer) mustEmbedUnimplementedAdminAPIServer() {}
 func (UnimplementedAdminAPIServer) testEmbeddedByValue()                  {}
@@ -801,6 +875,42 @@ func _AdminAPI_QueryAudit_Handler(srv interface{}, ctx context.Context, dec func
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AdminAPI_RevokeSession_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RevokeSessionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminAPIServer).RevokeSession(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminAPI_RevokeSession_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminAPIServer).RevokeSession(ctx, req.(*RevokeSessionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AdminAPI_RevokeUser_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RevokeUserRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminAPIServer).RevokeUser(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminAPI_RevokeUser_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminAPIServer).RevokeUser(ctx, req.(*RevokeUserRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AdminAPI_ServiceDesc is the grpc.ServiceDesc for AdminAPI service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -827,6 +937,14 @@ var AdminAPI_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "QueryAudit",
 			Handler:    _AdminAPI_QueryAudit_Handler,
+		},
+		{
+			MethodName: "RevokeSession",
+			Handler:    _AdminAPI_RevokeSession_Handler,
+		},
+		{
+			MethodName: "RevokeUser",
+			Handler:    _AdminAPI_RevokeUser_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{
