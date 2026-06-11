@@ -59,7 +59,7 @@ bindings:
 func testBroker(t *testing.T) (*Broker, *fakeAgents, *Store, ed25519.PublicKey) {
 	t.Helper()
 	store := testStore(t)
-	audit, err := OpenAudit(filepath.Join(t.TempDir(), "audit.jsonl"))
+	audit, err := openAudit(filepath.Join(t.TempDir(), "audit.jsonl"))
 	if err != nil {
 		t.Fatal(err)
 	}

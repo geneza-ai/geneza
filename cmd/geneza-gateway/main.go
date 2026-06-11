@@ -165,7 +165,7 @@ func newAuditVerifyCmd() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		n, err := gateway.VerifyAuditFile(cfg.AuditPath())
+		n, err := gateway.VerifyAuditFile(cfg.AuditPath(), cfg.AuditKeyPath())
 		if err != nil {
 			return fmt.Errorf("audit chain BROKEN after %d valid records: %w", n, err)
 		}

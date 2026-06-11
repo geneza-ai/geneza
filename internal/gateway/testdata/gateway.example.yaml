@@ -75,3 +75,10 @@ agent_policy:
 # PublishArtifact refuses manifests that do not verify against it. The
 # private key must never be on the gateway.
 artifact_pubkey_file: /etc/geneza/artifact.pub
+
+# Optional off-box, append-only mirror of the hash-chained, HMAC-keyed audit
+# trail (the only tamper-evidence that survives a host able to rewrite the local
+# chain). type: none|file|http. Production: S3 Object-Lock bucket or SIEM intake.
+# audit_sink:
+#   type: http
+#   url: https://siem.example.com/intake/geneza

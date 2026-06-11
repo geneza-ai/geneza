@@ -101,6 +101,20 @@ type Config struct {
 	LocalUsers           []LocalUser       `yaml:"local_users"`
 	AgentPolicy          AgentPolicyConfig `yaml:"agent_policy"`
 	ArtifactPubkeyFile   string            `yaml:"artifact_pubkey_file"`
+	// AuditSink optionally mirrors every audit record to an append-only
+	// off-box destination (the only real tamper-evidence against a host
+	// compromise that can rewrite the local chain). Empty = local chain only.
+	AuditSink AuditSinkConfig `yaml:"audit_sink"`
+}
+
+// AuditSinkConfig configures the off-box audit mirror.
+//   type: "" | "none" — local chain only (default)
+//   type: "file"      — append each record to Path (use a different mount/host)
+//   type: "http"      — POST each record (JSON line) to URL (e.g. a SIEM intake)
+type AuditSinkConfig struct {
+	Type string `yaml:"type"`
+	Path string `yaml:"path"`
+	URL  string `yaml:"url"`
 }
 
 // LoadConfig reads, defaults and validates the gateway configuration.
@@ -206,7 +220,9 @@ func (c *Config) GrantKeyPath() string   { return filepath.Join(c.DataDir, "gran
 func (c *Config) GrantKeyIDPath() string { return filepath.Join(c.DataDir, "grant.keyid") }
 func (c *Config) TLSDir() string         { return filepath.Join(c.DataDir, "tls") }
 func (c *Config) StatePath() string      { return filepath.Join(c.DataDir, "state.db") }
-func (c *Config) AuditPath() string      { return filepath.Join(c.DataDir, "audit.jsonl") }
+func (c *Config) AuditPath() string       { return filepath.Join(c.DataDir, "audit.jsonl") }
+func (c *Config) AuditKeyPath() string    { return filepath.Join(c.DataDir, "audit.key") }
+func (c *Config) AuditCheckpoint() string { return filepath.Join(c.DataDir, "audit.jsonl.chk") }
 func (c *Config) ArtifactsDir() string   { return filepath.Join(c.DataDir, "artifacts") }
 func (c *Config) RecordingsDir() string  { return filepath.Join(c.DataDir, "recordings") }
 

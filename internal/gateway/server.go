@@ -91,7 +91,12 @@ func New(cfg *Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	audit, err := OpenAudit(cfg.AuditPath())
+	sink, err := NewAuditSink(cfg.AuditSink, slog.Default())
+	if err != nil {
+		store.Close()
+		return nil, fmt.Errorf("audit sink: %w", err)
+	}
+	audit, err := OpenAudit(cfg.AuditPath(), cfg.AuditKeyPath(), cfg.AuditCheckpoint(), sink, slog.Default())
 	if err != nil {
 		store.Close()
 		return nil, err
