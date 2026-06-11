@@ -32,6 +32,7 @@ type loginOpts struct {
 	passwordStdin bool
 	caFile        string
 	noBrowser     bool
+	manual        bool
 }
 
 func newLoginCmd() *cobra.Command {
@@ -54,6 +55,7 @@ func newLoginCmd() *cobra.Command {
 	f.BoolVar(&o.passwordStdin, "password-stdin", false, "read the password from stdin (first line)")
 	f.StringVar(&o.caFile, "ca-file", "", "trust this CA bundle instead of TOFU-fetching it")
 	f.BoolVar(&o.noBrowser, "no-browser", false, "do not try to open a browser for the OIDC flow")
+	f.BoolVar(&o.manual, "manual", false, "remote/headless OIDC: print the auth URL and paste the redirected callback URL back (for when the CLI's loopback is unreachable from the browser)")
 	return cmd
 }
 
@@ -130,7 +132,9 @@ func runLogin(ctx context.Context, o *loginOpts) error {
 			Issuer:    ac.OIDCIssuer,
 			ClientID:  ac.OIDCClientID,
 			NoBrowser: o.noBrowser,
+			Manual:    o.manual,
 			Out:       os.Stderr,
+			In:        os.Stdin,
 		}
 		var idToken string
 		if havePassword {

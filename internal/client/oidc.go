@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -27,10 +28,21 @@ type OIDCFlow struct {
 	Issuer    string
 	ClientID  string
 	NoBrowser bool
-	Out       io.Writer // where to print the authorize URL / hints
+	// Manual selects the paste-the-callback flow: print the authorize URL, let
+	// the user complete it in a browser on ANY machine, then paste the redirected
+	// callback URL back in. Use when the CLI's loopback is unreachable from the
+	// browser (SSH session, headless box, remote login).
+	Manual bool
+	Out    io.Writer // where to print the authorize URL / hints
+	In     io.Reader // where to read the pasted callback URL (Manual mode)
 	// Timeout bounds the interactive wait for the browser redirect.
 	Timeout time.Duration
 }
+
+// manualRedirect is the redirect URI used in Manual mode. Nothing listens on it
+// (the user copies the URL out of the address bar), but it must be an allowed
+// redirect for the client — Keycloak permits any loopback (127.0.0.1) port/path.
+const manualRedirect = "http://127.0.0.1/callback"
 
 var oidcScopes = []string{"openid", "profile", "email"}
 
@@ -113,6 +125,9 @@ func (f *OIDCFlow) AuthCodePKCE(ctx context.Context) (string, error) {
 	d, err := f.discover(ctx)
 	if err != nil {
 		return "", err
+	}
+	if f.Manual {
+		return f.manualPaste(ctx, d)
 	}
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -209,6 +224,86 @@ func (f *OIDCFlow) AuthCodePKCE(ctx context.Context) (string, error) {
 		return "", errors.New("token response had no id_token")
 	}
 	return idToken, nil
+}
+
+// manualPaste runs the headless/remote authorization-code flow: print the
+// authorize URL, the user completes it in a browser anywhere, then pastes the
+// redirected callback URL (or the bare code) back in. No loopback server.
+func (f *OIDCFlow) manualPaste(ctx context.Context, d *discovery) (string, error) {
+	cfg := &oauth2.Config{
+		ClientID:    f.ClientID,
+		Endpoint:    oauth2.Endpoint{AuthURL: d.AuthorizationEndpoint, TokenURL: d.TokenEndpoint},
+		RedirectURL: manualRedirect,
+		Scopes:      oidcScopes,
+	}
+	state, err := randomToken()
+	if err != nil {
+		return "", err
+	}
+	verifier := oauth2.GenerateVerifier()
+	authURL := cfg.AuthCodeURL(state, oauth2.S256ChallengeOption(verifier))
+
+	out := f.Out
+	if out == nil {
+		out = io.Discard
+	}
+	in := f.In
+	if in == nil {
+		return "", errors.New("manual login needs an input stream to read the pasted URL")
+	}
+	fmt.Fprintf(out, "\nOpen this URL in a browser on ANY machine and sign in:\n\n  %s\n\n", authURL)
+	fmt.Fprintf(out, "Your browser will then be redirected to a URL that starts with\n  %s?...\n"+
+		"and shows a \"can't connect\" / \"site can't be reached\" error — that is EXPECTED.\n"+
+		"Copy that whole URL from the address bar and paste it below.\n\n", manualRedirect)
+	fmt.Fprint(out, "Paste the callback URL (or just the code): ")
+
+	line, err := bufio.NewReader(in).ReadString('\n')
+	if err != nil && line == "" {
+		return "", fmt.Errorf("reading pasted callback: %w", err)
+	}
+	code, err := parseManualCallback(strings.TrimSpace(line), state)
+	if err != nil {
+		return "", err
+	}
+
+	tok, err := cfg.Exchange(ctx, code, oauth2.VerifierOption(verifier))
+	if err != nil {
+		return "", fmt.Errorf("OIDC code exchange: %w", err)
+	}
+	idToken, _ := tok.Extra("id_token").(string)
+	if idToken == "" {
+		return "", errors.New("token response had no id_token")
+	}
+	return idToken, nil
+}
+
+// parseManualCallback accepts either the full redirected callback URL (whose
+// state is verified against want) or a bare authorization code, and returns the
+// code. A full URL is preferred because it lets us check the state (CSRF guard).
+func parseManualCallback(input, want string) (string, error) {
+	if input == "" {
+		return "", errors.New("no callback pasted")
+	}
+	if strings.Contains(input, "?") || strings.HasPrefix(input, "http") {
+		u, err := url.Parse(input)
+		if err != nil {
+			return "", fmt.Errorf("could not parse the pasted URL: %w", err)
+		}
+		q := u.Query()
+		if e := q.Get("error"); e != "" {
+			return "", fmt.Errorf("IdP returned %s: %s", e, q.Get("error_description"))
+		}
+		if st := q.Get("state"); st != want {
+			return "", errors.New("state mismatch in the pasted callback (possible CSRF or wrong URL)")
+		}
+		code := q.Get("code")
+		if code == "" {
+			return "", errors.New("the pasted callback URL has no ?code= parameter")
+		}
+		return code, nil
+	}
+	// Bare code (no URL to verify state against): accept it as-is.
+	return input, nil
 }
 
 func randomToken() (string, error) {
