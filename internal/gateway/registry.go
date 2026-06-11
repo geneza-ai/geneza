@@ -7,6 +7,7 @@ import (
 	"time"
 
 	genezav1 "osie.cloud/geneza/internal/pb/geneza/v1"
+	"osie.cloud/geneza/internal/types"
 )
 
 // AgentInfo is the live view of one connected agent.
@@ -18,6 +19,7 @@ type AgentInfo struct {
 	Active       uint32
 	Detached     uint32
 	Capabilities []string
+	Services     []types.Service
 }
 
 // gatewaySender abstracts the gRPC server stream's send side (tests inject a
@@ -110,6 +112,7 @@ func (r *Registry) Register(nodeID string, stream gatewaySender, hello *genezav1
 			Version:      hello.GetVersion(),
 			Healthy:      true,
 			Capabilities: hello.GetCapabilities(),
+			Services:     servicesFromHello(nodeID, hello.GetServices()),
 		},
 	}
 	r.mu.Lock()
@@ -133,6 +136,31 @@ func (r *Registry) get(nodeID string) *agentHandle {
 }
 
 func (r *Registry) Online(nodeID string) bool { return r.get(nodeID) != nil }
+
+// Services returns the live services advertised by a connected node.
+func (r *Registry) Services(nodeID string) ([]types.Service, bool) {
+	h := r.get(nodeID)
+	if h == nil {
+		return nil, false
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]types.Service(nil), h.info.Services...), true
+}
+
+func servicesFromHello(nodeID string, adverts []*genezav1.ServiceAdvert) []types.Service {
+	out := make([]types.Service, 0, len(adverts))
+	for _, a := range adverts {
+		if a.GetName() == "" || !types.KnownServiceKind(a.GetKind()) {
+			continue
+		}
+		out = append(out, types.Service{
+			Name: a.GetName(), Kind: a.GetKind(), Addr: a.GetAddr(),
+			NodeID: nodeID, Labels: a.GetLabels(),
+		})
+	}
+	return out
+}
 
 func (r *Registry) Info(nodeID string) (AgentInfo, bool) {
 	h := r.get(nodeID)

@@ -75,6 +75,19 @@ type Worker struct {
 	live   map[string]context.CancelFunc
 }
 
+// advertisedServices converts the configured services into the hello message.
+func (w *Worker) advertisedServices() []*genezav1.ServiceAdvert {
+	out := make([]*genezav1.ServiceAdvert, 0, len(w.cfg.Services))
+	for _, s := range w.cfg.Services {
+		if s.Name == "" || !types.KnownServiceKind(s.Kind) {
+			w.log.Warn("skipping invalid service decl", "name", s.Name, "kind", s.Kind)
+			continue
+		}
+		out = append(out, &genezav1.ServiceAdvert{Name: s.Name, Kind: s.Kind, Addr: s.Addr, Labels: s.Labels})
+	}
+	return out
+}
+
 // registerLive records a live session's cancel func for revocation.
 func (w *Worker) registerLive(id string, cancel context.CancelFunc) {
 	w.liveMu.Lock()
@@ -363,6 +376,7 @@ func (w *Worker) streamOnce(ctx context.Context) error {
 		Labels:               w.cfg.Labels,
 		Capabilities:         defaults.AgentCapabilities,
 		ClusterConfigVersion: w.clusterVersion(),
+		Services:             w.advertisedServices(),
 	}}}
 	if err := send(hello); err != nil {
 		return fmt.Errorf("send hello: %w", err)

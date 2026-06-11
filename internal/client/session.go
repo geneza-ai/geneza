@@ -25,12 +25,13 @@ import (
 // noise key and client_path are filled in by Establish.
 type SessionParams struct {
 	Node            string
-	Action          string // types.ActionShell|Exec|SFTP|Forward|Attach
+	Action          string // types.ActionShell|Exec|SFTP|Forward|Attach|connect|vpn
 	Command         string
 	WantPTY         bool
 	WantDetachable  bool
 	AttachSessionID string
 	ForwardTarget   string
+	Service         string // action=connect|vpn: named service on the node
 }
 
 // Session is one established end-to-end tunnel with the SSH channel layer on
@@ -41,6 +42,12 @@ type Session struct {
 	// HostSessionID is reported by the agent in its acceptance payload when
 	// it created/attached a persistent host session (may be empty).
 	HostSessionID string
+	// Resolved from the signed grant (the gateway decides these for service
+	// connect / vpn; the client reads them to drive the local end).
+	Action        string
+	ForwardTarget string
+	Routes        []string
+	OverlayIP     string
 }
 
 func (s *Session) Close() error {
@@ -83,11 +90,19 @@ func Establish(ctx context.Context, api genezav1.UserAPIClient, pool *x509.CertP
 		WantDetachable:  p.WantDetachable,
 		AttachSessionId: p.AttachSessionID,
 		ForwardTarget:   p.ForwardTarget,
+		Service:         p.Service,
 		ClientNoisePub:  key.Public,
 		ClientPath:      types.PathNative,
 	})
 	if err != nil {
 		return nil, Humanize(err)
+	}
+	// Decode the (gateway-signed) grant payload for its resolved scope. We do
+	// not verify it here — the agent does — we just read what the gateway chose
+	// for a service connect / vpn (forward target, routes, overlay IP).
+	resolved := &types.SessionGrant{}
+	if env, derr := types.DecodeSigned(resp.GetSignedGrant()); derr == nil {
+		_ = json.Unmarshal(env.Payload, resolved)
 	}
 	if resp.GetRelayAddr() == "" || resp.GetRelayToken() == "" || len(resp.GetAgentNoisePub()) != 32 {
 		return nil, errors.New("gateway returned an incomplete session grant")
@@ -178,6 +193,10 @@ func Establish(ctx context.Context, api genezav1.UserAPIClient, pool *x509.CertP
 		ID:            resp.GetSessionId(),
 		SSH:           ssh.NewClient(sshConn, chans, reqs),
 		HostSessionID: acc.HostSessionID,
+		Action:        resolved.Action,
+		ForwardTarget: resolved.ForwardTarget,
+		Routes:        resolved.Routes,
+		OverlayIP:     resolved.OverlayIP,
 	}, nil
 }
 

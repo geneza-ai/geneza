@@ -27,6 +27,19 @@ type Config struct {
 	// SpawnSessionHost defaults to true; bootstrap-supervised deployments run
 	// the session host themselves and pass --no-spawn-session-host instead.
 	SpawnSessionHost *bool `yaml:"spawn_session_host"`
+	// Services this node exposes beyond the implicit shell/exec/sftp host
+	// access: tcp/rdp/vnc/http/postgres/mysql (addr=host:port reachable from the
+	// node), subnet-route (addr=CIDR), exit-node (addr empty). Each is policy-
+	// gated by name/kind/labels.
+	Services []ServiceDecl `yaml:"services"`
+}
+
+// ServiceDecl declares one exposed service in agent.yaml.
+type ServiceDecl struct {
+	Name   string            `yaml:"name"`
+	Kind   string            `yaml:"kind"`
+	Addr   string            `yaml:"addr"`
+	Labels map[string]string `yaml:"labels"`
 }
 
 // LoadConfig reads the YAML config at path. A missing file is not an error

@@ -22,12 +22,18 @@ type fakeAgents struct {
 	accepted bool
 	reason   string
 	err      error
+	services map[string][]types.Service
 
 	lastNode  string
 	lastGrant []byte
 }
 
 func (f *fakeAgents) Online(nodeID string) bool { return f.online[nodeID] }
+
+func (f *fakeAgents) Services(nodeID string) ([]types.Service, bool) {
+	s, ok := f.services[nodeID]
+	return s, ok
+}
 
 func (f *fakeAgents) SendOffer(_ context.Context, nodeID, sessionID string, grant []byte, _ time.Duration) (bool, string, error) {
 	f.lastNode = nodeID

@@ -24,6 +24,33 @@ import (
 type AgentDirectory interface {
 	Online(nodeID string) bool
 	SendOffer(ctx context.Context, nodeID, sessionID string, signedGrant []byte, timeout time.Duration) (accepted bool, reason string, err error)
+	Services(nodeID string) ([]types.Service, bool)
+}
+
+// implicitServices are the host services every node exposes (the node itself).
+func implicitServices(nodeID string) []types.Service {
+	return []types.Service{
+		{Name: "shell", Kind: types.KindShell, NodeID: nodeID},
+		{Name: "exec", Kind: types.KindExec, NodeID: nodeID},
+		{Name: "sftp", Kind: types.KindSFTP, NodeID: nodeID},
+	}
+}
+
+// resolveService finds a named service on a node: implicit host services plus
+// whatever the agent advertised in its hello.
+func (b *Broker) resolveService(nodeID, name string) (types.Service, bool) {
+	for _, svc := range implicitServices(nodeID) {
+		if svc.Name == name {
+			return svc, true
+		}
+	}
+	adv, _ := b.agents.Services(nodeID)
+	for _, svc := range adv {
+		if svc.Name == name {
+			return svc, true
+		}
+	}
+	return types.Service{}, false
 }
 
 const offerTimeout = 5 * time.Second
@@ -73,11 +100,54 @@ func validForwardTarget(t string) error {
 func (b *Broker) CreateSession(ctx context.Context, ident *ca.Identity, req *genezav1.CreateSessionRequest) (*genezav1.CreateSessionResponse, error) {
 	now := b.now()
 	action := req.GetAction()
+	forwardTarget := req.GetForwardTarget()
 
-	// Request-shape validation first (mirrors types.SessionGrant.Validate so
-	// a grant we sign is always one an agent will accept).
+	var (
+		node        *NodeRecord
+		attachRec   *SessionRecord
+		err         error
+		svcName     string
+		svcKind     string
+		svcLabels   map[string]string
+		routes      []string
+		preResolved bool
+	)
+
+	// Service connect/vpn: resolve the named service on the node and DERIVE the
+	// real action + target/routes server-side (the client never picks an
+	// arbitrary forward target — it names an authorized service). Policy then
+	// gates by service name/kind/labels.
+	if req.GetService() != "" || action == "connect" || action == types.ActionVPN {
+		node, err = b.store.FindNode(req.GetNode())
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return nil, status.Errorf(codes.NotFound, "node %q not found", req.GetNode())
+			}
+			return nil, status.Errorf(codes.Internal, "resolve node: %v", err)
+		}
+		svc, ok := b.resolveService(node.ID, req.GetService())
+		if !ok {
+			return nil, status.Errorf(codes.NotFound, "service %q not found on node %s", req.GetService(), node.Name)
+		}
+		preResolved = true
+		action = svc.Action()
+		svcName, svcKind, svcLabels = svc.Name, svc.Kind, svc.Labels
+		switch svc.Kind {
+		case types.KindSubnet:
+			routes = []string{svc.Addr}
+		case types.KindExitNode:
+			routes = []string{"0.0.0.0/0"}
+		case types.KindShell, types.KindExec, types.KindSFTP:
+			// host service: no forward target
+		default: // forwarded service
+			forwardTarget = svc.Addr
+		}
+	}
+
+	// Request-shape validation (mirrors types.SessionGrant.Validate so a grant
+	// we sign is always one an agent will accept).
 	switch action {
-	case types.ActionShell, types.ActionExec, types.ActionSFTP, types.ActionForward, types.ActionAttach:
+	case types.ActionShell, types.ActionExec, types.ActionSFTP, types.ActionForward, types.ActionAttach, types.ActionVPN:
 	default:
 		return nil, status.Errorf(codes.InvalidArgument, "unknown action %q", action)
 	}
@@ -85,9 +155,12 @@ func (b *Broker) CreateSession(ctx context.Context, ident *ca.Identity, req *gen
 		return nil, status.Error(codes.InvalidArgument, "exec requires command")
 	}
 	if action == types.ActionForward {
-		if err := validForwardTarget(req.GetForwardTarget()); err != nil {
+		if err := validForwardTarget(forwardTarget); err != nil {
 			return nil, status.Error(codes.InvalidArgument, err.Error())
 		}
+	}
+	if action == types.ActionVPN && len(routes) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "vpn requires a subnet-route or exit-node service")
 	}
 	if action == types.ActionAttach && req.GetAttachSessionId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "attach requires attach_session_id")
@@ -99,18 +172,13 @@ func (b *Broker) CreateSession(ctx context.Context, ident *ca.Identity, req *gen
 	// Resolve the target node; for attach the prior session record is
 	// authoritative (and all its failure modes collapse to one opaque denial
 	// so session ids cannot be probed).
-	var (
-		node      *NodeRecord
-		attachRec *SessionRecord
-		err       error
-	)
 	if action == types.ActionAttach {
 		attachRec, node, err = b.resolveAttach(ident.Name, req)
 		if err != nil {
 			return nil, b.deny(ident.Name, req, "", err.Error(),
 				status.Error(codes.PermissionDenied, "attach denied"))
 		}
-	} else {
+	} else if !preResolved {
 		node, err = b.store.FindNode(req.GetNode())
 		if err != nil {
 			if errors.Is(err, ErrNotFound) {
@@ -131,14 +199,17 @@ func (b *Broker) CreateSession(ctx context.Context, ident *ca.Identity, req *gen
 	// here — the only place client path is decided.
 	clientPath := types.PathNative
 	decision := b.engine().Evaluate(policy.Input{
-		User:       ident.Name,
-		Roles:      ident.Roles,
-		NodeID:     node.ID,
-		NodeName:   node.Name,
-		NodeLabels: node.Labels,
-		Action:     action,
-		ClientPath: clientPath,
-		Now:        now,
+		User:          ident.Name,
+		Roles:         ident.Roles,
+		NodeID:        node.ID,
+		NodeName:      node.Name,
+		NodeLabels:    node.Labels,
+		Action:        action,
+		ClientPath:    clientPath,
+		Service:       svcName,
+		ServiceKind:   svcKind,
+		ServiceLabels: svcLabels,
+		Now:           now,
 	})
 	if !decision.Allow {
 		return nil, b.deny(ident.Name, req, node.ID, decision.Reason,
@@ -173,7 +244,7 @@ func (b *Broker) CreateSession(ctx context.Context, ident *ca.Identity, req *gen
 		Command:        req.GetCommand(),
 		AllowPTY:       req.GetWantPty(),
 		AllowDetach:    req.GetWantDetachable() && decision.AllowDetach,
-		ForwardTarget:  req.GetForwardTarget(),
+		ForwardTarget:  forwardTarget,
 		ClientNoisePub: req.GetClientNoisePub(),
 		AgentNoisePub:  node.NoisePub,
 		RelayAddr:      b.relayAddrs[0],
@@ -182,7 +253,10 @@ func (b *Broker) CreateSession(ctx context.Context, ident *ca.Identity, req *gen
 		IssuedAt:       now,
 		ExpiresAt:      now.Add(b.grantTTL),
 		MaxSessionTTL:  maxTTL,
-		Record:         decision.Record,
+		Record:         decision.Record && action != types.ActionVPN, // no PTY to record for VPN
+		Service:        svcName,
+		ServiceKind:    svcKind,
+		Routes:         routes,
 	}
 	if attachRec != nil {
 		grant.AttachID = attachRec.HostSessionID
@@ -212,6 +286,7 @@ func (b *Broker) CreateSession(ctx context.Context, ident *ca.Identity, req *gen
 		ClientPath:    clientPath,
 		Service:       grant.Service,
 		ServiceKind:   grant.ServiceKind,
+		ServiceLabels: svcLabels,
 	}
 	if err := b.store.PutSession(sessRec); err != nil {
 		return nil, status.Errorf(codes.Internal, "store session: %v", err)

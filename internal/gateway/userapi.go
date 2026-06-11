@@ -26,6 +26,36 @@ func (u *userAPIService) ListNodes(ctx context.Context, _ *genezav1.ListNodesReq
 	return &genezav1.ListNodesResponse{Nodes: nodes}, nil
 }
 
+// ListServices returns the services exposed across the fleet (implicit host
+// services + agent-advertised), optionally filtered to one node.
+func (u *userAPIService) ListServices(ctx context.Context, req *genezav1.ListServicesRequest) (*genezav1.ListServicesResponse, error) {
+	var nodes []*NodeRecord
+	if filter := req.GetNode(); filter != "" {
+		n, err := u.s.store.FindNode(filter)
+		if err != nil {
+			return nil, status.Errorf(codes.NotFound, "node %q not found", filter)
+		}
+		nodes = []*NodeRecord{n}
+	} else {
+		all, err := u.s.store.ListNodes()
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "list nodes: %v", err)
+		}
+		nodes = all
+	}
+	var out []*genezav1.ServiceInfo
+	for _, n := range nodes {
+		online := u.s.registry.Online(n.ID)
+		for _, svc := range u.s.nodeServices(n) {
+			out = append(out, &genezav1.ServiceInfo{
+				Name: svc.Name, Kind: svc.Kind, Addr: svc.Addr,
+				NodeId: n.ID, NodeName: n.Name, Labels: svc.Labels, Online: online,
+			})
+		}
+	}
+	return &genezav1.ListServicesResponse{Services: out}, nil
+}
+
 func (u *userAPIService) CreateSession(ctx context.Context, req *genezav1.CreateSessionRequest) (*genezav1.CreateSessionResponse, error) {
 	ident, _, ok := identityFrom(ctx)
 	if !ok {
