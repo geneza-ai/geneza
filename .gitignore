@@ -9,3 +9,7 @@ ca-roots.pem
 state.db
 audit.jsonl
 /secrets/
+
+# web control panel build artifacts (source is committed; dist is built by CI/deploy)
+web/node_modules/
+web/dist/
