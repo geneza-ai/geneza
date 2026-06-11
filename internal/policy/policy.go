@@ -208,7 +208,11 @@ func (s *Static) Evaluate(in Input) Decision {
 }
 
 func (r *Rule) matches(in Input, now time.Time) bool {
-	if r.RequireNative && in.ClientPath != "" && in.ClientPath != "native" {
+	// Fail closed: a require_native rule grants ONLY when the path is proven
+	// native. An empty/unknown client_path must not satisfy it — otherwise the
+	// most sensitive targets (those reserved for the true-E2E native client)
+	// are reachable by any request that simply omits the field.
+	if r.RequireNative && in.ClientPath != "native" {
 		return false
 	}
 	actionOK := false
@@ -249,7 +253,11 @@ func (w *TimeWindow) contains(now time.Time) bool {
 		day := now.Weekday().String()[:3] // Mon, Tue, ...
 		ok := false
 		for _, d := range w.Days {
-			if strings.EqualFold(strings.TrimSpace(d)[:3], day) {
+			dd := strings.TrimSpace(d)
+			if len(dd) < 3 {
+				continue // malformed day entry must not panic evaluation (DoS)
+			}
+			if strings.EqualFold(dd[:3], day) {
 				ok = true
 				break
 			}

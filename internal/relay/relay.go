@@ -129,6 +129,19 @@ func (r *Relay) Serve(ln net.Listener) error {
 			c.Close()
 			return ErrClosed
 		}
+		// Global connection cap: bound total in-flight conns (hello-wait +
+		// splice) so a pre-hello / slowloris flood cannot exhaust sockets and
+		// goroutines. Derived from MaxPending; shed load past the cap.
+		maxConns := r.cfg.MaxPending * 16
+		if maxConns <= 0 {
+			maxConns = 16384
+		}
+		if len(r.conns) >= maxConns {
+			r.mu.Unlock()
+			c.Close()
+			r.log.Warn("relay: connection cap reached, shedding", "cap", maxConns)
+			continue
+		}
 		r.conns[c] = struct{}{}
 		r.mu.Unlock()
 		r.wg.Add(1)

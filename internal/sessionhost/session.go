@@ -352,10 +352,28 @@ func (s *session) handleInput(cl *attachedClient, in *genezav1.Input) {
 	s.mu.Unlock()
 }
 
+// maxDim caps client-supplied terminal dimensions. vt10x allocates a
+// cols*rows cell grid, so unbounded dimensions are a single-frame OOM that
+// kills the whole (shared) session-host process — clamp every entry point.
+const maxDim = 1000
+
+// clampDim bounds a client-supplied dimension to [1, maxDim], substituting def
+// for zero. Both Create and handleResize route terminal sizes through this.
+func clampDim(v, def uint32) uint32 {
+	if v == 0 {
+		return def
+	}
+	if v > maxDim {
+		return maxDim
+	}
+	return v
+}
+
 func (s *session) handleResize(cl *attachedClient, cols, rows uint32) {
 	if cols == 0 || rows == 0 {
 		return
 	}
+	cols, rows = clampDim(cols, 80), clampDim(rows, 24)
 	s.mu.Lock()
 	if s.client != cl || s.exited {
 		s.mu.Unlock()

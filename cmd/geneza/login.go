@@ -255,8 +255,13 @@ func establishCATrust(ctx context.Context, st *client.Store, prev *client.Profil
 			prevPin = client.CAFingerprint(b)
 		}
 		return b, prevPin, nil
-	} else if strings.Contains(err.Error(), "pin mismatch") {
-		return nil, "", err // fail closed: never silently re-TOFU over a bad pin
+	} else if prevPin != "" {
+		// A pin is on record for this profile but we could not load+verify the
+		// pinned bundle — whether because it mismatched OR because ca.pem is
+		// missing. Either way, fail closed: silently re-TOFUing here would
+		// abandon a recorded pin and re-trust whatever the network serves.
+		return nil, "", fmt.Errorf("profile %q has a pinned CA (sha256 %s) but its bundle could not be loaded/verified: %w; "+
+			"re-pin explicitly with --ca-file if this is intended", flagProfile, prevPin, err)
 	}
 
 	// Trust on first use. The fetch itself cannot be verified — that is the

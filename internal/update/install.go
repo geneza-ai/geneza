@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"osie.cloud/geneza/internal/defaults"
 	"osie.cloud/geneza/internal/types"
@@ -37,6 +38,11 @@ type Installer struct {
 
 	VersionsDir string
 	Log         *slog.Logger
+
+	// MinCreatedAt is the anti-rollback floor: Install rejects any manifest
+	// built before this instant (the highest CreatedAt ever committed). Zero
+	// disables the check (fresh node with no committed history).
+	MinCreatedAt time.Time
 }
 
 // Install verifies sm, downloads the blob, and installs it as
@@ -63,6 +69,14 @@ func (ins *Installer) Install(ctx context.Context, sm *types.Signed) (string, *t
 	}
 	if err := validVersion(m.Version); err != nil {
 		return "", nil, fmt.Errorf("manifest version: %w", err)
+	}
+	// Anti-rollback: reject a manifest built before the highest version we have
+	// ever committed. CreatedAt is inside the offline-signed payload, so a
+	// compromised gateway replaying an old signed manifest cannot forge a newer
+	// timestamp. A small skew tolerance avoids tripping on clock jitter.
+	if !ins.MinCreatedAt.IsZero() && m.CreatedAt.Before(ins.MinCreatedAt.Add(-2*time.Minute)) {
+		return "", nil, fmt.Errorf("manifest for %q is older (%s) than the rollback floor (%s): refusing downgrade",
+			m.Version, m.CreatedAt.UTC().Format(time.RFC3339), ins.MinCreatedAt.UTC().Format(time.RFC3339))
 	}
 	if err := validSHA256(m.SHA256); err != nil {
 		return "", nil, fmt.Errorf("manifest sha256: %w", err)

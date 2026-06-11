@@ -25,7 +25,11 @@ import (
 const (
 	// MaxPlaintext keeps every Noise message under the 65535-byte limit.
 	MaxPlaintext = 32 * 1024
-	prologue     = "geneza/1"
+	// maxCipherFrame bounds a single ciphertext frame on the wire: one
+	// MaxPlaintext chunk plus the ChaCha20-Poly1305 tag (16 bytes), with a
+	// little slack. The Read path rejects anything larger before allocating.
+	maxCipherFrame = MaxPlaintext + 256
+	prologue       = "geneza/1"
 )
 
 var cipherSuite = noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashBLAKE2s)
@@ -56,7 +60,10 @@ func (c *Conn) Read(p []byte) (int, error) {
 	c.rmu.Lock()
 	defer c.rmu.Unlock()
 	for len(c.readBuf) == 0 {
-		ct, err := wire.ReadFrame(c.raw)
+		// A tunnel frame is at most one MaxPlaintext chunk + the AEAD tag; cap
+		// the read there so a blind/compromised relay cannot make us allocate a
+		// huge buffer per frame.
+		ct, err := wire.ReadFrameLimit(c.raw, maxCipherFrame)
 		if err != nil {
 			return 0, err
 		}

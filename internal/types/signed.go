@@ -70,6 +70,11 @@ func VerifyOne(pub ed25519.PublicKey, keyID, context string, s *Signed, out any)
 	if s == nil {
 		return errors.New("nil signed envelope")
 	}
+	// ed25519.Verify panics on a wrong-size key; guard so a malformed pinned key
+	// (or signature) fails closed instead of crashing the bootstrap/verifier.
+	if len(pub) != ed25519.PublicKeySize || len(s.Sig) != ed25519.SignatureSize {
+		return ErrBadSignature
+	}
 	if keyID != "" && s.KeyID != keyID {
 		return fmt.Errorf("%w: %q (want %q)", ErrUnknownKey, s.KeyID, keyID)
 	}

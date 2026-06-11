@@ -46,8 +46,19 @@ func EvaluateOffer(signedGrant []byte, trusted map[string]ed25519.PublicKey, nod
 	if grant.AllowDetach && pol.ForbidDetach {
 		return nil, errors.New("detachable sessions are forbidden by agent policy")
 	}
+	// Independent ceiling on session lifetime: never honor an unbounded or
+	// absurdly long MaxSessionTTL from the gateway. A compromised gateway must
+	// not be able to plant an effectively permanent session on a node — the
+	// agent always arms a close timer at most maxAgentSessionTTL out.
+	if grant.MaxSessionTTL <= 0 || grant.MaxSessionTTL > maxAgentSessionTTL {
+		grant.MaxSessionTTL = maxAgentSessionTTL
+	}
 	return grant, nil
 }
+
+// maxAgentSessionTTL is the hard local ceiling the agent imposes on any single
+// session, independent of the gateway-asserted MaxSessionTTL.
+const maxAgentSessionTTL = 24 * time.Hour
 
 // ExecCommandAllowed enforces exec scope: the command the client requests
 // over SSH must byte-equal the command in the signed grant.

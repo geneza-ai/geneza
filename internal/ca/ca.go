@@ -159,12 +159,14 @@ func Init(dir, clusterName string) error {
 	if err != nil {
 		return err
 	}
+	// Runtime files the gateway actually loads (Load reads only these): the
+	// issuing key/cert and the public root trust bundle. The root cert is also
+	// public; only the root PRIVATE key is the crown jewel.
 	writes := []struct {
 		name string
 		data []byte
 		mode os.FileMode
 	}{
-		{"root-ca.key", rk, 0o600},
 		{"root-ca.crt", certPEM(rootDER), 0o644},
 		{"issuing-ca.key", ik, 0o600},
 		{"issuing-ca.crt", certPEM(issDER), 0o644},
@@ -174,6 +176,30 @@ func Init(dir, clusterName string) error {
 		if err := os.WriteFile(filepath.Join(dir, w.name), w.data, w.mode); err != nil {
 			return err
 		}
+	}
+
+	// The ROOT PRIVATE KEY must not live next to the running gateway: filesystem
+	// compromise of the gateway would otherwise become fleet-wide identity
+	// takeover (the root can mint any issuing CA). Write it into a separate
+	// offline-root/ directory with a relocation notice; the operator/deploy is
+	// responsible for moving offline-root/ off this host (HSM/KMS/air-gapped
+	// store) and deleting it here. Load() never reads it — the gateway runs on
+	// the issuing key alone, and the root is needed only for CA rotation.
+	offlineDir := filepath.Join(dir, "offline-root")
+	if err := os.MkdirAll(offlineDir, 0o700); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(offlineDir, "root-ca.key"), rk, 0o600); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(offlineDir, "root-ca.crt"), certPEM(rootDER), 0o644); err != nil {
+		return err
+	}
+	notice := "SECURITY: this directory holds the Geneza ROOT CA PRIVATE KEY.\n" +
+		"Move it OFF this gateway host (HSM / KMS / air-gapped store) and delete it here.\n" +
+		"The gateway runs on issuing-ca.key alone; the root is needed only to rotate the CA.\n"
+	if err := os.WriteFile(filepath.Join(offlineDir, "MOVE-OFFLINE-AND-DELETE.txt"), []byte(notice), 0o644); err != nil {
+		return err
 	}
 	return nil
 }

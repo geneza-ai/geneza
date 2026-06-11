@@ -17,6 +17,21 @@ type State struct {
 	Current  string   `json:"current"`
 	Previous string   `json:"previous,omitempty"`
 	Bad      []string `json:"bad,omitempty"`
+	// FloorUnix is the highest manifest CreatedAt ever committed (anti-rollback
+	// high-water mark). The updater refuses to install any signed manifest
+	// built before this, so a compromised gateway cannot replay an old, validly
+	// signed manifest to downgrade the fleet to a known-vulnerable worker.
+	FloorUnix int64 `json:"floor_unix,omitempty"`
+}
+
+// RaiseFloor advances the anti-rollback high-water mark to createdUnix if it is
+// newer. Returns true if the floor moved (and the state must be persisted).
+func (s *State) RaiseFloor(createdUnix int64) bool {
+	if createdUnix > s.FloorUnix {
+		s.FloorUnix = createdUnix
+		return true
+	}
+	return false
 }
 
 // LoadState reads the state file. A missing file yields an empty state (a

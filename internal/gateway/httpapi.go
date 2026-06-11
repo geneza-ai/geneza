@@ -85,9 +85,21 @@ func (s *Server) httpHandler() http.Handler {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		manifestBytes, err := s.store.GetManifest(ManifestKey("geneza-agent", "linux", "amd64", desired))
+		// Resolve the artifact for the NODE's own platform, not a hardcoded
+		// linux/amd64 — otherwise self-update silently breaks for macOS and
+		// linux/arm64 nodes (their reconcile loop 404s forever).
+		os, arch := "linux", "amd64"
+		if rec, err := s.store.GetNode(nodeID); err == nil {
+			if rec.Platform.OS != "" {
+				os = rec.Platform.OS
+			}
+			if rec.Platform.Arch != "" {
+				arch = rec.Platform.Arch
+			}
+		}
+		manifestBytes, err := s.store.GetManifest(ManifestKey("geneza-agent", os, arch, desired))
 		if err != nil {
-			http.Error(w, "no artifact for desired version "+desired, http.StatusNotFound)
+			http.Error(w, "no artifact for desired version "+desired+" ("+os+"/"+arch+")", http.StatusNotFound)
 			return
 		}
 		signed, err := types.DecodeSigned(manifestBytes)

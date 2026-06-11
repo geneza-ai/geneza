@@ -182,8 +182,11 @@ func (w *Worker) serveAttach(ctx context.Context, chans <-chan ssh.NewChannel, g
 	w.emitEvent(&genezav1.SessionEvent{SessionId: grant.ID, Event: "attached", HostSessionId: grant.AttachID})
 	log.Info("reattached", "host_session", grant.AttachID, "last_seen_seq", params.LastSeenSeq)
 
-	// Only detachable sessions can be in a reattachable state.
-	w.bridgeAndFinish(ctx, ch, grant, grant.AttachID, params.LastSeenSeq, true, log, end)
+	// Honor the (re)attach grant's detach permission: if this grant does not
+	// allow detach (e.g. policy now forbids detached sessions on this node),
+	// the session must TERMINATE on disconnect rather than be re-detached —
+	// draining a pre-existing detached session instead of perpetuating it.
+	w.bridgeAndFinish(ctx, ch, grant, grant.AttachID, params.LastSeenSeq, grant.AllowDetach, log, end)
 }
 
 // acceptAttachChannel accepts exactly one geneza-attach channel and parses

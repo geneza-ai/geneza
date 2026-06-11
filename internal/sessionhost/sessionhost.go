@@ -217,21 +217,37 @@ func (h *host) Create(ctx context.Context, req *genezav1.HostCreateRequest) (*ge
 		if !req.Pty {
 			return nil, status.Error(codes.InvalidArgument, "detachable sessions require pty mode")
 		}
-		// A detachable session is born unattached, i.e. actually detached,
-		// so it counts toward max_detached from the start.
-		if h.detachedN.Load() >= int64(pol.maxDetached) {
-			return nil, status.Error(codes.ResourceExhausted, "max detached sessions reached")
-		}
-	}
-	if h.activeN.Load() >= int64(pol.maxSessions) {
-		return nil, status.Error(codes.ResourceExhausted, "max sessions reached")
 	}
 	u, err := sessionUser(req.OsUser)
 	if err != nil {
 		return nil, status.Error(codes.PermissionDenied, err.Error())
 	}
+	// Atomic check-and-reserve: hold h.mu across the cap check AND the counter
+	// increment so concurrent Creates cannot both pass a stale Load() and blow
+	// past the cap (a check-then-increment TOCTOU). A detachable session is born
+	// unattached, so it counts toward max_detached immediately. The reservation
+	// is released below if startSession fails.
+	h.mu.Lock()
+	if h.activeN.Load() >= int64(pol.maxSessions) {
+		h.mu.Unlock()
+		return nil, status.Error(codes.ResourceExhausted, "max sessions reached")
+	}
+	if req.Detachable && h.detachedN.Load() >= int64(pol.maxDetached) {
+		h.mu.Unlock()
+		return nil, status.Error(codes.ResourceExhausted, "max detached sessions reached")
+	}
+	h.activeN.Add(1)
+	if req.Detachable {
+		h.detachedN.Add(1)
+	}
+	h.mu.Unlock()
+
 	s, err := h.startSession(req, u, pol)
 	if err != nil {
+		h.activeN.Add(-1)
+		if req.Detachable {
+			h.detachedN.Add(-1)
+		}
 		if status.Code(err) != codes.Unknown {
 			return nil, err
 		}
@@ -245,13 +261,9 @@ func (h *host) Create(ctx context.Context, req *genezav1.HostCreateRequest) (*ge
 }
 
 func (h *host) startSession(req *genezav1.HostCreateRequest, u *user.User, pol *policySettings) (*session, error) {
-	cols, rows := req.Cols, req.Rows
-	if cols == 0 {
-		cols = 80
-	}
-	if rows == 0 {
-		rows = 24
-	}
+	// Clamp client-supplied dimensions: vt10x allocates a cols*rows grid, so an
+	// unbounded size is a single-request OOM of the shared session host.
+	cols, rows := clampDim(req.Cols, 80), clampDim(req.Rows, 24)
 
 	var cmd *exec.Cmd
 	shellName := "/bin/sh"
@@ -369,10 +381,10 @@ func (h *host) startSession(req *genezav1.HostCreateRequest, u *user.User, pol *
 	h.mu.Lock()
 	h.sessions[hostID] = s
 	h.mu.Unlock()
-	h.activeN.Add(1)
+	// activeN / detachedN were already reserved atomically in Create; here we
+	// only record that a detachable session is born counted toward max_detached.
 	if req.Detachable {
 		s.detachedCounted = true
-		h.detachedN.Add(1)
 	}
 
 	if req.Pty {

@@ -205,11 +205,13 @@ func (b *bootstrap) resolveCurrent(ctx context.Context) error {
 		case d.SignedManifest == nil:
 			b.log.Warn("gateway desires a version but provided no signed manifest", "version", d.Version)
 		default:
+			b.installer.MinCreatedAt = b.floorTime()
 			if _, m, err := b.installer.Install(ctx, d.SignedManifest); err != nil {
 				b.log.Error("first install failed; will retry", "version", d.Version, "err", err)
 			} else {
 				b.current = m.Version
 				b.st.Current = m.Version
+				b.st.RaiseFloor(m.CreatedAt.Unix())
 				b.saveState()
 				return nil
 			}
@@ -329,6 +331,7 @@ func (b *bootstrap) reconcile(ctx context.Context) {
 	}
 
 	b.log.Info("update available", "current", b.current, "desired", d.Version)
+	b.installer.MinCreatedAt = b.floorTime()
 	newPath, m, err := b.installer.Install(ctx, d.SignedManifest)
 	if err != nil {
 		// Fail closed: current worker keeps running untouched.
@@ -340,12 +343,21 @@ func (b *bootstrap) reconcile(ctx context.Context) {
 			"manifest", m.Version, "desired", d.Version)
 		return
 	}
-	b.swapWorker(ctx, newPath, m.Version)
+	b.swapWorker(ctx, newPath, m.Version, m.CreatedAt.Unix())
+}
+
+// floorTime is the anti-rollback high-water mark as a time.Time (zero when no
+// version has ever been committed, which disables the check for a fresh node).
+func (b *bootstrap) floorTime() time.Time {
+	if b.st.FloorUnix <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(b.st.FloorUnix, 0)
 }
 
 // swapWorker performs the health-gated swap and, on failure, the CRITICAL
 // rollback to the previous binary. The session host is never touched.
-func (b *bootstrap) swapWorker(ctx context.Context, newPath, newVersion string) {
+func (b *bootstrap) swapWorker(ctx context.Context, newPath, newVersion string, createdUnix int64) {
 	oldVersion := b.current
 	oldPath := b.binPath(oldVersion)
 	healthFile := update.WorkerHealthFile(b.cfg.RunDir)
@@ -369,6 +381,7 @@ func (b *bootstrap) swapWorker(ctx context.Context, newPath, newVersion string) 
 		b.st.Previous = oldVersion
 		b.st.Current = newVersion
 		b.st.Bad = nil
+		b.st.RaiseFloor(createdUnix) // advance the anti-rollback high-water mark
 		b.saveState()
 		if err := update.Prune(b.cfg.VersionsDir, []string{newVersion, oldVersion}); err != nil {
 			b.log.Warn("prune failed", "err", err)
@@ -389,6 +402,18 @@ func (b *bootstrap) swapWorker(ctx context.Context, newPath, newVersion string) 
 	b.worker.Stop(context.Background())
 	b.st.MarkBad(newVersion)
 	b.saveState()
+	rbStart := time.Now()
+	if rmErr := os.Remove(healthFile); rmErr != nil && !os.IsNotExist(rmErr) {
+		b.log.Warn("could not remove stale health file before rollback", "file", healthFile, "err", rmErr)
+	}
 	b.worker = b.startWorker(oldPath)
+	// Confirm the rolled-back (previously good) worker actually comes back
+	// healthy; otherwise the node is left with no live worker and an operator
+	// must be told loudly. There is nothing further to roll back to.
+	if hErr := update.HealthGateSince(ctx, healthFile, rbStart, b.cfg.healthTimeout()); hErr != nil && ctx.Err() == nil {
+		b.log.Error("CRITICAL: rolled-back worker did not pass its health gate; node may have NO healthy worker",
+			"version", oldVersion, "err", hErr)
+		return
+	}
 	b.log.Error("CRITICAL: rolled back to previous worker", "version", oldVersion, "bad", newVersion)
 }

@@ -123,6 +123,13 @@ func (b *Broker) CreateSession(ctx context.Context, ident *ca.Identity, req *gen
 		return nil, status.Errorf(codes.Unavailable, "node %s (%s) is offline", node.ID, node.Name)
 	}
 
+	// Derive the client path from the authenticated principal, NEVER from the
+	// client-supplied req.client_path (a client could otherwise assert "native"
+	// to defeat a require_native policy). All sessions brokered over the direct
+	// user-cert API are native/true-E2E. When the web session proxy is built it
+	// authenticates as its own principal and the gateway will map that to "web"
+	// here — the only place client path is decided.
+	clientPath := types.PathNative
 	decision := b.engine().Evaluate(policy.Input{
 		User:       ident.Name,
 		Roles:      ident.Roles,
@@ -130,7 +137,7 @@ func (b *Broker) CreateSession(ctx context.Context, ident *ca.Identity, req *gen
 		NodeName:   node.Name,
 		NodeLabels: node.Labels,
 		Action:     action,
-		ClientPath: req.GetClientPath(),
+		ClientPath: clientPath,
 		Now:        now,
 	})
 	if !decision.Allow {
@@ -171,7 +178,7 @@ func (b *Broker) CreateSession(ctx context.Context, ident *ca.Identity, req *gen
 		AgentNoisePub:  node.NoisePub,
 		RelayAddr:      b.relayAddrs[0],
 		RelayToken:     relayToken,
-		ClientPath:     req.GetClientPath(),
+		ClientPath:     clientPath,
 		IssuedAt:       now,
 		ExpiresAt:      now.Add(b.grantTTL),
 		MaxSessionTTL:  maxTTL,

@@ -50,6 +50,13 @@ type Audit struct {
 }
 
 func OpenAudit(path string) (*Audit, error) {
+	// Tolerate a torn FINAL line (a crash mid-append): truncate it to the last
+	// complete record so a benign gateway crash does not brick startup. Any
+	// INTERIOR break or a complete-but-altered record is still fatal (real
+	// tampering → fail closed).
+	if err := repairTornTail(path); err != nil {
+		return nil, fmt.Errorf("audit chain %s: %w", path, err)
+	}
 	last, _, err := verifyAuditFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("audit chain %s: %w", path, err)
@@ -59,6 +66,62 @@ func OpenAudit(path string) (*Audit, error) {
 		return nil, err
 	}
 	return &Audit{f: f, path: path, last: last, now: time.Now}, nil
+}
+
+// repairTornTail verifies the chain over complete (newline-terminated) lines
+// only. If the file ends with a partial line (no trailing newline — the
+// signature of an interrupted append), it truncates the file to the last
+// complete record. A complete record that fails verification is NOT repaired:
+// that is tampering, and the caller fails closed.
+func repairTornTail(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	prev := ""
+	lastGoodEnd := 0 // byte offset just past the last verified newline
+	i := 0
+	for i < len(data) {
+		nl := i
+		for nl < len(data) && data[nl] != '\n' {
+			nl++
+		}
+		complete := nl < len(data) // found a terminating newline
+		line := data[i:nl]
+		if len(line) == 0 {
+			if !complete {
+				break
+			}
+			i = nl + 1
+			lastGoodEnd = i
+			continue
+		}
+		if !complete {
+			// Trailing partial line: a torn append. Truncate it away.
+			return os.Truncate(path, int64(lastGoodEnd))
+		}
+		var e AuditEvent
+		if err := json.Unmarshal(line, &e); err != nil {
+			return fmt.Errorf("complete record is malformed (tampered): %w", err)
+		}
+		if e.Prev != prev {
+			return fmt.Errorf("chain break (tampered): prev %q, want %q", e.Prev, prev)
+		}
+		want, err := auditHash(e)
+		if err != nil {
+			return err
+		}
+		if e.Hash != want {
+			return fmt.Errorf("record hash mismatch (tampered)")
+		}
+		prev = e.Hash
+		i = nl + 1
+		lastGoodEnd = i
+	}
+	return nil
 }
 
 func (a *Audit) Close() error {

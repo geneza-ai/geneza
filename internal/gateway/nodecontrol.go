@@ -138,15 +138,27 @@ func (n *nodeControlService) handleSessionEvent(nodeID string, ev *genezav1.Sess
 				"session", ev.GetSessionId(), "event", ev.GetEvent(), "err", err)
 		}
 	}
+	// Terminal is terminal: once a session is Ended it must never move back to
+	// Active/Detached, so a node cannot resurrect a finished session record.
 	switch ev.GetEvent() {
 	case "established":
 		update(func(r *SessionRecord) {
-			r.State = SessionActive
+			if r.State != SessionEnded {
+				r.State = SessionActive
+			}
 		})
 	case "attached":
-		update(func(r *SessionRecord) { r.State = SessionActive })
+		update(func(r *SessionRecord) {
+			if r.State != SessionEnded {
+				r.State = SessionActive
+			}
+		})
 	case "detached":
-		update(func(r *SessionRecord) { r.State = SessionDetached })
+		update(func(r *SessionRecord) {
+			if r.State != SessionEnded {
+				r.State = SessionDetached
+			}
+		})
 	case "ended":
 		update(func(r *SessionRecord) {
 			r.State = SessionEnded
@@ -178,6 +190,11 @@ func (n *nodeControlService) RenewCert(ctx context.Context, req *genezav1.RenewC
 	ident, _, ok := identityFrom(ctx)
 	if !ok {
 		return nil, status.Error(codes.Unauthenticated, "no verified identity")
+	}
+	// Re-validate enrollment: a node whose record was removed (deprovisioned)
+	// must not be able to keep minting fresh certs off an old-but-unexpired one.
+	if _, err := s.store.GetNode(ident.Name); err != nil {
+		return nil, status.Errorf(codes.PermissionDenied, "node %s is not enrolled", ident.Name)
 	}
 	certPEM, err := s.ca.IssueFromCSR(req.GetCsrPem(), ca.Profile{
 		Kind: ca.KindNode,
@@ -225,11 +242,26 @@ func (n *nodeControlService) UploadRecording(stream grpc.ClientStreamingServer[g
 		return status.Errorf(codes.Internal, "recordings dir: %v", err)
 	}
 	path := filepath.Join(s.cfg.RecordingsDir(), sessionID+".cast")
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	// A recording is write-once: refuse to overwrite an existing one so a node
+	// cannot silently replace the evidence of an earlier session with the same
+	// id. Write to a temp file and atomically rename only on a complete upload;
+	// a failed/partial upload leaves no final file, so the worker's retry still
+	// succeeds exactly once.
+	if _, err := os.Stat(path); err == nil {
+		return status.Errorf(codes.AlreadyExists, "recording for session %s already stored", sessionID)
+	}
+	tmp := path + ".uploading"
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return status.Errorf(codes.Internal, "open recording: %v", err)
 	}
-	defer f.Close()
+	committed := false
+	defer func() {
+		f.Close()
+		if !committed {
+			os.Remove(tmp)
+		}
+	}()
 
 	var total int64
 	chunk := first
@@ -258,6 +290,13 @@ func (n *nodeControlService) UploadRecording(stream grpc.ClientStreamingServer[g
 	if err := f.Sync(); err != nil {
 		return status.Errorf(codes.Internal, "sync recording: %v", err)
 	}
+	if err := f.Close(); err != nil {
+		return status.Errorf(codes.Internal, "close recording: %v", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return status.Errorf(codes.Internal, "commit recording: %v", err)
+	}
+	committed = true
 	slog.Info("recording stored", "session", sessionID, "node", ident.Name, "bytes", total)
 	return stream.SendAndClose(&genezav1.UploadAck{Ok: true})
 }

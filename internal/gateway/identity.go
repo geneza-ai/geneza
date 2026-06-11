@@ -23,15 +23,29 @@ const dummyBcryptHash = "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL1
 // on first login and is cached, so the gateway starts (and local login
 // works) even while the IdP is down.
 type identityAuth struct {
-	oidcCfg  *OIDCConfig
-	local    []LocalUser
-	verifier *oidcVerifier // nil unless OIDC is configured
+	oidcCfg   *OIDCConfig
+	local     []LocalUser
+	verifier  *oidcVerifier // nil unless OIDC is configured
+	dummyHash []byte        // bcrypt hash compared on unknown user (cost matches configured users)
 }
 
 func newIdentityAuth(cfg *Config) *identityAuth {
 	ia := &identityAuth{oidcCfg: cfg.OIDC, local: cfg.LocalUsers}
 	if cfg.OIDC != nil {
 		ia.verifier = newOIDCVerifier(cfg.OIDC.Issuer, cfg.OIDC.ClientID)
+	}
+	// Compare unknown-username logins against a dummy hash at the SAME bcrypt
+	// cost as the configured users, so response time does not leak whether a
+	// username exists (a fixed cost-10 dummy is a timing oracle when users are
+	// hashed at a different cost).
+	ia.dummyHash = []byte(dummyBcryptHash)
+	for _, u := range cfg.LocalUsers {
+		if c, err := bcrypt.Cost([]byte(u.PasswordBcrypt)); err == nil {
+			if h, err := bcrypt.GenerateFromPassword([]byte("geneza-dummy-password"), c); err == nil {
+				ia.dummyHash = h
+			}
+			break
+		}
 	}
 	return ia
 }
@@ -92,7 +106,7 @@ func (ia *identityAuth) authenticateLocal(username, password string) (string, []
 		}
 	}
 	if found == nil {
-		_ = bcrypt.CompareHashAndPassword([]byte(dummyBcryptHash), []byte(password))
+		_ = bcrypt.CompareHashAndPassword(ia.dummyHash, []byte(password))
 		return "", nil, fmt.Errorf("invalid username or password")
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(found.PasswordBcrypt), []byte(password)); err != nil {

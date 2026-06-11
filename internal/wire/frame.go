@@ -25,13 +25,20 @@ func WriteFrame(w io.Writer, p []byte) error {
 }
 
 func ReadFrame(r io.Reader) ([]byte, error) {
+	return ReadFrameLimit(r, MaxFrame)
+}
+
+// ReadFrameLimit is ReadFrame with a caller-chosen maximum, checked BEFORE
+// allocating, so a peer cannot pin the receiver's memory by declaring a huge
+// length. The data tunnel passes its real per-frame ceiling here.
+func ReadFrameLimit(r io.Reader, limit uint32) ([]byte, error) {
 	var hdr [4]byte
 	if _, err := io.ReadFull(r, hdr[:]); err != nil {
 		return nil, err
 	}
 	n := binary.BigEndian.Uint32(hdr[:])
-	if n > MaxFrame {
-		return nil, fmt.Errorf("frame too large: %d", n)
+	if n > limit {
+		return nil, fmt.Errorf("frame too large: %d (limit %d)", n, limit)
 	}
 	p := make([]byte, n)
 	if _, err := io.ReadFull(r, p); err != nil {
