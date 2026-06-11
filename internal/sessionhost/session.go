@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -57,6 +58,10 @@ type attachedClient struct {
 	ch       chan *genezav1.HostToClient
 	stop     chan struct{}
 	stopOnce sync.Once
+	// lagged is set when a PTY client momentarily can't keep up: instead of
+	// dropping the connection, the writer coalesces — discards the stale
+	// backlog and repaints from one vt snapshot — so the session stays attached.
+	lagged atomic.Bool
 }
 
 func newAttachedClient() *attachedClient {
@@ -185,6 +190,18 @@ func (s *session) deliverLocked(m *genezav1.HostToClient) {
 	select {
 	case cl.ch <- m:
 	default:
+		// The client's delivery queue is full — a momentary network stall or an
+		// output burst outpacing the link. For a PTY session the screen state is
+		// the source of truth (the vt is already updated above), so DON'T drop
+		// the connection: flag the client lagged and let the writer coalesce to
+		// a single repaint. Dropping here is what made interactive sessions feel
+		// "flaky" — every burst forced a detach + reconnect + repaint.
+		if s.vt != nil {
+			cl.lagged.Store(true)
+			return
+		}
+		// Pipe mode (exec/sftp) is a lossless byte stream with no screen to
+		// repaint; drop the slow client rather than silently lose output.
 		s.client = nil
 		cl.close()
 		if s.exited {
@@ -198,6 +215,32 @@ func (s *session) deliverLocked(m *genezav1.HostToClient) {
 		s.detachedSince = time.Now()
 		go s.terminate(reasonKilled, syscall.SIGHUP)
 	}
+}
+
+// catchUpSnapshot brings a lagged PTY client current in one repaint: it
+// discards the stale backlog queued for cl (everything older than the current
+// screen), clears the lagged flag, and returns a fresh vt snapshot frame. Held
+// under s.mu so the pump cannot enqueue while we drain. Returns nil if the
+// client is no longer lagged or there is no screen (pipe mode).
+func (s *session) catchUpSnapshot(cl *attachedClient) *genezav1.HostToClient {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !cl.lagged.Load() {
+		return nil
+	}
+	for { // drain the stale backlog
+		select {
+		case <-cl.ch:
+			continue
+		default:
+		}
+		break
+	}
+	cl.lagged.Store(false)
+	if s.vt == nil {
+		return nil
+	}
+	return snapshotFrame(renderSnapshot(s.vt), s.seq, s.cols, s.rows)
 }
 
 // markDetachedLocked transitions to detached state and maintains the

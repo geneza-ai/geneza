@@ -51,7 +51,7 @@ func (h *host) Attach(stream grpc.BidiStreamingServer[genezav1.ClientToHost, gen
 		"last_seen_seq", open.LastSeenSeq)
 
 	writeDone := make(chan error, 1)
-	go func() { writeDone <- writeLoop(stream, cl, initial) }()
+	go func() { writeDone <- writeLoop(stream, s, cl, initial) }()
 	recvDone := make(chan error, 1)
 	go func() { recvDone <- readLoop(stream, s, cl) }()
 
@@ -89,7 +89,7 @@ func (h *host) Attach(stream grpc.BidiStreamingServer[genezav1.ClientToHost, gen
 // delta/snapshot frames, then everything the pump (and input acks / exit)
 // queue on cl.ch. Returns errExitSent after delivering an Exit frame, nil
 // when stopped via cl.stop.
-func writeLoop(stream grpc.BidiStreamingServer[genezav1.ClientToHost, genezav1.HostToClient], cl *attachedClient, initial []*genezav1.HostToClient) error {
+func writeLoop(stream grpc.BidiStreamingServer[genezav1.ClientToHost, genezav1.HostToClient], s *session, cl *attachedClient, initial []*genezav1.HostToClient) error {
 	for _, m := range initial {
 		if err := stream.Send(m); err != nil {
 			return err
@@ -100,6 +100,18 @@ func writeLoop(stream grpc.BidiStreamingServer[genezav1.ClientToHost, genezav1.H
 	}
 	ctx := stream.Context()
 	for {
+		// If the client fell behind, catch it up with one coalesced repaint
+		// (discarding the stale backlog) instead of streaming stale frames —
+		// this is what keeps an interactive session smooth under output bursts
+		// and brief network jitter rather than dropping the connection.
+		if cl.lagged.Load() {
+			if snap := s.catchUpSnapshot(cl); snap != nil {
+				if err := stream.Send(snap); err != nil {
+					return err
+				}
+			}
+			continue
+		}
 		select {
 		case m := <-cl.ch:
 			if err := stream.Send(m); err != nil {
