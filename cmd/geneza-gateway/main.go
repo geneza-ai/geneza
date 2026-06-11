@@ -39,7 +39,7 @@ func newRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.AddCommand(newInitCmd(), newServeCmd(), newIssueUserCertCmd(), newHashPasswordCmd(), newAuditVerifyCmd())
+	root.AddCommand(newInitCmd(), newServeCmd(), newIssueUserCertCmd(), newHashPasswordCmd(), newAuditVerifyCmd(), newReissueTLSCmd())
 	return root
 }
 
@@ -66,6 +66,27 @@ func newInitCmd() *cobra.Command {
 		fmt.Printf("  CA:        %s\n", cfg.CADir())
 		fmt.Printf("  grant key: %s\n", cfg.GrantKeyPath())
 		fmt.Printf("  TLS:       %s\n", cfg.TLSDir())
+		return nil
+	}
+	return cmd
+}
+
+func newReissueTLSCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "reissue-tls",
+		Short: "Re-issue gateway+relay TLS server certs from the advertise config (existing CA)",
+	}
+	cfgPath := configFlag(cmd)
+	cmd.RunE = func(cmd *cobra.Command, _ []string) error {
+		cfg, err := gateway.LoadConfig(*cfgPath)
+		if err != nil {
+			return err
+		}
+		if err := gateway.ReissueServerCerts(cfg); err != nil {
+			return err
+		}
+		fmt.Printf("re-issued gateway+relay TLS in %s for dns=%v ips=%v\n",
+			cfg.TLSDir(), cfg.Advertise.DNSNames, cfg.Advertise.IPs)
 		return nil
 	}
 	return cmd

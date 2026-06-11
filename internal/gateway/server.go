@@ -311,7 +311,12 @@ func (s *Server) Run(ctx context.Context) error {
 		},
 	}
 
-	errCh := make(chan error, 2)
+	consoleSrv, err := s.consoleServer()
+	if err != nil {
+		return fmt.Errorf("console: %w", err)
+	}
+
+	errCh := make(chan error, 3)
 	go func() {
 		slog.Info("gRPC listening", "addr", s.cfg.GRPCListen, "cluster", s.cfg.ClusterName, "version", version.Version)
 		if err := grpcSrv.Serve(lis); err != nil {
@@ -324,6 +329,14 @@ func (s *Server) Run(ctx context.Context) error {
 			errCh <- fmt.Errorf("https serve: %w", err)
 		}
 	}()
+	if consoleSrv != nil {
+		go func() {
+			slog.Info("console listening", "addr", consoleSrv.Addr, "static", s.cfg.Console.StaticDir)
+			if err := consoleSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				errCh <- fmt.Errorf("console serve: %w", err)
+			}
+		}()
+	}
 
 	var runErr error
 	select {
@@ -334,6 +347,9 @@ func (s *Server) Run(ctx context.Context) error {
 	shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = httpSrv.Shutdown(shutCtx)
+	if consoleSrv != nil {
+		_ = consoleSrv.Shutdown(shutCtx)
+	}
 	stopped := make(chan struct{})
 	go func() {
 		grpcSrv.GracefulStop()

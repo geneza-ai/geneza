@@ -102,6 +102,44 @@ func InitDataDir(cfg *Config) error {
 	return nil
 }
 
+// ReissueServerCerts re-issues the gateway and relay TLS server keypairs from
+// the current advertise config (DNS names + IPs) using the EXISTING CA, without
+// touching the CA, grant key, or state. Used to add a public hostname/IP SAN to
+// an already-initialized gateway (e.g. when exposing it for self-hosting).
+func ReissueServerCerts(cfg *Config) error {
+	caInst, err := ca.Load(cfg.CADir())
+	if err != nil {
+		return fmt.Errorf("load CA: %w", err)
+	}
+	dnsNames := append([]string{}, cfg.Advertise.DNSNames...)
+	if !contains(dnsNames, "localhost") {
+		dnsNames = append(dnsNames, "localhost")
+	}
+	ips := cfg.advertiseIPs()
+	ips = append(ips, net.ParseIP("127.0.0.1"), net.ParseIP("::1"))
+
+	type pair struct{ certPath, keyPath, kind string }
+	for _, p := range []pair{
+		{cfg.gatewayCertPath(), cfg.gatewayKeyPath(), ca.KindGateway},
+		{cfg.relayCertPath(), cfg.relayKeyPath(), ca.KindRelay},
+	} {
+		cert, key, err := caInst.IssueServerKeypair(ca.Profile{
+			Kind: p.kind, Name: cfg.ClusterName, TTL: serverCertTTL,
+			DNSNames: dnsNames, IPs: ips,
+		})
+		if err != nil {
+			return fmt.Errorf("issue %s keypair: %w", p.kind, err)
+		}
+		if err := os.WriteFile(p.certPath, cert, 0o644); err != nil {
+			return err
+		}
+		if err := os.WriteFile(p.keyPath, key, 0o600); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func contains(list []string, s string) bool {
 	for _, v := range list {
 		if v == s {

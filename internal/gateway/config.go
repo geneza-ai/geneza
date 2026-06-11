@@ -105,7 +105,20 @@ type Config struct {
 	// off-box destination (the only real tamper-evidence against a host
 	// compromise that can rewrite the local chain). Empty = local chain only.
 	AuditSink AuditSinkConfig `yaml:"audit_sink"`
+	// Console optionally enables the web control panel (plain-HTTP listener,
+	// TLS terminated by a front proxy). Empty Listen = disabled.
+	Console ConsoleConfig `yaml:"console"`
 }
+
+// ConsoleConfig configures the web control panel.
+type ConsoleConfig struct {
+	Listen       string `yaml:"listen"`         // e.g. ":7406"; empty = disabled
+	StaticDir    string `yaml:"static_dir"`     // built SPA (dist/) to serve at /
+	ExternalURL  string `yaml:"external_url"`   // public origin, e.g. https://geneza.example.com
+	OIDCClientID string `yaml:"oidc_client_id"` // browser OIDC client; defaults to OIDC.ClientID
+}
+
+func (c *Config) ConsoleEnabled() bool { return c.Console.Listen != "" }
 
 // AuditSinkConfig configures the off-box audit mirror.
 //   type: "" | "none" — local chain only (default)
