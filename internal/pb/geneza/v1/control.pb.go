@@ -1690,7 +1690,8 @@ type NodeSummary struct {
 	LastSeenUnix     int64                  `protobuf:"varint,8,opt,name=last_seen_unix,json=lastSeenUnix,proto3" json:"last_seen_unix,omitempty"`
 	ActiveSessions   uint32                 `protobuf:"varint,9,opt,name=active_sessions,json=activeSessions,proto3" json:"active_sessions,omitempty"`
 	DetachedSessions uint32                 `protobuf:"varint,10,opt,name=detached_sessions,json=detachedSessions,proto3" json:"detached_sessions,omitempty"`
-	Approved         bool                   `protobuf:"varint,11,opt,name=approved,proto3" json:"approved,omitempty"` // false = pending admin approval (no sessions allowed)
+	Approved         bool                   `protobuf:"varint,11,opt,name=approved,proto3" json:"approved,omitempty"`                   // false = pending admin approval (no sessions allowed)
+	OverlayIp        string                 `protobuf:"bytes,12,opt,name=overlay_ip,json=overlayIp,proto3" json:"overlay_ip,omitempty"` // stable overlay address (DNS A record), if assigned
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -1800,6 +1801,13 @@ func (x *NodeSummary) GetApproved() bool {
 		return x.Approved
 	}
 	return false
+}
+
+func (x *NodeSummary) GetOverlayIp() string {
+	if x != nil {
+		return x.OverlayIp
+	}
+	return ""
 }
 
 type ListNodesRequest struct {
@@ -3610,7 +3618,7 @@ const file_geneza_v1_control_proto_rawDesc = "" +
 	"caRootsPem\x12\x12\n" +
 	"\x04user\x18\x03 \x01(\tR\x04user\x12\x14\n" +
 	"\x05roles\x18\x04 \x03(\tR\x05roles\x12!\n" +
-	"\fexpires_unix\x18\x05 \x01(\x03R\vexpiresUnix\"\x9f\x03\n" +
+	"\fexpires_unix\x18\x05 \x01(\x03R\vexpiresUnix\"\xbe\x03\n" +
 	"\vNodeSummary\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12:\n" +
@@ -3623,7 +3631,9 @@ const file_geneza_v1_control_proto_rawDesc = "" +
 	"\x0factive_sessions\x18\t \x01(\rR\x0eactiveSessions\x12+\n" +
 	"\x11detached_sessions\x18\n" +
 	" \x01(\rR\x10detachedSessions\x12\x1a\n" +
-	"\bapproved\x18\v \x01(\bR\bapproved\x1a9\n" +
+	"\bapproved\x18\v \x01(\bR\bapproved\x12\x1d\n" +
+	"\n" +
+	"overlay_ip\x18\f \x01(\tR\toverlayIp\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x12\n" +

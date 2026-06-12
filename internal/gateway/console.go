@@ -71,6 +71,8 @@ func (c *consoleAPI) handler() http.Handler {
 	mux.Handle("GET /api/v1/audit", c.auth(c.handleAudit))
 	mux.Handle("POST /api/v1/tokens", c.authAdmin(c.handleMintToken))
 	mux.Handle("DELETE /api/v1/sessions/{id}", c.authAdmin(c.handleRevokeSession))
+	mux.Handle("POST /api/v1/nodes/{id}/approve", c.authAdmin(c.handleApproveNode))
+	mux.Handle("DELETE /api/v1/nodes/{id}", c.authAdmin(c.handleRemoveNode))
 	// Monitoring: Prometheus-shaped query API (any role) + per-node module toggle (admin).
 	mux.Handle("GET /api/v1/metrics/query", c.auth(c.handleMetricsQuery))
 	mux.Handle("GET /api/v1/metrics/query_range", c.auth(c.handleMetricsQueryRange))
@@ -179,6 +181,7 @@ func (c *consoleAPI) nodeJSON() []map[string]any {
 			"version": n.GetVersion(), "os": n.GetOs(), "arch": n.GetArch(),
 			"labels": orEmptyMap(n.GetLabels()), "lastSeenUnix": n.GetLastSeenUnix(),
 			"activeSessions": n.GetActiveSessions(), "detachedSessions": n.GetDetachedSessions(),
+			"approved": n.GetApproved(), "overlayIp": n.GetOverlayIp(),
 		})
 	}
 	return out
@@ -316,6 +319,56 @@ func (c *consoleAPI) handleRevokeSession(w http.ResponseWriter, r *http.Request,
 		writeErr(w, http.StatusNotFound, "revoke: "+err.Error())
 		return
 	}
+	writeJSON(w, map[string]any{"ok": true})
+}
+
+// handleApproveNode flips a machine's admission gate from the console (admin).
+// Body: {"approve": true|false}.
+func (c *consoleAPI) handleApproveNode(w http.ResponseWriter, r *http.Request, u *consoleUser) {
+	id := r.PathValue("id")
+	node, err := c.s.store.FindNode(id)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "node not found")
+		return
+	}
+	var body struct {
+		Approve bool `json:"approve"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	by := "console:" + u.Name
+	if _, err := c.s.store.SetNodeApproval(node.ID, body.Approve, by, time.Now()); err != nil {
+		writeErr(w, http.StatusInternalServerError, "set approval")
+		return
+	}
+	decision := "approve"
+	if !body.Approve {
+		decision = "revoke_approval"
+	}
+	_ = c.s.audit.Append("node_approval", by, node.ID, "", map[string]string{"decision": decision, "name": node.Name})
+	writeJSON(w, map[string]any{"ok": true, "approved": body.Approve})
+}
+
+// handleRemoveNode decommissions a machine from the console (admin): revoke its
+// live sessions, then delete the record.
+func (c *consoleAPI) handleRemoveNode(w http.ResponseWriter, r *http.Request, u *consoleUser) {
+	id := r.PathValue("id")
+	node, err := c.s.store.FindNode(id)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "node not found")
+		return
+	}
+	if sessions, err := c.s.store.ListSessions(); err == nil {
+		for _, rec := range sessions {
+			if rec.NodeID == node.ID && (rec.State == SessionActive || rec.State == SessionDetached) {
+				_ = c.s.revokeSession(rec, "node removed")
+			}
+		}
+	}
+	if err := c.s.store.DeleteNode(node.ID); err != nil {
+		writeErr(w, http.StatusInternalServerError, "delete node")
+		return
+	}
+	_ = c.s.audit.Append("node_remove", "console:"+u.Name, node.ID, "", map[string]string{"name": node.Name})
 	writeJSON(w, map[string]any{"ok": true})
 }
 

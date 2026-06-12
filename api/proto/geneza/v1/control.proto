@@ -242,6 +242,7 @@ message NodeSummary {
   uint32 active_sessions = 9;
   uint32 detached_sessions = 10;
   bool approved = 11;   // false = pending admin approval (no sessions allowed)
+  string overlay_ip = 12; // stable overlay address (DNS A record), if assigned
 }
 
 message ListNodesRequest {}

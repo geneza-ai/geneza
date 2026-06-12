@@ -132,6 +132,15 @@ export const api = {
     request<TokenResponse>("POST", "/tokens", {}, body),
   revokeSession: (id: string) =>
     request<{ ok: boolean }>("DELETE", `/sessions/${encodeURIComponent(id)}`),
+  approveNode: (id: string, approve: boolean) =>
+    request<{ ok: boolean; approved: boolean }>(
+      "POST",
+      `/nodes/${encodeURIComponent(id)}/approve`,
+      {},
+      { approve }
+    ),
+  removeNode: (id: string) =>
+    request<{ ok: boolean }>("DELETE", `/nodes/${encodeURIComponent(id)}`),
 
   // --- monitoring ---
   getNodeModules: (id: string, signal?: AbortSignal) =>

@@ -1,10 +1,12 @@
 import { useMemo, useState } from "react"
 import { useNavigate } from "react-router-dom"
-import { Search, Server } from "lucide-react"
+import { Search, Server, ShieldCheck, ShieldAlert } from "lucide-react"
+import { toast } from "sonner"
 
 import { api } from "@/api"
 import { usePolling } from "@/hooks/use-polling"
 import { Card } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
@@ -28,6 +30,22 @@ export function MachinesPage() {
   const { data, error, initialLoading, loading, refresh } =
     usePolling<NodesResponse>((s) => api.getNodes(s), 10000)
   const [query, setQuery] = useState("")
+
+  const [busy, setBusy] = useState<string | null>(null)
+  async function approve(nodeId: string, name: string) {
+    setBusy(nodeId)
+    try {
+      await api.approveNode(nodeId, true)
+      toast.success("Machine approved", { description: name })
+      refresh()
+    } catch (e) {
+      toast.error("Approve failed", {
+        description: e instanceof Error ? e.message : String(e),
+      })
+    } finally {
+      setBusy(null)
+    }
+  }
 
   const nodes = useMemo(() => data?.nodes ?? [], [data])
   const filtered = useMemo(() => {
@@ -87,6 +105,7 @@ export function MachinesPage() {
               <TableRow>
                 <TableHead>Name</TableHead>
                 <TableHead>Status</TableHead>
+                <TableHead>Admission</TableHead>
                 <TableHead>Version</TableHead>
                 <TableHead>OS / Arch</TableHead>
                 <TableHead>Labels</TableHead>
@@ -114,6 +133,28 @@ export function MachinesPage() {
                         </span>
                       )}
                     </div>
+                  </TableCell>
+                  <TableCell onClick={(e) => e.stopPropagation()}>
+                    {node.approved ? (
+                      <span className="inline-flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400">
+                        <ShieldCheck className="size-3.5" /> Approved
+                      </span>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <span className="inline-flex items-center gap-1 rounded bg-amber-500/15 px-1.5 py-0.5 text-xs font-medium text-amber-600 dark:text-amber-400">
+                          <ShieldAlert className="size-3.5" /> Pending
+                        </span>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-6 px-2 text-xs"
+                          disabled={busy === node.nodeId}
+                          onClick={() => approve(node.nodeId, node.name)}
+                        >
+                          Approve
+                        </Button>
+                      </div>
+                    )}
                   </TableCell>
                   <TableCell className="font-mono text-xs">
                     {node.version || "—"}

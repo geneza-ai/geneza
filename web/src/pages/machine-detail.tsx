@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useState } from "react"
 import { Link, useParams } from "react-router-dom"
-import { ArrowLeft, Power, TerminalSquare } from "lucide-react"
+import {
+  ArrowLeft,
+  Power,
+  TerminalSquare,
+  ShieldAlert,
+  ShieldCheck,
+} from "lucide-react"
 import { toast } from "sonner"
 
 import { api, ApiError } from "@/api"
@@ -49,7 +55,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 export function MachineDetailPage() {
   const { id } = useParams<{ id: string }>()
   const { me } = useSession()
-  const { data, error } = usePolling<NodesResponse>(
+  const { data, error, refresh } = usePolling<NodesResponse>(
     (s) => api.getNodes(s),
     10000
   )
@@ -102,6 +108,24 @@ export function MachineDetailPage() {
     }
   }
 
+  async function setApproval(approve: boolean) {
+    if (!node) return
+    setBusy(true)
+    try {
+      await api.approveNode(node.nodeId, approve)
+      toast.success(approve ? "Machine approved" : "Machine quarantined", {
+        description: node.name,
+      })
+      refresh()
+    } catch (err) {
+      toast.error("Failed to update admission", {
+        description: err instanceof ApiError ? err.message : String(err),
+      })
+    } finally {
+      setBusy(false)
+    }
+  }
+
   if (error && !data) {
     return <ErrorState message={error} />
   }
@@ -128,17 +152,40 @@ export function MachineDetailPage() {
           <span className="text-sm text-muted-foreground">
             {node.online ? "Online" : `Offline · ${relativeTime(node.lastSeenUnix)}`}
           </span>
+          {!node.approved && (
+            <span className="inline-flex items-center gap-1 rounded bg-amber-500/15 px-1.5 py-0.5 text-xs font-medium text-amber-600 dark:text-amber-400">
+              <ShieldAlert className="size-3.5" /> Pending approval
+            </span>
+          )}
         </div>
         {me.admin && (
-          <Button
-            variant={monOn ? "outline" : "default"}
-            size="sm"
-            onClick={toggleMonitoring}
-            disabled={busy || monOn === null}
-          >
-            <Power className="size-4" />
-            {monOn ? "Disable monitoring" : "Enable monitoring"}
-          </Button>
+          <div className="flex items-center gap-2">
+            {node.approved ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setApproval(false)}
+                disabled={busy}
+              >
+                <ShieldAlert className="size-4" />
+                Quarantine
+              </Button>
+            ) : (
+              <Button size="sm" onClick={() => setApproval(true)} disabled={busy}>
+                <ShieldCheck className="size-4" />
+                Approve
+              </Button>
+            )}
+            <Button
+              variant={monOn ? "outline" : "default"}
+              size="sm"
+              onClick={toggleMonitoring}
+              disabled={busy || monOn === null}
+            >
+              <Power className="size-4" />
+              {monOn ? "Disable monitoring" : "Enable monitoring"}
+            </Button>
+          </div>
         )}
       </div>
 
@@ -174,6 +221,23 @@ export function MachineDetailPage() {
               <Field label="Last seen">{relativeTime(node.lastSeenUnix)}</Field>
               <Field label="Monitoring">
                 {monOn === null ? "—" : monOn ? "Enabled" : "Disabled"}
+              </Field>
+              <Field label="Admission">
+                {node.approved ? (
+                  <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
+                    <ShieldCheck className="size-3.5" /> Approved
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400">
+                    <ShieldAlert className="size-3.5" /> Pending
+                  </span>
+                )}
+              </Field>
+              <Field label="DNS name">
+                <span className="font-mono text-xs">{node.name}.geneza</span>
+              </Field>
+              <Field label="Overlay IP">
+                <span className="font-mono text-xs">{node.overlayIp || "—"}</span>
               </Field>
               <div className="sm:col-span-2 lg:col-span-3">
                 <Field label="Labels">

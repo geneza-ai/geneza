@@ -40,6 +40,8 @@ export interface NodeInfo {
   activeSessions: number
   detachedSessions: number
   createdUnix: number
+  approved: boolean
+  overlayIp?: string
 }
 
 export interface NodesResponse {

@@ -286,8 +286,9 @@ func (s *Server) nodeSummaries() ([]*genezav1.NodeSummary, error) {
 			Labels:   n.Labels,
 			Os:       n.Platform.OS,
 			Arch:     n.Platform.Arch,
-			Version:  n.Platform.AgentVersion,
-			Approved: n.Approved,
+			Version:   n.Platform.AgentVersion,
+			Approved:  n.Approved,
+			OverlayIp: n.OverlayIP,
 		}
 		if info, ok := s.registry.Info(n.ID); ok {
 			sum.Online = true
