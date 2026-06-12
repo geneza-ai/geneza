@@ -61,6 +61,13 @@ type NodeRecord struct {
 	NoisePub    []byte            `json:"noise_pub"`
 	Platform    PlatformRecord    `json:"platform"`
 	CreatedUnix int64             `json:"created_unix"`
+	// Approved is the zero-trust admission gate: an enrolled node has an identity
+	// (node cert) but the broker refuses to open any session to it until an admin
+	// approves it. Token enrollment lands here Approved=false unless the token was
+	// minted --auto-approve; cryptographic-identity providers approve on enroll.
+	Approved       bool   `json:"approved,omitempty"`
+	ApprovedBy     string `json:"approved_by,omitempty"` // admin name, or "auto:<provider>"
+	ApprovedAtUnix int64  `json:"approved_at_unix,omitempty"`
 }
 
 type TokenRecord struct {
@@ -68,6 +75,10 @@ type TokenRecord struct {
 	ExpiresUnix int64             `json:"expires_unix"`
 	MaxUses     int32             `json:"max_uses"`
 	Uses        int32             `json:"uses"`
+	// AutoApprove enrolls nodes already approved (skip the pending gate). Set by
+	// `admin tokens new --auto-approve`. A leaked auto-approve token yields a
+	// usable node with no human check, so it is opt-in, not the default.
+	AutoApprove bool `json:"auto_approve,omitempty"`
 }
 
 // Session states.
@@ -192,6 +203,44 @@ func (s *Store) SetNodeModules(nodeID string, modules []NodeModule) (*NodeModule
 func (s *Store) GetNode(id string) (*NodeRecord, error) {
 	var n NodeRecord
 	err := s.db.View(func(tx *bbolt.Tx) error { return getJSON(tx, bucketNodes, id, &n) })
+	if err != nil {
+		return nil, err
+	}
+	return &n, nil
+}
+
+// DeleteNode removes a node record (decommission). Also drops its module set.
+// Sessions are left as historical records. Returns ErrNotFound if absent.
+func (s *Store) DeleteNode(id string) error {
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		if tx.Bucket(bucketNodes).Get([]byte(id)) == nil {
+			return ErrNotFound
+		}
+		if err := tx.Bucket(bucketNodes).Delete([]byte(id)); err != nil {
+			return err
+		}
+		return tx.Bucket(bucketModules).Delete([]byte(id))
+	})
+}
+
+// SetNodeApproval flips a node's admission gate transactionally and returns the
+// updated record. by is the admin name (or "auto:<provider>") recorded for audit.
+func (s *Store) SetNodeApproval(id string, approve bool, by string, now time.Time) (*NodeRecord, error) {
+	var n NodeRecord
+	err := s.db.Update(func(tx *bbolt.Tx) error {
+		if err := getJSON(tx, bucketNodes, id, &n); err != nil {
+			return err
+		}
+		n.Approved = approve
+		if approve {
+			n.ApprovedBy = by
+			n.ApprovedAtUnix = now.Unix()
+		} else {
+			n.ApprovedBy = ""
+			n.ApprovedAtUnix = 0
+		}
+		return putJSON(tx, bucketNodes, id, &n)
+	})
 	if err != nil {
 		return nil, err
 	}

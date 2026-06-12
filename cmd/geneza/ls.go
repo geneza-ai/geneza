@@ -43,6 +43,7 @@ func newLsCmd() *cobra.Command {
 				rows = append(rows, []string{
 					n.GetName(),
 					n.GetNodeId(),
+					admissionStr(n.GetApproved()),
 					onlineStr(n.GetOnline()),
 					client.FormatLabels(n.GetLabels()),
 					n.GetVersion(),
@@ -51,7 +52,7 @@ func newLsCmd() *cobra.Command {
 				})
 			}
 			client.PrintTable(os.Stdout,
-				[]string{"NAME", "NODE-ID", "ONLINE", "LABELS", "VERSION", "SESSIONS", "LAST-SEEN"}, rows)
+				[]string{"NAME", "NODE-ID", "ADMISSION", "ONLINE", "LABELS", "VERSION", "SESSIONS", "LAST-SEEN"}, rows)
 			return nil
 		},
 	}

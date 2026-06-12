@@ -79,14 +79,19 @@ func run(ctx context.Context, cfgPath string, log *slog.Logger) error {
 		return err
 	}
 
-	// The pinned artifact public key is the root of binary trust. No key, no
-	// start — running without it would mean trusting gateway TLS alone,
-	// which is exactly the failure mode §9 exists to prevent.
-	pub, err := types.LoadPublicKeyPEM(cfg.ArtifactPubFile)
-	if err != nil {
-		return fmt.Errorf("pinned artifact public key (artifact_pub_file): %w", err)
+	// The pinned key is the root of binary trust — trusting gateway TLS alone is
+	// exactly the failure mode §9 exists to prevent. In root-anchored mode the
+	// TUF-lite root (loaded below) is that anchor, so the single artifact key is
+	// optional; in legacy mode it is mandatory (enforced by loadConfig).
+	var pub ed25519.PublicKey
+	if cfg.ArtifactPubFile != "" {
+		var err error
+		pub, err = types.LoadPublicKeyPEM(cfg.ArtifactPubFile)
+		if err != nil {
+			return fmt.Errorf("pinned artifact public key (artifact_pub_file): %w", err)
+		}
+		log.Info("pinned artifact signing key loaded", "key_id", types.KeyIDFor(pub), "file", cfg.ArtifactPubFile)
 	}
-	log.Info("pinned artifact signing key loaded", "key_id", types.KeyIDFor(pub), "file", cfg.ArtifactPubFile)
 
 	// TUF-lite root-anchored mode: pin the offline ROOT key. The root never signs
 	// manifests; it authorizes a rotatable signing-key set via a gateway-served

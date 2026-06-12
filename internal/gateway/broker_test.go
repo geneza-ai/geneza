@@ -99,6 +99,7 @@ func testBroker(t *testing.T) (*Broker, *fakeAgents, *Store, ed25519.PublicKey) 
 		ID: "n-aaaaaaaaaaaa", Name: "web1",
 		Labels:   map[string]string{"env": "prod"},
 		NoisePub: noise,
+		Approved: true, // admission gate is exercised separately (TestBrokerPendingNodeDenied)
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -111,6 +112,33 @@ func clientNoise() []byte {
 		b[i] = 0xC1
 	}
 	return b
+}
+
+func TestBrokerPendingNodeDenied(t *testing.T) {
+	b, _, store, _ := testBroker(t)
+	// Quarantine the node (simulate a freshly-enrolled, not-yet-approved machine).
+	if _, err := store.SetNodeApproval("n-aaaaaaaaaaaa", false, "", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	ident := &ca.Identity{Kind: ca.KindUser, Name: "alice", Roles: []string{"ops"}}
+	req := &genezav1.CreateSessionRequest{
+		Node: "web1", Action: "shell", WantPty: true,
+		ClientNoisePub: clientNoise(), ClientPath: "native",
+	}
+	_, err := b.CreateSession(context.Background(), ident, req)
+	if err == nil {
+		t.Fatal("expected pending-approval denial, got success")
+	}
+	if got := status.Code(err); got != codes.FailedPrecondition {
+		t.Fatalf("code = %v, want FailedPrecondition", got)
+	}
+	// After approval the same request succeeds.
+	if _, err := store.SetNodeApproval("n-aaaaaaaaaaaa", true, "admin", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.CreateSession(context.Background(), ident, req); err != nil {
+		t.Fatalf("after approval: %v", err)
+	}
 }
 
 func TestBrokerGrantConstruction(t *testing.T) {

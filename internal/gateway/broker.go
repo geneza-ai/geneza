@@ -200,6 +200,14 @@ func (b *Broker) createSession(ctx context.Context, ident *ca.Identity, req *gen
 			return nil, status.Errorf(codes.Internal, "resolve node: %v", err)
 		}
 	}
+	// Zero-trust admission gate: an enrolled-but-unapproved node has an identity
+	// (it can connect its control channel) but NO session may be brokered to it.
+	// This is what makes a leaked/replayed join token insufficient on its own — a
+	// rogue machine enrolls, shows up pending, and an admin never approves it.
+	if !node.Approved {
+		return nil, b.deny(ident.Name, req, node.ID, "node pending approval",
+			status.Errorf(codes.FailedPrecondition, "node %s (%s) is pending admin approval", node.ID, node.Name))
+	}
 	if !b.agents.Online(node.ID) {
 		return nil, status.Errorf(codes.Unavailable, "node %s (%s) is offline", node.ID, node.Name)
 	}

@@ -56,10 +56,11 @@ func loadConfig(path string) (*config, error) {
 	if cfg.GatewayHTTPURL == "" {
 		return nil, fmt.Errorf("%s: gateway_http_url is required", path)
 	}
-	if cfg.ArtifactPubFile == "" {
-		// Without the pinned key there is no trustworthy update path at
-		// all; refusing to start is the only fail-closed option.
-		return nil, fmt.Errorf("%s: artifact_pub_file is required", path)
+	if cfg.ArtifactPubFile == "" && cfg.RootPubFile == "" {
+		// Without a pinned key there is no trustworthy update path at all;
+		// refusing to start is the only fail-closed option. Either anchor works:
+		// the single artifact key (legacy) or the TUF-lite root (root-anchored).
+		return nil, fmt.Errorf("%s: artifact_pub_file or root_pub_file is required", path)
 	}
 	if cfg.PollIntervalSec <= 0 {
 		cfg.PollIntervalSec = 15

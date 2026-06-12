@@ -61,18 +61,87 @@ func (a *adminAPIService) CreateJoinToken(ctx context.Context, req *genezav1.Cre
 		Labels:      req.GetLabels(),
 		ExpiresUnix: expires,
 		MaxUses:     maxUses,
+		AutoApprove: req.GetAutoApprove(),
 	}); err != nil {
 		return nil, status.Errorf(codes.Internal, "store token: %v", err)
 	}
 	// The token value itself never reaches the audit log.
 	if err := s.audit.Append("token_create", adminActor(ctx), "", "", map[string]string{
-		"ttl_seconds": strconv.FormatInt(int64(ttl/time.Second), 10),
-		"max_uses":    strconv.FormatInt(int64(maxUses), 10),
-		"labels":      labelString(req.GetLabels()),
+		"ttl_seconds":  strconv.FormatInt(int64(ttl/time.Second), 10),
+		"max_uses":     strconv.FormatInt(int64(maxUses), 10),
+		"labels":       labelString(req.GetLabels()),
+		"auto_approve": strconv.FormatBool(req.GetAutoApprove()),
 	}); err != nil {
 		return nil, status.Errorf(codes.Internal, "audit append: %v", err)
 	}
-	return &genezav1.CreateJoinTokenResponse{Token: token, ExpiresUnix: expires}, nil
+	return &genezav1.CreateJoinTokenResponse{
+		Token:           token,
+		ExpiresUnix:     expires,
+		RootFingerprint: s.rootFingerprint(),
+	}, nil
+}
+
+// ApproveNode flips the zero-trust admission gate for one node. approve=true
+// makes a pending node usable; approve=false re-quarantines it (and the next
+// continuous-authz sweep tears down any live sessions, since the gate is also
+// re-checked there — see continuousauthz.go).
+func (a *adminAPIService) ApproveNode(ctx context.Context, req *genezav1.ApproveNodeRequest) (*genezav1.Empty, error) {
+	s := a.s
+	node, err := s.store.FindNode(req.GetNode())
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil, status.Errorf(codes.NotFound, "node %q not found", req.GetNode())
+		}
+		return nil, status.Errorf(codes.Internal, "resolve node: %v", err)
+	}
+	by := adminActor(ctx)
+	if _, err := s.store.SetNodeApproval(node.ID, req.GetApprove(), by, time.Now()); err != nil {
+		return nil, status.Errorf(codes.Internal, "set approval: %v", err)
+	}
+	decision := "approve"
+	if !req.GetApprove() {
+		decision = "revoke_approval"
+	}
+	if err := s.audit.Append("node_approval", by, node.ID, "", map[string]string{
+		"decision": decision, "name": node.Name,
+	}); err != nil {
+		return nil, status.Errorf(codes.Internal, "audit append: %v", err)
+	}
+	slog.Info("node approval changed", "node", node.ID, "name", node.Name, "approved", req.GetApprove(), "by", by)
+	return &genezav1.Empty{}, nil
+}
+
+// RemoveNode decommissions a machine: revoke its live sessions, then delete the
+// record so it leaves the fleet and must re-enroll (and be re-approved) to come
+// back. The node's own cert keeps working until it expires (short TTL), but with
+// no record the broker denies every session to it.
+func (a *adminAPIService) RemoveNode(ctx context.Context, req *genezav1.RemoveNodeRequest) (*genezav1.Empty, error) {
+	s := a.s
+	node, err := s.store.FindNode(req.GetNode())
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil, status.Errorf(codes.NotFound, "node %q not found", req.GetNode())
+		}
+		return nil, status.Errorf(codes.Internal, "resolve node: %v", err)
+	}
+	// Tear down any live sessions first so we don't orphan tunnels.
+	if sessions, err := s.store.ListSessions(); err == nil {
+		for _, rec := range sessions {
+			if rec.NodeID == node.ID && (rec.State == SessionActive || rec.State == SessionDetached) {
+				_ = s.revokeSession(rec, "node removed")
+			}
+		}
+	}
+	if err := s.store.DeleteNode(node.ID); err != nil {
+		return nil, status.Errorf(codes.Internal, "delete node: %v", err)
+	}
+	if err := s.audit.Append("node_remove", adminActor(ctx), node.ID, "", map[string]string{
+		"name": node.Name,
+	}); err != nil {
+		return nil, status.Errorf(codes.Internal, "audit append: %v", err)
+	}
+	slog.Info("node removed", "node", node.ID, "name", node.Name, "by", adminActor(ctx))
+	return &genezav1.Empty{}, nil
 }
 
 func labelString(m map[string]string) string {

@@ -110,6 +110,16 @@ type Config struct {
 	// key. The file is re-read per request, so rotating the fleet's trust is a
 	// single atomic file swap — the gateway holds no private key either way.
 	RootKeysFile string `yaml:"root_keys_file"`
+	// RootPubkeyFile is the PUBLIC half of the TUF-lite root key (safe to serve).
+	// The curl|bash installer fetches it and FINGERPRINT-checks it against the
+	// --root-fp the operator pasted, so a compromised gateway cannot swap the
+	// trust anchor at bootstrap (verify-on-first-use, not blind trust-on-first-use).
+	RootPubkeyFile string `yaml:"root_pubkey_file"`
+	// InstallDir holds the stage-1 binaries the curl|bash installer serves:
+	// geneza-bootstrap-<os>-<arch> and geneza-agent-<os>-<arch>. The agent copy is
+	// used only to run `enroll`; the first WORKER binary is pulled by the
+	// bootstrap through the full rooted update chain. Empty = installer disabled.
+	InstallDir string `yaml:"install_dir"`
 	// AuditSink optionally mirrors every audit record to an append-only
 	// off-box destination (the only real tamper-evidence against a host
 	// compromise that can rewrite the local chain). Empty = local chain only.

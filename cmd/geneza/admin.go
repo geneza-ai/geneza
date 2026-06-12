@@ -25,8 +25,11 @@ func newAdminCmd() *cobra.Command {
 	}
 	tokens := &cobra.Command{Use: "tokens", Short: "Join-token management"}
 	tokens.AddCommand(newTokensNewCmd())
+	nodes := &cobra.Command{Use: "nodes", Short: "Machine admission (approve / quarantine / remove)"}
+	nodes.AddCommand(newNodeApproveCmd(true), newNodeApproveCmd(false), newNodeRemoveCmd())
 	cmd.AddCommand(
 		tokens,
+		nodes,
 		newFleetCmd(),
 		newPublishCmd(),
 		newDesiredCmd(),
@@ -36,6 +39,70 @@ func newAdminCmd() *cobra.Command {
 		newMonitorCmd(),
 	)
 	return cmd
+}
+
+// newNodeRemoveCmd builds `admin nodes rm NODE` — decommission a machine.
+func newNodeRemoveCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:     "rm NODE",
+		Aliases: []string{"remove", "delete"},
+		Short:   "Decommission a machine (delete its record; it must re-enroll to return)",
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			e, err := loadEnv()
+			if err != nil {
+				return err
+			}
+			cc, api, err := dialAdmin(e)
+			if err != nil {
+				return err
+			}
+			defer cc.Close()
+			ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
+			defer cancel()
+			if _, err := api.RemoveNode(ctx, &genezav1.RemoveNodeRequest{Node: args[0]}); err != nil {
+				return client.Humanize(err)
+			}
+			fmt.Printf("removed %s\n", args[0])
+			return nil
+		},
+	}
+}
+
+// newNodeApproveCmd builds `admin nodes approve NODE` (approve=true) or
+// `admin nodes deny NODE` (approve=false, re-quarantine a node).
+func newNodeApproveCmd(approve bool) *cobra.Command {
+	use, short := "approve NODE", "Approve a pending machine (allow sessions to it)"
+	if !approve {
+		use, short = "deny NODE", "Revoke a machine's approval (quarantine; kills its live sessions)"
+	}
+	return &cobra.Command{
+		Use:   use,
+		Short: short,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			e, err := loadEnv()
+			if err != nil {
+				return err
+			}
+			cc, api, err := dialAdmin(e)
+			if err != nil {
+				return err
+			}
+			defer cc.Close()
+			ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
+			defer cancel()
+			if _, err := api.ApproveNode(ctx, &genezav1.ApproveNodeRequest{Node: args[0], Approve: approve}); err != nil {
+				return client.Humanize(err)
+			}
+			if approve {
+				fmt.Printf("approved %s\n", args[0])
+			} else {
+				fmt.Printf("quarantined %s (approval revoked)\n", args[0])
+			}
+			return nil
+		},
+	}
 }
 
 func newMonitorCmd() *cobra.Command {
@@ -168,9 +235,10 @@ func parseLabels(s string) (map[string]string, error) {
 
 func newTokensNewCmd() *cobra.Command {
 	var (
-		ttl    time.Duration
-		uses   int
-		labels string
+		ttl         time.Duration
+		uses        int
+		labels      string
+		autoApprove bool
 	)
 	cmd := &cobra.Command{
 		Use:   "new",
@@ -193,21 +261,38 @@ func newTokensNewCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
 			defer cancel()
 			resp, err := api.CreateJoinToken(ctx, &genezav1.CreateJoinTokenRequest{
-				TtlSeconds: int64(ttl.Seconds()),
-				Labels:     lbls,
-				MaxUses:    int32(uses),
+				TtlSeconds:  int64(ttl.Seconds()),
+				Labels:      lbls,
+				MaxUses:     int32(uses),
+				AutoApprove: autoApprove,
 			})
 			if err != nil {
 				return client.Humanize(err)
 			}
-			fmt.Printf("Token:   %s\n", resp.GetToken())
-			fmt.Printf("Expires: %s\n", time.Unix(resp.GetExpiresUnix(), 0).Local().Format(time.RFC3339))
+			fmt.Printf("Token:    %s\n", resp.GetToken())
+			fmt.Printf("Expires:  %s\n", time.Unix(resp.GetExpiresUnix(), 0).Local().Format(time.RFC3339))
+			if autoApprove {
+				fmt.Println("Approval: AUTO (enrolled machines are usable immediately)")
+			} else {
+				fmt.Println("Approval: pending (run `geneza admin nodes approve <id>` after enroll)")
+			}
+			// Convenience: print the ready-to-paste curl|bash one-liner. The
+			// --root-fp pin (from the gateway) is what makes curl|bash safe — the
+			// new machine verifies the trust anchor it downloads at bootstrap.
+			if fp := resp.GetRootFingerprint(); fp != "" {
+				grpc := e.profile.GatewayGRPC
+				fmt.Printf("\nInstall on the new machine:\n  curl -fsSL %s/install.sh | sudo bash -s -- \\\n      --token %s --root-fp %s --gateway-grpc %s\n",
+					e.profile.GatewayHTTP, resp.GetToken(), fp, grpc)
+			} else {
+				fmt.Println("\n(Gateway serves no root pubkey; set root_pubkey_file + install_dir to enable curl|bash install.)")
+			}
 			return nil
 		},
 	}
 	cmd.Flags().DurationVar(&ttl, "ttl", time.Hour, "token lifetime")
 	cmd.Flags().IntVar(&uses, "uses", 1, "maximum enrollments with this token")
 	cmd.Flags().StringVar(&labels, "labels", "", "labels stamped onto enrolling nodes (k=v,...)")
+	cmd.Flags().BoolVar(&autoApprove, "auto-approve", false, "enrolled nodes are usable immediately (skip the admin approval gate)")
 	return cmd
 }
 
@@ -247,6 +332,7 @@ func newFleetCmd() *cobra.Command {
 				rows = append(rows, []string{
 					n.GetName(),
 					n.GetNodeId(),
+					admissionStr(n.GetApproved()),
 					onlineStr(n.GetOnline()),
 					n.GetVersion(),
 					n.GetOs() + "/" + n.GetArch(),
@@ -255,7 +341,7 @@ func newFleetCmd() *cobra.Command {
 				})
 			}
 			client.PrintTable(os.Stdout,
-				[]string{"NAME", "NODE-ID", "ONLINE", "VERSION", "PLATFORM", "LABELS", "LAST-SEEN"}, rows)
+				[]string{"NAME", "NODE-ID", "ADMISSION", "ONLINE", "VERSION", "PLATFORM", "LABELS", "LAST-SEEN"}, rows)
 			return nil
 		},
 	}

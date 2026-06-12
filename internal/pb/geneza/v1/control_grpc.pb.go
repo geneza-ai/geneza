@@ -593,6 +593,8 @@ var UserAPI_ServiceDesc = grpc.ServiceDesc{
 
 const (
 	AdminAPI_CreateJoinToken_FullMethodName   = "/geneza.v1.AdminAPI/CreateJoinToken"
+	AdminAPI_ApproveNode_FullMethodName       = "/geneza.v1.AdminAPI/ApproveNode"
+	AdminAPI_RemoveNode_FullMethodName        = "/geneza.v1.AdminAPI/RemoveNode"
 	AdminAPI_PublishArtifact_FullMethodName   = "/geneza.v1.AdminAPI/PublishArtifact"
 	AdminAPI_SetDesiredVersion_FullMethodName = "/geneza.v1.AdminAPI/SetDesiredVersion"
 	AdminAPI_GetFleetStatus_FullMethodName    = "/geneza.v1.AdminAPI/GetFleetStatus"
@@ -609,6 +611,13 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type AdminAPIClient interface {
 	CreateJoinToken(ctx context.Context, in *CreateJoinTokenRequest, opts ...grpc.CallOption) (*CreateJoinTokenResponse, error)
+	// ApproveNode flips a node's pending-approval gate (zero-trust admission
+	// control): an unapproved node has an identity but no session can be brokered
+	// to it until an admin approves. approve=false re-quarantines a node.
+	ApproveNode(ctx context.Context, in *ApproveNodeRequest, opts ...grpc.CallOption) (*Empty, error)
+	// RemoveNode decommissions a machine: deletes its record so it no longer
+	// appears in the fleet and must re-enroll (and re-be-approved) to return.
+	RemoveNode(ctx context.Context, in *RemoveNodeRequest, opts ...grpc.CallOption) (*Empty, error)
 	PublishArtifact(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[ArtifactChunk, PublishArtifactResponse], error)
 	SetDesiredVersion(ctx context.Context, in *SetDesiredVersionRequest, opts ...grpc.CallOption) (*Empty, error)
 	GetFleetStatus(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*FleetStatus, error)
@@ -636,6 +645,26 @@ func (c *adminAPIClient) CreateJoinToken(ctx context.Context, in *CreateJoinToke
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CreateJoinTokenResponse)
 	err := c.cc.Invoke(ctx, AdminAPI_CreateJoinToken_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *adminAPIClient) ApproveNode(ctx context.Context, in *ApproveNodeRequest, opts ...grpc.CallOption) (*Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Empty)
+	err := c.cc.Invoke(ctx, AdminAPI_ApproveNode_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *adminAPIClient) RemoveNode(ctx context.Context, in *RemoveNodeRequest, opts ...grpc.CallOption) (*Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Empty)
+	err := c.cc.Invoke(ctx, AdminAPI_RemoveNode_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -740,6 +769,13 @@ func (c *adminAPIClient) GetNodeModules(ctx context.Context, in *GetNodeModulesR
 // for forward compatibility.
 type AdminAPIServer interface {
 	CreateJoinToken(context.Context, *CreateJoinTokenRequest) (*CreateJoinTokenResponse, error)
+	// ApproveNode flips a node's pending-approval gate (zero-trust admission
+	// control): an unapproved node has an identity but no session can be brokered
+	// to it until an admin approves. approve=false re-quarantines a node.
+	ApproveNode(context.Context, *ApproveNodeRequest) (*Empty, error)
+	// RemoveNode decommissions a machine: deletes its record so it no longer
+	// appears in the fleet and must re-enroll (and re-be-approved) to return.
+	RemoveNode(context.Context, *RemoveNodeRequest) (*Empty, error)
 	PublishArtifact(grpc.ClientStreamingServer[ArtifactChunk, PublishArtifactResponse]) error
 	SetDesiredVersion(context.Context, *SetDesiredVersionRequest) (*Empty, error)
 	GetFleetStatus(context.Context, *Empty) (*FleetStatus, error)
@@ -765,6 +801,12 @@ type UnimplementedAdminAPIServer struct{}
 
 func (UnimplementedAdminAPIServer) CreateJoinToken(context.Context, *CreateJoinTokenRequest) (*CreateJoinTokenResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CreateJoinToken not implemented")
+}
+func (UnimplementedAdminAPIServer) ApproveNode(context.Context, *ApproveNodeRequest) (*Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method ApproveNode not implemented")
+}
+func (UnimplementedAdminAPIServer) RemoveNode(context.Context, *RemoveNodeRequest) (*Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method RemoveNode not implemented")
 }
 func (UnimplementedAdminAPIServer) PublishArtifact(grpc.ClientStreamingServer[ArtifactChunk, PublishArtifactResponse]) error {
 	return status.Error(codes.Unimplemented, "method PublishArtifact not implemented")
@@ -828,6 +870,42 @@ func _AdminAPI_CreateJoinToken_Handler(srv interface{}, ctx context.Context, dec
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(AdminAPIServer).CreateJoinToken(ctx, req.(*CreateJoinTokenRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AdminAPI_ApproveNode_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ApproveNodeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminAPIServer).ApproveNode(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminAPI_ApproveNode_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminAPIServer).ApproveNode(ctx, req.(*ApproveNodeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AdminAPI_RemoveNode_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RemoveNodeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminAPIServer).RemoveNode(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminAPI_RemoveNode_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminAPIServer).RemoveNode(ctx, req.(*RemoveNodeRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -993,6 +1071,14 @@ var AdminAPI_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "CreateJoinToken",
 			Handler:    _AdminAPI_CreateJoinToken_Handler,
+		},
+		{
+			MethodName: "ApproveNode",
+			Handler:    _AdminAPI_ApproveNode_Handler,
+		},
+		{
+			MethodName: "RemoveNode",
+			Handler:    _AdminAPI_RemoveNode_Handler,
 		},
 		{
 			MethodName: "SetDesiredVersion",

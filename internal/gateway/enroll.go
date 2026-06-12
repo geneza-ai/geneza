@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -15,12 +16,15 @@ import (
 	genezav1 "osie.cloud/geneza/internal/pb/geneza/v1"
 )
 
-// EnrollProvider verifies machine-enrollment evidence and yields the labels
-// to stamp on the node. This is the seam where cloud instance-identity
-// providers (e.g. OpenStack metadata) plug in alongside join tokens.
+// EnrollProvider verifies machine-enrollment evidence and yields the labels to
+// stamp on the node plus whether the node may be auto-approved. This is the seam
+// where cloud instance-identity providers (e.g. OpenStack metadata) plug in
+// alongside join tokens. autoApprove is true only when the evidence is strong
+// enough to skip the human admission gate (a token minted --auto-approve, or a
+// cryptographic instance-identity document) — a bearer token defaults to false.
 type EnrollProvider interface {
 	Name() string
-	Verify(ctx context.Context, req *genezav1.EnrollRequest) (labels map[string]string, suggestedName string, err error)
+	Verify(ctx context.Context, req *genezav1.EnrollRequest) (labels map[string]string, suggestedName string, autoApprove bool, err error)
 }
 
 // tokenProvider: single-use-counted, expiring join tokens from the store.
@@ -30,17 +34,17 @@ type tokenProvider struct {
 
 func (p *tokenProvider) Name() string { return "token" }
 
-func (p *tokenProvider) Verify(_ context.Context, req *genezav1.EnrollRequest) (map[string]string, string, error) {
+func (p *tokenProvider) Verify(_ context.Context, req *genezav1.EnrollRequest) (map[string]string, string, bool, error) {
 	if req.GetToken() == "" {
-		return nil, "", status.Error(codes.InvalidArgument, "missing join token")
+		return nil, "", false, status.Error(codes.InvalidArgument, "missing join token")
 	}
 	rec, err := p.store.UseToken(req.GetToken(), time.Now())
 	if err != nil {
 		// Log the specific failure; never tell the caller which check failed.
 		slog.Warn("join token rejected", "err", err)
-		return nil, "", status.Error(codes.PermissionDenied, "invalid join token")
+		return nil, "", false, status.Error(codes.PermissionDenied, "invalid join token")
 	}
-	return rec.Labels, "", nil
+	return rec.Labels, "", rec.AutoApprove, nil
 }
 
 // openstackMetadataProvider is the reserved seam for the OpenStack PoC:
@@ -50,8 +54,11 @@ type openstackMetadataProvider struct{}
 
 func (p *openstackMetadataProvider) Name() string { return "openstack-metadata" }
 
-func (p *openstackMetadataProvider) Verify(context.Context, *genezav1.EnrollRequest) (map[string]string, string, error) {
-	return nil, "", status.Error(codes.Unimplemented,
+func (p *openstackMetadataProvider) Verify(context.Context, *genezav1.EnrollRequest) (map[string]string, string, bool, error) {
+	// When implemented this returns autoApprove=true: a vendordata-signed instance
+	// identity document is cryptographic evidence of "I am instance X in project
+	// Y" — no shared secret to leak — so an admission rule can trust it directly.
+	return nil, "", false, status.Error(codes.Unimplemented,
 		"openstack-metadata enrollment: reserved for the OpenStack PoC — see docs/openstack-integration.md")
 }
 
@@ -83,7 +90,7 @@ func (e *enrollmentService) Enroll(ctx context.Context, req *genezav1.EnrollRequ
 		return nil, err
 	}
 
-	provLabels, suggestedName, err := provider.Verify(ctx, req)
+	provLabels, suggestedName, autoApprove, err := provider.Verify(ctx, req)
 	if err != nil {
 		return deny(fmt.Sprintf("provider %s: %v", provider.Name(), err), err)
 	}
@@ -128,6 +135,7 @@ func (e *enrollmentService) Enroll(ctx context.Context, req *genezav1.EnrollRequ
 		return deny("bad CSR", status.Errorf(codes.InvalidArgument, "issue node cert: %v", err))
 	}
 
+	now := time.Now()
 	rec := &NodeRecord{
 		ID:       nodeID,
 		Name:     name,
@@ -139,17 +147,26 @@ func (e *enrollmentService) Enroll(ctx context.Context, req *genezav1.EnrollRequ
 			Hostname:     req.GetPlatform().GetHostname(),
 			AgentVersion: req.GetPlatform().GetAgentVersion(),
 		},
-		CreatedUnix: time.Now().Unix(),
+		CreatedUnix: now.Unix(),
+		// Zero-trust admission: a node is PENDING until an admin approves it,
+		// unless the enrollment evidence was strong enough to auto-approve (a
+		// token minted --auto-approve, or a cryptographic instance identity).
+		Approved: autoApprove,
+	}
+	if autoApprove {
+		rec.ApprovedBy = "auto:" + provider.Name()
+		rec.ApprovedAtUnix = now.Unix()
 	}
 	if err := s.store.PutNode(rec); err != nil {
 		return nil, status.Errorf(codes.Internal, "store node: %v", err)
 	}
 	if err := s.audit.Append("enroll", provider.Name(), nodeID, "", map[string]string{
 		"decision": "allow", "name": name,
+		"approved": strconv.FormatBool(autoApprove),
 	}); err != nil {
 		return nil, status.Errorf(codes.Internal, "audit append: %v", err)
 	}
-	slog.Info("node enrolled", "node", nodeID, "name", name, "provider", provider.Name())
+	slog.Info("node enrolled", "node", nodeID, "name", name, "provider", provider.Name(), "approved", autoApprove)
 
 	return &genezav1.EnrollResponse{
 		NodeId:              nodeID,

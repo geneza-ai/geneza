@@ -60,6 +60,11 @@ func (s *Server) reauthSweep() {
 func (s *Server) reauthorize(rec *SessionRecord) (bool, string) {
 	var labels map[string]string
 	if node, err := s.store.GetNode(rec.NodeID); err == nil {
+		// Admission gate is continuous too: if the node's approval was revoked
+		// (quarantined), tear down its live sessions on the next sweep.
+		if !node.Approved {
+			return false, "node approval revoked"
+		}
 		labels = node.Labels
 	}
 	d := s.policy().Evaluate(policy.Input{

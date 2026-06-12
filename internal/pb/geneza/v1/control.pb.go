@@ -1602,6 +1602,7 @@ type NodeSummary struct {
 	LastSeenUnix     int64                  `protobuf:"varint,8,opt,name=last_seen_unix,json=lastSeenUnix,proto3" json:"last_seen_unix,omitempty"`
 	ActiveSessions   uint32                 `protobuf:"varint,9,opt,name=active_sessions,json=activeSessions,proto3" json:"active_sessions,omitempty"`
 	DetachedSessions uint32                 `protobuf:"varint,10,opt,name=detached_sessions,json=detachedSessions,proto3" json:"detached_sessions,omitempty"`
+	Approved         bool                   `protobuf:"varint,11,opt,name=approved,proto3" json:"approved,omitempty"` // false = pending admin approval (no sessions allowed)
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -1704,6 +1705,13 @@ func (x *NodeSummary) GetDetachedSessions() uint32 {
 		return x.DetachedSessions
 	}
 	return 0
+}
+
+func (x *NodeSummary) GetApproved() bool {
+	if x != nil {
+		return x.Approved
+	}
+	return false
 }
 
 type ListNodesRequest struct {
@@ -2711,10 +2719,15 @@ func (x *RevokeCountResponse) GetRevoked() int32 {
 }
 
 type CreateJoinTokenRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	TtlSeconds    int64                  `protobuf:"varint,1,opt,name=ttl_seconds,json=ttlSeconds,proto3" json:"ttl_seconds,omitempty"`                                                // default 3600
-	Labels        map[string]string      `protobuf:"bytes,2,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"` // labels stamped onto the enrolling node
-	MaxUses       int32                  `protobuf:"varint,3,opt,name=max_uses,json=maxUses,proto3" json:"max_uses,omitempty"`                                                         // default 1
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	TtlSeconds int64                  `protobuf:"varint,1,opt,name=ttl_seconds,json=ttlSeconds,proto3" json:"ttl_seconds,omitempty"`                                                // default 3600
+	Labels     map[string]string      `protobuf:"bytes,2,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"` // labels stamped onto the enrolling node
+	MaxUses    int32                  `protobuf:"varint,3,opt,name=max_uses,json=maxUses,proto3" json:"max_uses,omitempty"`                                                         // default 1
+	// auto_approve: enrolled nodes are usable immediately instead of landing in
+	// the pending-approval state. Convenience for automation/low-sensitivity
+	// fleets; relies on token secrecy. Default false = zero-trust (an admin must
+	// approve the machine before any session can be brokered to it).
+	AutoApprove   bool `protobuf:"varint,4,opt,name=auto_approve,json=autoApprove,proto3" json:"auto_approve,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2770,12 +2783,24 @@ func (x *CreateJoinTokenRequest) GetMaxUses() int32 {
 	return 0
 }
 
+func (x *CreateJoinTokenRequest) GetAutoApprove() bool {
+	if x != nil {
+		return x.AutoApprove
+	}
+	return false
+}
+
 type CreateJoinTokenResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Token         string                 `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
-	ExpiresUnix   int64                  `protobuf:"varint,2,opt,name=expires_unix,json=expiresUnix,proto3" json:"expires_unix,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Token       string                 `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
+	ExpiresUnix int64                  `protobuf:"varint,2,opt,name=expires_unix,json=expiresUnix,proto3" json:"expires_unix,omitempty"`
+	// root_fingerprint is sha256 of the gateway's served TUF-lite root public key
+	// (empty if the gateway serves no root). The CLI bakes it into the curl|bash
+	// one-liner as --root-fp so the new machine verifies the trust anchor it
+	// fetches at bootstrap (defeats a gateway-MITM swapping the root key).
+	RootFingerprint string `protobuf:"bytes,3,opt,name=root_fingerprint,json=rootFingerprint,proto3" json:"root_fingerprint,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *CreateJoinTokenResponse) Reset() {
@@ -2822,6 +2847,109 @@ func (x *CreateJoinTokenResponse) GetExpiresUnix() int64 {
 	return 0
 }
 
+func (x *CreateJoinTokenResponse) GetRootFingerprint() string {
+	if x != nil {
+		return x.RootFingerprint
+	}
+	return ""
+}
+
+type ApproveNodeRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Node          string                 `protobuf:"bytes,1,opt,name=node,proto3" json:"node,omitempty"`        // node id or name
+	Approve       bool                   `protobuf:"varint,2,opt,name=approve,proto3" json:"approve,omitempty"` // true=approve, false=revoke approval (quarantine)
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ApproveNodeRequest) Reset() {
+	*x = ApproveNodeRequest{}
+	mi := &file_geneza_v1_control_proto_msgTypes[42]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ApproveNodeRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ApproveNodeRequest) ProtoMessage() {}
+
+func (x *ApproveNodeRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_geneza_v1_control_proto_msgTypes[42]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ApproveNodeRequest.ProtoReflect.Descriptor instead.
+func (*ApproveNodeRequest) Descriptor() ([]byte, []int) {
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{42}
+}
+
+func (x *ApproveNodeRequest) GetNode() string {
+	if x != nil {
+		return x.Node
+	}
+	return ""
+}
+
+func (x *ApproveNodeRequest) GetApprove() bool {
+	if x != nil {
+		return x.Approve
+	}
+	return false
+}
+
+type RemoveNodeRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Node          string                 `protobuf:"bytes,1,opt,name=node,proto3" json:"node,omitempty"` // node id or name
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RemoveNodeRequest) Reset() {
+	*x = RemoveNodeRequest{}
+	mi := &file_geneza_v1_control_proto_msgTypes[43]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RemoveNodeRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RemoveNodeRequest) ProtoMessage() {}
+
+func (x *RemoveNodeRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_geneza_v1_control_proto_msgTypes[43]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RemoveNodeRequest.ProtoReflect.Descriptor instead.
+func (*RemoveNodeRequest) Descriptor() ([]byte, []int) {
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{43}
+}
+
+func (x *RemoveNodeRequest) GetNode() string {
+	if x != nil {
+		return x.Node
+	}
+	return ""
+}
+
 // First chunk must carry signed_manifest (JSON types.Signed wrapping
 // types.Manifest, signed OFFLINE by the artifact key); the gateway verifies
 // the blob hash against the manifest before accepting. The gateway does NOT
@@ -2837,7 +2965,7 @@ type ArtifactChunk struct {
 
 func (x *ArtifactChunk) Reset() {
 	*x = ArtifactChunk{}
-	mi := &file_geneza_v1_control_proto_msgTypes[42]
+	mi := &file_geneza_v1_control_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2849,7 +2977,7 @@ func (x *ArtifactChunk) String() string {
 func (*ArtifactChunk) ProtoMessage() {}
 
 func (x *ArtifactChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[42]
+	mi := &file_geneza_v1_control_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2862,7 +2990,7 @@ func (x *ArtifactChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ArtifactChunk.ProtoReflect.Descriptor instead.
 func (*ArtifactChunk) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{42}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *ArtifactChunk) GetSignedManifest() []byte {
@@ -2896,7 +3024,7 @@ type PublishArtifactResponse struct {
 
 func (x *PublishArtifactResponse) Reset() {
 	*x = PublishArtifactResponse{}
-	mi := &file_geneza_v1_control_proto_msgTypes[43]
+	mi := &file_geneza_v1_control_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2908,7 +3036,7 @@ func (x *PublishArtifactResponse) String() string {
 func (*PublishArtifactResponse) ProtoMessage() {}
 
 func (x *PublishArtifactResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[43]
+	mi := &file_geneza_v1_control_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2921,7 +3049,7 @@ func (x *PublishArtifactResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PublishArtifactResponse.ProtoReflect.Descriptor instead.
 func (*PublishArtifactResponse) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{43}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *PublishArtifactResponse) GetVersion() string {
@@ -2949,7 +3077,7 @@ type SetDesiredVersionRequest struct {
 
 func (x *SetDesiredVersionRequest) Reset() {
 	*x = SetDesiredVersionRequest{}
-	mi := &file_geneza_v1_control_proto_msgTypes[44]
+	mi := &file_geneza_v1_control_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2961,7 +3089,7 @@ func (x *SetDesiredVersionRequest) String() string {
 func (*SetDesiredVersionRequest) ProtoMessage() {}
 
 func (x *SetDesiredVersionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[44]
+	mi := &file_geneza_v1_control_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2974,7 +3102,7 @@ func (x *SetDesiredVersionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetDesiredVersionRequest.ProtoReflect.Descriptor instead.
 func (*SetDesiredVersionRequest) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{44}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *SetDesiredVersionRequest) GetRing() string {
@@ -3010,7 +3138,7 @@ type FleetStatus struct {
 
 func (x *FleetStatus) Reset() {
 	*x = FleetStatus{}
-	mi := &file_geneza_v1_control_proto_msgTypes[45]
+	mi := &file_geneza_v1_control_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3022,7 +3150,7 @@ func (x *FleetStatus) String() string {
 func (*FleetStatus) ProtoMessage() {}
 
 func (x *FleetStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[45]
+	mi := &file_geneza_v1_control_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3035,7 +3163,7 @@ func (x *FleetStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FleetStatus.ProtoReflect.Descriptor instead.
 func (*FleetStatus) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{45}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *FleetStatus) GetNodes() []*NodeSummary {
@@ -3077,7 +3205,7 @@ type QueryAuditRequest struct {
 
 func (x *QueryAuditRequest) Reset() {
 	*x = QueryAuditRequest{}
-	mi := &file_geneza_v1_control_proto_msgTypes[46]
+	mi := &file_geneza_v1_control_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3089,7 +3217,7 @@ func (x *QueryAuditRequest) String() string {
 func (*QueryAuditRequest) ProtoMessage() {}
 
 func (x *QueryAuditRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[46]
+	mi := &file_geneza_v1_control_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3102,7 +3230,7 @@ func (x *QueryAuditRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryAuditRequest.ProtoReflect.Descriptor instead.
 func (*QueryAuditRequest) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{46}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *QueryAuditRequest) GetSinceUnix() int64 {
@@ -3135,7 +3263,7 @@ type AuditRecord struct {
 
 func (x *AuditRecord) Reset() {
 	*x = AuditRecord{}
-	mi := &file_geneza_v1_control_proto_msgTypes[47]
+	mi := &file_geneza_v1_control_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3147,7 +3275,7 @@ func (x *AuditRecord) String() string {
 func (*AuditRecord) ProtoMessage() {}
 
 func (x *AuditRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[47]
+	mi := &file_geneza_v1_control_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3160,7 +3288,7 @@ func (x *AuditRecord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AuditRecord.ProtoReflect.Descriptor instead.
 func (*AuditRecord) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{47}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *AuditRecord) GetJson() []byte {
@@ -3180,7 +3308,7 @@ type QueryAuditResponse struct {
 
 func (x *QueryAuditResponse) Reset() {
 	*x = QueryAuditResponse{}
-	mi := &file_geneza_v1_control_proto_msgTypes[48]
+	mi := &file_geneza_v1_control_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3192,7 +3320,7 @@ func (x *QueryAuditResponse) String() string {
 func (*QueryAuditResponse) ProtoMessage() {}
 
 func (x *QueryAuditResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[48]
+	mi := &file_geneza_v1_control_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3205,7 +3333,7 @@ func (x *QueryAuditResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryAuditResponse.ProtoReflect.Descriptor instead.
 func (*QueryAuditResponse) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{48}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *QueryAuditResponse) GetRecords() []*AuditRecord {
@@ -3230,7 +3358,7 @@ type Empty struct {
 
 func (x *Empty) Reset() {
 	*x = Empty{}
-	mi := &file_geneza_v1_control_proto_msgTypes[49]
+	mi := &file_geneza_v1_control_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3242,7 +3370,7 @@ func (x *Empty) String() string {
 func (*Empty) ProtoMessage() {}
 
 func (x *Empty) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[49]
+	mi := &file_geneza_v1_control_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3255,7 +3383,7 @@ func (x *Empty) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Empty.ProtoReflect.Descriptor instead.
 func (*Empty) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{49}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{51}
 }
 
 var File_geneza_v1_control_proto protoreflect.FileDescriptor
@@ -3390,7 +3518,7 @@ const file_geneza_v1_control_proto_rawDesc = "" +
 	"caRootsPem\x12\x12\n" +
 	"\x04user\x18\x03 \x01(\tR\x04user\x12\x14\n" +
 	"\x05roles\x18\x04 \x03(\tR\x05roles\x12!\n" +
-	"\fexpires_unix\x18\x05 \x01(\x03R\vexpiresUnix\"\x83\x03\n" +
+	"\fexpires_unix\x18\x05 \x01(\x03R\vexpiresUnix\"\x9f\x03\n" +
 	"\vNodeSummary\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12:\n" +
@@ -3402,7 +3530,8 @@ const file_geneza_v1_control_proto_rawDesc = "" +
 	"\x0elast_seen_unix\x18\b \x01(\x03R\flastSeenUnix\x12'\n" +
 	"\x0factive_sessions\x18\t \x01(\rR\x0eactiveSessions\x12+\n" +
 	"\x11detached_sessions\x18\n" +
-	" \x01(\rR\x10detachedSessions\x1a9\n" +
+	" \x01(\rR\x10detachedSessions\x12\x1a\n" +
+	"\bapproved\x18\v \x01(\bR\bapproved\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x12\n" +
@@ -3484,18 +3613,25 @@ const file_geneza_v1_control_proto_rawDesc = "" +
 	"\x04user\x18\x01 \x01(\tR\x04user\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\"/\n" +
 	"\x13RevokeCountResponse\x12\x18\n" +
-	"\arevoked\x18\x01 \x01(\x05R\arevoked\"\xd6\x01\n" +
+	"\arevoked\x18\x01 \x01(\x05R\arevoked\"\xf9\x01\n" +
 	"\x16CreateJoinTokenRequest\x12\x1f\n" +
 	"\vttl_seconds\x18\x01 \x01(\x03R\n" +
 	"ttlSeconds\x12E\n" +
 	"\x06labels\x18\x02 \x03(\v2-.geneza.v1.CreateJoinTokenRequest.LabelsEntryR\x06labels\x12\x19\n" +
-	"\bmax_uses\x18\x03 \x01(\x05R\amaxUses\x1a9\n" +
+	"\bmax_uses\x18\x03 \x01(\x05R\amaxUses\x12!\n" +
+	"\fauto_approve\x18\x04 \x01(\bR\vautoApprove\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"R\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"}\n" +
 	"\x17CreateJoinTokenResponse\x12\x14\n" +
 	"\x05token\x18\x01 \x01(\tR\x05token\x12!\n" +
-	"\fexpires_unix\x18\x02 \x01(\x03R\vexpiresUnix\"^\n" +
+	"\fexpires_unix\x18\x02 \x01(\x03R\vexpiresUnix\x12)\n" +
+	"\x10root_fingerprint\x18\x03 \x01(\tR\x0frootFingerprint\"B\n" +
+	"\x12ApproveNodeRequest\x12\x12\n" +
+	"\x04node\x18\x01 \x01(\tR\x04node\x12\x18\n" +
+	"\aapprove\x18\x02 \x01(\bR\aapprove\"'\n" +
+	"\x11RemoveNodeRequest\x12\x12\n" +
+	"\x04node\x18\x01 \x01(\tR\x04node\"^\n" +
 	"\rArtifactChunk\x12'\n" +
 	"\x0fsigned_manifest\x18\x01 \x01(\fR\x0esignedManifest\x12\x12\n" +
 	"\x04data\x18\x02 \x01(\fR\x04data\x12\x10\n" +
@@ -3537,9 +3673,12 @@ const file_geneza_v1_control_proto_rawDesc = "" +
 	"\fListServices\x12\x1e.geneza.v1.ListServicesRequest\x1a\x1f.geneza.v1.ListServicesResponse\x12R\n" +
 	"\rCreateSession\x12\x1f.geneza.v1.CreateSessionRequest\x1a .geneza.v1.CreateSessionResponse\x12O\n" +
 	"\fListSessions\x12\x1e.geneza.v1.ListSessionsRequest\x1a\x1f.geneza.v1.ListSessionsResponse\x125\n" +
-	"\x06WhoAmI\x12\x10.geneza.v1.Empty\x1a\x19.geneza.v1.WhoAmIResponse2\xe8\x05\n" +
+	"\x06WhoAmI\x12\x10.geneza.v1.Empty\x1a\x19.geneza.v1.WhoAmIResponse2\xe6\x06\n" +
 	"\bAdminAPI\x12X\n" +
-	"\x0fCreateJoinToken\x12!.geneza.v1.CreateJoinTokenRequest\x1a\".geneza.v1.CreateJoinTokenResponse\x12Q\n" +
+	"\x0fCreateJoinToken\x12!.geneza.v1.CreateJoinTokenRequest\x1a\".geneza.v1.CreateJoinTokenResponse\x12>\n" +
+	"\vApproveNode\x12\x1d.geneza.v1.ApproveNodeRequest\x1a\x10.geneza.v1.Empty\x12<\n" +
+	"\n" +
+	"RemoveNode\x12\x1c.geneza.v1.RemoveNodeRequest\x1a\x10.geneza.v1.Empty\x12Q\n" +
 	"\x0fPublishArtifact\x12\x18.geneza.v1.ArtifactChunk\x1a\".geneza.v1.PublishArtifactResponse(\x01\x12J\n" +
 	"\x11SetDesiredVersion\x12#.geneza.v1.SetDesiredVersionRequest\x1a\x10.geneza.v1.Empty\x12:\n" +
 	"\x0eGetFleetStatus\x12\x10.geneza.v1.Empty\x1a\x16.geneza.v1.FleetStatus\x122\n" +
@@ -3564,7 +3703,7 @@ func file_geneza_v1_control_proto_rawDescGZIP() []byte {
 	return file_geneza_v1_control_proto_rawDescData
 }
 
-var file_geneza_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 57)
+var file_geneza_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 59)
 var file_geneza_v1_control_proto_goTypes = []any{
 	(*EnrollRequest)(nil),            // 0: geneza.v1.EnrollRequest
 	(*PlatformInfo)(nil),             // 1: geneza.v1.PlatformInfo
@@ -3608,24 +3747,26 @@ var file_geneza_v1_control_proto_goTypes = []any{
 	(*RevokeCountResponse)(nil),      // 39: geneza.v1.RevokeCountResponse
 	(*CreateJoinTokenRequest)(nil),   // 40: geneza.v1.CreateJoinTokenRequest
 	(*CreateJoinTokenResponse)(nil),  // 41: geneza.v1.CreateJoinTokenResponse
-	(*ArtifactChunk)(nil),            // 42: geneza.v1.ArtifactChunk
-	(*PublishArtifactResponse)(nil),  // 43: geneza.v1.PublishArtifactResponse
-	(*SetDesiredVersionRequest)(nil), // 44: geneza.v1.SetDesiredVersionRequest
-	(*FleetStatus)(nil),              // 45: geneza.v1.FleetStatus
-	(*QueryAuditRequest)(nil),        // 46: geneza.v1.QueryAuditRequest
-	(*AuditRecord)(nil),              // 47: geneza.v1.AuditRecord
-	(*QueryAuditResponse)(nil),       // 48: geneza.v1.QueryAuditResponse
-	(*Empty)(nil),                    // 49: geneza.v1.Empty
-	nil,                              // 50: geneza.v1.EnrollRequest.LabelsEntry
-	nil,                              // 51: geneza.v1.ModuleSpec.SettingsEntry
-	nil,                              // 52: geneza.v1.ServiceAdvert.LabelsEntry
-	nil,                              // 53: geneza.v1.AgentHello.LabelsEntry
-	nil,                              // 54: geneza.v1.NodeSummary.LabelsEntry
-	nil,                              // 55: geneza.v1.ServiceInfo.LabelsEntry
-	nil,                              // 56: geneza.v1.CreateJoinTokenRequest.LabelsEntry
+	(*ApproveNodeRequest)(nil),       // 42: geneza.v1.ApproveNodeRequest
+	(*RemoveNodeRequest)(nil),        // 43: geneza.v1.RemoveNodeRequest
+	(*ArtifactChunk)(nil),            // 44: geneza.v1.ArtifactChunk
+	(*PublishArtifactResponse)(nil),  // 45: geneza.v1.PublishArtifactResponse
+	(*SetDesiredVersionRequest)(nil), // 46: geneza.v1.SetDesiredVersionRequest
+	(*FleetStatus)(nil),              // 47: geneza.v1.FleetStatus
+	(*QueryAuditRequest)(nil),        // 48: geneza.v1.QueryAuditRequest
+	(*AuditRecord)(nil),              // 49: geneza.v1.AuditRecord
+	(*QueryAuditResponse)(nil),       // 50: geneza.v1.QueryAuditResponse
+	(*Empty)(nil),                    // 51: geneza.v1.Empty
+	nil,                              // 52: geneza.v1.EnrollRequest.LabelsEntry
+	nil,                              // 53: geneza.v1.ModuleSpec.SettingsEntry
+	nil,                              // 54: geneza.v1.ServiceAdvert.LabelsEntry
+	nil,                              // 55: geneza.v1.AgentHello.LabelsEntry
+	nil,                              // 56: geneza.v1.NodeSummary.LabelsEntry
+	nil,                              // 57: geneza.v1.ServiceInfo.LabelsEntry
+	nil,                              // 58: geneza.v1.CreateJoinTokenRequest.LabelsEntry
 }
 var file_geneza_v1_control_proto_depIdxs = []int32{
-	50, // 0: geneza.v1.EnrollRequest.labels:type_name -> geneza.v1.EnrollRequest.LabelsEntry
+	52, // 0: geneza.v1.EnrollRequest.labels:type_name -> geneza.v1.EnrollRequest.LabelsEntry
 	1,  // 1: geneza.v1.EnrollRequest.platform:type_name -> geneza.v1.PlatformInfo
 	10, // 2: geneza.v1.AgentMsg.hello:type_name -> geneza.v1.AgentHello
 	11, // 3: geneza.v1.AgentMsg.heartbeat:type_name -> geneza.v1.Heartbeat
@@ -3637,20 +3778,20 @@ var file_geneza_v1_control_proto_depIdxs = []int32{
 	8,  // 9: geneza.v1.GatewayMsg.session_revoke:type_name -> geneza.v1.SessionRevoke
 	5,  // 10: geneza.v1.GatewayMsg.module_config:type_name -> geneza.v1.ModuleConfig
 	6,  // 11: geneza.v1.ModuleConfig.modules:type_name -> geneza.v1.ModuleSpec
-	51, // 12: geneza.v1.ModuleSpec.settings:type_name -> geneza.v1.ModuleSpec.SettingsEntry
-	52, // 13: geneza.v1.ServiceAdvert.labels:type_name -> geneza.v1.ServiceAdvert.LabelsEntry
-	53, // 14: geneza.v1.AgentHello.labels:type_name -> geneza.v1.AgentHello.LabelsEntry
+	53, // 12: geneza.v1.ModuleSpec.settings:type_name -> geneza.v1.ModuleSpec.SettingsEntry
+	54, // 13: geneza.v1.ServiceAdvert.labels:type_name -> geneza.v1.ServiceAdvert.LabelsEntry
+	55, // 14: geneza.v1.AgentHello.labels:type_name -> geneza.v1.AgentHello.LabelsEntry
 	9,  // 15: geneza.v1.AgentHello.services:type_name -> geneza.v1.ServiceAdvert
-	54, // 16: geneza.v1.NodeSummary.labels:type_name -> geneza.v1.NodeSummary.LabelsEntry
+	56, // 16: geneza.v1.NodeSummary.labels:type_name -> geneza.v1.NodeSummary.LabelsEntry
 	22, // 17: geneza.v1.ListNodesResponse.nodes:type_name -> geneza.v1.NodeSummary
-	55, // 18: geneza.v1.ServiceInfo.labels:type_name -> geneza.v1.ServiceInfo.LabelsEntry
+	57, // 18: geneza.v1.ServiceInfo.labels:type_name -> geneza.v1.ServiceInfo.LabelsEntry
 	28, // 19: geneza.v1.ListServicesResponse.services:type_name -> geneza.v1.ServiceInfo
 	27, // 20: geneza.v1.ListSessionsResponse.sessions:type_name -> geneza.v1.SessionInfo
 	6,  // 21: geneza.v1.SetNodeModulesRequest.modules:type_name -> geneza.v1.ModuleSpec
 	6,  // 22: geneza.v1.NodeModulesResponse.modules:type_name -> geneza.v1.ModuleSpec
-	56, // 23: geneza.v1.CreateJoinTokenRequest.labels:type_name -> geneza.v1.CreateJoinTokenRequest.LabelsEntry
+	58, // 23: geneza.v1.CreateJoinTokenRequest.labels:type_name -> geneza.v1.CreateJoinTokenRequest.LabelsEntry
 	22, // 24: geneza.v1.FleetStatus.nodes:type_name -> geneza.v1.NodeSummary
-	47, // 25: geneza.v1.QueryAuditResponse.records:type_name -> geneza.v1.AuditRecord
+	49, // 25: geneza.v1.QueryAuditResponse.records:type_name -> geneza.v1.AuditRecord
 	0,  // 26: geneza.v1.Enrollment.Enroll:input_type -> geneza.v1.EnrollRequest
 	3,  // 27: geneza.v1.NodeControl.Stream:input_type -> geneza.v1.AgentMsg
 	17, // 28: geneza.v1.NodeControl.RenewCert:input_type -> geneza.v1.RenewCertRequest
@@ -3660,39 +3801,43 @@ var file_geneza_v1_control_proto_depIdxs = []int32{
 	29, // 32: geneza.v1.UserAPI.ListServices:input_type -> geneza.v1.ListServicesRequest
 	25, // 33: geneza.v1.UserAPI.CreateSession:input_type -> geneza.v1.CreateSessionRequest
 	31, // 34: geneza.v1.UserAPI.ListSessions:input_type -> geneza.v1.ListSessionsRequest
-	49, // 35: geneza.v1.UserAPI.WhoAmI:input_type -> geneza.v1.Empty
+	51, // 35: geneza.v1.UserAPI.WhoAmI:input_type -> geneza.v1.Empty
 	40, // 36: geneza.v1.AdminAPI.CreateJoinToken:input_type -> geneza.v1.CreateJoinTokenRequest
-	42, // 37: geneza.v1.AdminAPI.PublishArtifact:input_type -> geneza.v1.ArtifactChunk
-	44, // 38: geneza.v1.AdminAPI.SetDesiredVersion:input_type -> geneza.v1.SetDesiredVersionRequest
-	49, // 39: geneza.v1.AdminAPI.GetFleetStatus:input_type -> geneza.v1.Empty
-	49, // 40: geneza.v1.AdminAPI.ReloadPolicy:input_type -> geneza.v1.Empty
-	46, // 41: geneza.v1.AdminAPI.QueryAudit:input_type -> geneza.v1.QueryAuditRequest
-	37, // 42: geneza.v1.AdminAPI.RevokeSession:input_type -> geneza.v1.RevokeSessionRequest
-	38, // 43: geneza.v1.AdminAPI.RevokeUser:input_type -> geneza.v1.RevokeUserRequest
-	34, // 44: geneza.v1.AdminAPI.SetNodeModules:input_type -> geneza.v1.SetNodeModulesRequest
-	35, // 45: geneza.v1.AdminAPI.GetNodeModules:input_type -> geneza.v1.GetNodeModulesRequest
-	2,  // 46: geneza.v1.Enrollment.Enroll:output_type -> geneza.v1.EnrollResponse
-	4,  // 47: geneza.v1.NodeControl.Stream:output_type -> geneza.v1.GatewayMsg
-	18, // 48: geneza.v1.NodeControl.RenewCert:output_type -> geneza.v1.RenewCertResponse
-	16, // 49: geneza.v1.NodeControl.UploadRecording:output_type -> geneza.v1.UploadAck
-	21, // 50: geneza.v1.UserAPI.Login:output_type -> geneza.v1.LoginResponse
-	24, // 51: geneza.v1.UserAPI.ListNodes:output_type -> geneza.v1.ListNodesResponse
-	30, // 52: geneza.v1.UserAPI.ListServices:output_type -> geneza.v1.ListServicesResponse
-	26, // 53: geneza.v1.UserAPI.CreateSession:output_type -> geneza.v1.CreateSessionResponse
-	32, // 54: geneza.v1.UserAPI.ListSessions:output_type -> geneza.v1.ListSessionsResponse
-	33, // 55: geneza.v1.UserAPI.WhoAmI:output_type -> geneza.v1.WhoAmIResponse
-	41, // 56: geneza.v1.AdminAPI.CreateJoinToken:output_type -> geneza.v1.CreateJoinTokenResponse
-	43, // 57: geneza.v1.AdminAPI.PublishArtifact:output_type -> geneza.v1.PublishArtifactResponse
-	49, // 58: geneza.v1.AdminAPI.SetDesiredVersion:output_type -> geneza.v1.Empty
-	45, // 59: geneza.v1.AdminAPI.GetFleetStatus:output_type -> geneza.v1.FleetStatus
-	49, // 60: geneza.v1.AdminAPI.ReloadPolicy:output_type -> geneza.v1.Empty
-	48, // 61: geneza.v1.AdminAPI.QueryAudit:output_type -> geneza.v1.QueryAuditResponse
-	49, // 62: geneza.v1.AdminAPI.RevokeSession:output_type -> geneza.v1.Empty
-	39, // 63: geneza.v1.AdminAPI.RevokeUser:output_type -> geneza.v1.RevokeCountResponse
-	49, // 64: geneza.v1.AdminAPI.SetNodeModules:output_type -> geneza.v1.Empty
-	36, // 65: geneza.v1.AdminAPI.GetNodeModules:output_type -> geneza.v1.NodeModulesResponse
-	46, // [46:66] is the sub-list for method output_type
-	26, // [26:46] is the sub-list for method input_type
+	42, // 37: geneza.v1.AdminAPI.ApproveNode:input_type -> geneza.v1.ApproveNodeRequest
+	43, // 38: geneza.v1.AdminAPI.RemoveNode:input_type -> geneza.v1.RemoveNodeRequest
+	44, // 39: geneza.v1.AdminAPI.PublishArtifact:input_type -> geneza.v1.ArtifactChunk
+	46, // 40: geneza.v1.AdminAPI.SetDesiredVersion:input_type -> geneza.v1.SetDesiredVersionRequest
+	51, // 41: geneza.v1.AdminAPI.GetFleetStatus:input_type -> geneza.v1.Empty
+	51, // 42: geneza.v1.AdminAPI.ReloadPolicy:input_type -> geneza.v1.Empty
+	48, // 43: geneza.v1.AdminAPI.QueryAudit:input_type -> geneza.v1.QueryAuditRequest
+	37, // 44: geneza.v1.AdminAPI.RevokeSession:input_type -> geneza.v1.RevokeSessionRequest
+	38, // 45: geneza.v1.AdminAPI.RevokeUser:input_type -> geneza.v1.RevokeUserRequest
+	34, // 46: geneza.v1.AdminAPI.SetNodeModules:input_type -> geneza.v1.SetNodeModulesRequest
+	35, // 47: geneza.v1.AdminAPI.GetNodeModules:input_type -> geneza.v1.GetNodeModulesRequest
+	2,  // 48: geneza.v1.Enrollment.Enroll:output_type -> geneza.v1.EnrollResponse
+	4,  // 49: geneza.v1.NodeControl.Stream:output_type -> geneza.v1.GatewayMsg
+	18, // 50: geneza.v1.NodeControl.RenewCert:output_type -> geneza.v1.RenewCertResponse
+	16, // 51: geneza.v1.NodeControl.UploadRecording:output_type -> geneza.v1.UploadAck
+	21, // 52: geneza.v1.UserAPI.Login:output_type -> geneza.v1.LoginResponse
+	24, // 53: geneza.v1.UserAPI.ListNodes:output_type -> geneza.v1.ListNodesResponse
+	30, // 54: geneza.v1.UserAPI.ListServices:output_type -> geneza.v1.ListServicesResponse
+	26, // 55: geneza.v1.UserAPI.CreateSession:output_type -> geneza.v1.CreateSessionResponse
+	32, // 56: geneza.v1.UserAPI.ListSessions:output_type -> geneza.v1.ListSessionsResponse
+	33, // 57: geneza.v1.UserAPI.WhoAmI:output_type -> geneza.v1.WhoAmIResponse
+	41, // 58: geneza.v1.AdminAPI.CreateJoinToken:output_type -> geneza.v1.CreateJoinTokenResponse
+	51, // 59: geneza.v1.AdminAPI.ApproveNode:output_type -> geneza.v1.Empty
+	51, // 60: geneza.v1.AdminAPI.RemoveNode:output_type -> geneza.v1.Empty
+	45, // 61: geneza.v1.AdminAPI.PublishArtifact:output_type -> geneza.v1.PublishArtifactResponse
+	51, // 62: geneza.v1.AdminAPI.SetDesiredVersion:output_type -> geneza.v1.Empty
+	47, // 63: geneza.v1.AdminAPI.GetFleetStatus:output_type -> geneza.v1.FleetStatus
+	51, // 64: geneza.v1.AdminAPI.ReloadPolicy:output_type -> geneza.v1.Empty
+	50, // 65: geneza.v1.AdminAPI.QueryAudit:output_type -> geneza.v1.QueryAuditResponse
+	51, // 66: geneza.v1.AdminAPI.RevokeSession:output_type -> geneza.v1.Empty
+	39, // 67: geneza.v1.AdminAPI.RevokeUser:output_type -> geneza.v1.RevokeCountResponse
+	51, // 68: geneza.v1.AdminAPI.SetNodeModules:output_type -> geneza.v1.Empty
+	36, // 69: geneza.v1.AdminAPI.GetNodeModules:output_type -> geneza.v1.NodeModulesResponse
+	48, // [48:70] is the sub-list for method output_type
+	26, // [26:48] is the sub-list for method input_type
 	26, // [26:26] is the sub-list for extension type_name
 	26, // [26:26] is the sub-list for extension extendee
 	0,  // [0:26] is the sub-list for field type_name
@@ -3723,7 +3868,7 @@ func file_geneza_v1_control_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_geneza_v1_control_proto_rawDesc), len(file_geneza_v1_control_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   57,
+			NumMessages:   59,
 			NumExtensions: 0,
 			NumServices:   4,
 		},

@@ -195,6 +195,9 @@ func (s *Server) httpHandler() http.Handler {
 		http.ServeContent(w, r, sha, st.ModTime(), f)
 	})
 
+	// curl|bash installer (install.sh, root-pubkey, stage-1 binaries).
+	s.registerInstallerRoutes(mux)
+
 	return mux
 }
 

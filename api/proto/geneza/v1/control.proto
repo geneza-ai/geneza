@@ -226,6 +226,7 @@ message NodeSummary {
   int64 last_seen_unix = 8;
   uint32 active_sessions = 9;
   uint32 detached_sessions = 10;
+  bool approved = 11;   // false = pending admin approval (no sessions allowed)
 }
 
 message ListNodesRequest {}
@@ -306,6 +307,13 @@ message WhoAmIResponse {
 
 service AdminAPI {
   rpc CreateJoinToken(CreateJoinTokenRequest) returns (CreateJoinTokenResponse);
+  // ApproveNode flips a node's pending-approval gate (zero-trust admission
+  // control): an unapproved node has an identity but no session can be brokered
+  // to it until an admin approves. approve=false re-quarantines a node.
+  rpc ApproveNode(ApproveNodeRequest) returns (Empty);
+  // RemoveNode decommissions a machine: deletes its record so it no longer
+  // appears in the fleet and must re-enroll (and re-be-approved) to return.
+  rpc RemoveNode(RemoveNodeRequest) returns (Empty);
   rpc PublishArtifact(stream ArtifactChunk) returns (PublishArtifactResponse);
   rpc SetDesiredVersion(SetDesiredVersionRequest) returns (Empty);
   rpc GetFleetStatus(Empty) returns (FleetStatus);
@@ -352,11 +360,30 @@ message CreateJoinTokenRequest {
   int64 ttl_seconds = 1;            // default 3600
   map<string, string> labels = 2;   // labels stamped onto the enrolling node
   int32 max_uses = 3;               // default 1
+  // auto_approve: enrolled nodes are usable immediately instead of landing in
+  // the pending-approval state. Convenience for automation/low-sensitivity
+  // fleets; relies on token secrecy. Default false = zero-trust (an admin must
+  // approve the machine before any session can be brokered to it).
+  bool auto_approve = 4;
 }
 
 message CreateJoinTokenResponse {
   string token = 1;
   int64 expires_unix = 2;
+  // root_fingerprint is sha256 of the gateway's served TUF-lite root public key
+  // (empty if the gateway serves no root). The CLI bakes it into the curl|bash
+  // one-liner as --root-fp so the new machine verifies the trust anchor it
+  // fetches at bootstrap (defeats a gateway-MITM swapping the root key).
+  string root_fingerprint = 3;
+}
+
+message ApproveNodeRequest {
+  string node = 1;      // node id or name
+  bool approve = 2;     // true=approve, false=revoke approval (quarantine)
+}
+
+message RemoveNodeRequest {
+  string node = 1;      // node id or name
 }
 
 // First chunk must carry signed_manifest (JSON types.Signed wrapping

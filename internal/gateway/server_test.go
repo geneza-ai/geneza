@@ -195,6 +195,82 @@ func TestServerLoginEnrollAndConfigReconcile(t *testing.T) {
 	}
 }
 
+// TestEnrollApprovalGate covers the zero-trust admission model: a token-enrolled
+// node lands pending; ApproveNode flips it; and an --auto-approve token enrolls
+// already-approved with the auto provenance recorded.
+func TestEnrollApprovalGate(t *testing.T) {
+	cfg := testServerConfig(t)
+	if err := InitDataDir(cfg); err != nil {
+		t.Fatal(err)
+	}
+	srv, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	admin := &adminAPIService{s: srv}
+	enroll := &enrollmentService{s: srv}
+
+	enrollWith := func(autoApprove bool) *NodeRecord {
+		t.Helper()
+		tok, err := admin.CreateJoinToken(context.Background(), &genezav1.CreateJoinTokenRequest{
+			Labels: map[string]string{"env": "prod"}, AutoApprove: autoApprove,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		key, _ := ca.GenerateKey()
+		csr, _ := ca.MakeCSR(key, "node")
+		resp, err := enroll.Enroll(context.Background(), &genezav1.EnrollRequest{
+			Provider: "token", Token: tok.Token, CsrPem: csr,
+			NoiseStaticPub: make([]byte, 32),
+			Platform:       &genezav1.PlatformInfo{Hostname: "h"},
+		})
+		if err != nil {
+			t.Fatalf("enroll(auto=%v): %v", autoApprove, err)
+		}
+		n, err := srv.store.GetNode(resp.NodeId)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	// Default: pending.
+	pending := enrollWith(false)
+	if pending.Approved {
+		t.Fatal("token enrollment should land pending (Approved=false)")
+	}
+	// Approve flips it and records provenance.
+	if _, err := admin.ApproveNode(context.Background(), &genezav1.ApproveNodeRequest{Node: pending.ID, Approve: true}); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	got, _ := srv.store.GetNode(pending.ID)
+	// ApprovedBy comes from the admin cert identity (empty in this unit ctx); the
+	// real provenance is asserted via the auto-approve path below.
+	if !got.Approved || got.ApprovedAtUnix == 0 {
+		t.Fatalf("after approve: %+v", got)
+	}
+	// Re-quarantine clears it.
+	if _, err := admin.ApproveNode(context.Background(), &genezav1.ApproveNodeRequest{Node: pending.ID, Approve: false}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ = srv.store.GetNode(pending.ID); got.Approved {
+		t.Fatal("deny should clear Approved")
+	}
+
+	// --auto-approve token: approved on enroll, provenance = auto:<provider>.
+	auto := enrollWith(true)
+	if !auto.Approved || auto.ApprovedBy != "auto:token" {
+		t.Fatalf("auto-approve enroll: %+v", auto)
+	}
+
+	// Unknown node id -> NotFound.
+	if _, err := admin.ApproveNode(context.Background(), &genezav1.ApproveNodeRequest{Node: "n-doesnotexist", Approve: true}); status.Code(err) != codes.NotFound {
+		t.Fatalf("approve unknown: want NotFound, got %v", err)
+	}
+}
+
 func TestInitRefusesReinit(t *testing.T) {
 	cfg := testServerConfig(t)
 	if err := InitDataDir(cfg); err != nil {

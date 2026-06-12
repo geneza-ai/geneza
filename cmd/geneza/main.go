@@ -159,6 +159,15 @@ func onlineStr(online bool) string {
 	return colorize("no", "31")
 }
 
+// admissionStr renders the zero-trust admission gate: approved machines can have
+// sessions brokered to them; pending ones cannot until an admin approves.
+func admissionStr(approved bool) string {
+	if approved {
+		return colorize("approved", "32")
+	}
+	return colorize("PENDING", "33")
+}
+
 func boolStr(b bool) string {
 	if b {
 		return "yes"
