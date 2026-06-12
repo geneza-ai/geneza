@@ -281,11 +281,11 @@ func (s *Server) nodeSummaries() ([]*genezav1.NodeSummary, error) {
 	out := make([]*genezav1.NodeSummary, 0, len(nodes))
 	for _, n := range nodes {
 		sum := &genezav1.NodeSummary{
-			NodeId:   n.ID,
-			Name:     n.Name,
-			Labels:   n.Labels,
-			Os:       n.Platform.OS,
-			Arch:     n.Platform.Arch,
+			NodeId:    n.ID,
+			Name:      n.Name,
+			Labels:    n.Labels,
+			Os:        n.Platform.OS,
+			Arch:      n.Platform.Arch,
 			Version:   n.Platform.AgentVersion,
 			Approved:  n.Approved,
 			OverlayIp: n.OverlayIP,
