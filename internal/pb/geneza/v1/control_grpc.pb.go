@@ -306,6 +306,7 @@ const (
 	UserAPI_CreateSession_FullMethodName = "/geneza.v1.UserAPI/CreateSession"
 	UserAPI_ListSessions_FullMethodName  = "/geneza.v1.UserAPI/ListSessions"
 	UserAPI_WhoAmI_FullMethodName        = "/geneza.v1.UserAPI/WhoAmI"
+	UserAPI_ResolveDNS_FullMethodName    = "/geneza.v1.UserAPI/ResolveDNS"
 )
 
 // UserAPIClient is the client API for UserAPI service.
@@ -318,6 +319,13 @@ type UserAPIClient interface {
 	CreateSession(ctx context.Context, in *CreateSessionRequest, opts ...grpc.CallOption) (*CreateSessionResponse, error)
 	ListSessions(ctx context.Context, in *ListSessionsRequest, opts ...grpc.CallOption) (*ListSessionsResponse, error)
 	WhoAmI(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*WhoAmIResponse, error)
+	// ResolveDNS answers a wire-format DNS query against the caller's tenant zone
+	// (machine names -> overlay IPs), gated by policy: a name resolves only if the
+	// caller could reach that machine (denied/unknown -> NXDOMAIN, no enumeration
+	// oracle). The resolver (miekg/dns) runs in the gateway where identity, policy
+	// and the node directory live; the `geneza vpn` client relays its local
+	// stub-resolver's queries here over this already-authenticated mTLS channel.
+	ResolveDNS(ctx context.Context, in *DNSQuery, opts ...grpc.CallOption) (*DNSResponse, error)
 }
 
 type userAPIClient struct {
@@ -388,6 +396,16 @@ func (c *userAPIClient) WhoAmI(ctx context.Context, in *Empty, opts ...grpc.Call
 	return out, nil
 }
 
+func (c *userAPIClient) ResolveDNS(ctx context.Context, in *DNSQuery, opts ...grpc.CallOption) (*DNSResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DNSResponse)
+	err := c.cc.Invoke(ctx, UserAPI_ResolveDNS_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // UserAPIServer is the server API for UserAPI service.
 // All implementations must embed UnimplementedUserAPIServer
 // for forward compatibility.
@@ -398,6 +416,13 @@ type UserAPIServer interface {
 	CreateSession(context.Context, *CreateSessionRequest) (*CreateSessionResponse, error)
 	ListSessions(context.Context, *ListSessionsRequest) (*ListSessionsResponse, error)
 	WhoAmI(context.Context, *Empty) (*WhoAmIResponse, error)
+	// ResolveDNS answers a wire-format DNS query against the caller's tenant zone
+	// (machine names -> overlay IPs), gated by policy: a name resolves only if the
+	// caller could reach that machine (denied/unknown -> NXDOMAIN, no enumeration
+	// oracle). The resolver (miekg/dns) runs in the gateway where identity, policy
+	// and the node directory live; the `geneza vpn` client relays its local
+	// stub-resolver's queries here over this already-authenticated mTLS channel.
+	ResolveDNS(context.Context, *DNSQuery) (*DNSResponse, error)
 	mustEmbedUnimplementedUserAPIServer()
 }
 
@@ -425,6 +450,9 @@ func (UnimplementedUserAPIServer) ListSessions(context.Context, *ListSessionsReq
 }
 func (UnimplementedUserAPIServer) WhoAmI(context.Context, *Empty) (*WhoAmIResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method WhoAmI not implemented")
+}
+func (UnimplementedUserAPIServer) ResolveDNS(context.Context, *DNSQuery) (*DNSResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ResolveDNS not implemented")
 }
 func (UnimplementedUserAPIServer) mustEmbedUnimplementedUserAPIServer() {}
 func (UnimplementedUserAPIServer) testEmbeddedByValue()                 {}
@@ -555,6 +583,24 @@ func _UserAPI_WhoAmI_Handler(srv interface{}, ctx context.Context, dec func(inte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _UserAPI_ResolveDNS_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DNSQuery)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserAPIServer).ResolveDNS(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserAPI_ResolveDNS_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserAPIServer).ResolveDNS(ctx, req.(*DNSQuery))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // UserAPI_ServiceDesc is the grpc.ServiceDesc for UserAPI service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -585,6 +631,10 @@ var UserAPI_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "WhoAmI",
 			Handler:    _UserAPI_WhoAmI_Handler,
+		},
+		{
+			MethodName: "ResolveDNS",
+			Handler:    _UserAPI_ResolveDNS_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

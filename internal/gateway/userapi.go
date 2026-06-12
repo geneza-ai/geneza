@@ -56,6 +56,22 @@ func (u *userAPIService) ListServices(ctx context.Context, req *genezav1.ListSer
 	return &genezav1.ListServicesResponse{Services: out}, nil
 }
 
+// ResolveDNS answers a wire-format DNS query for the caller's tenant zone,
+// policy-gated (machine name -> overlay IP; unknown/denied -> NXDOMAIN). The
+// resolver runs here in the gateway; the `geneza vpn` client relays its local
+// stub's queries over this authenticated channel.
+func (u *userAPIService) ResolveDNS(ctx context.Context, req *genezav1.DNSQuery) (*genezav1.DNSResponse, error) {
+	ident, _, ok := identityFrom(ctx)
+	if !ok {
+		return nil, status.Error(codes.Unauthenticated, "no verified identity")
+	}
+	resp, err := u.s.resolver.Answer(req.GetQuery(), u.s.dnsLookupA(ident))
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "dns: %v", err)
+	}
+	return &genezav1.DNSResponse{Response: resp}, nil
+}
+
 func (u *userAPIService) CreateSession(ctx context.Context, req *genezav1.CreateSessionRequest) (*genezav1.CreateSessionResponse, error) {
 	ident, _, ok := identityFrom(ctx)
 	if !ok {

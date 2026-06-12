@@ -59,6 +59,7 @@ func main() {
 		newServicesCmd(),
 		newConnectCmd(),
 		newVPNCmd(),
+		newResolveCmd(),
 		newAdminCmd(),
 	)
 

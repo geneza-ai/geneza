@@ -21,6 +21,7 @@ import (
 
 	"osie.cloud/geneza/internal/ca"
 	"osie.cloud/geneza/internal/defaults"
+	genezadns "osie.cloud/geneza/internal/dns"
 	genezav1 "osie.cloud/geneza/internal/pb/geneza/v1"
 	"osie.cloud/geneza/internal/policy"
 	"osie.cloud/geneza/internal/types"
@@ -53,8 +54,11 @@ type Server struct {
 	ccVersion int64
 	ccSigned  []byte
 
-	overlay *overlayAllocator
-	metrics *metricsStore
+	overlay  *overlayAllocator
+	metrics  *metricsStore
+	resolver *genezadns.Resolver // policy-aware DNS for the tenant zone
+
+	overlayMu sync.Mutex // serializes stable per-machine overlay-IP assignment
 }
 
 func New(cfg *Config) (*Server, error) {
@@ -118,6 +122,7 @@ func New(cfg *Config) (*Server, error) {
 		tlsCert:      tlsCert,
 		policyEngine: engine,
 		overlay:      newOverlayAllocator(),
+		resolver:     genezadns.NewResolver(cfg.dnsZone()),
 	}
 	s.enrollProviders = map[string]EnrollProvider{
 		"token":              &tokenProvider{store: store},

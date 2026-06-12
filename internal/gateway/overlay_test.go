@@ -40,9 +40,42 @@ func TestOverlayPoolExhaustion(t *testing.T) {
 			t.Fatal("allocator never reported exhaustion")
 		}
 	}
-	if n != 253 { // 100.64.0.2 .. 100.64.0.254
-		t.Fatalf("expected 253 addresses, got %d", n)
+	if n != overlayClientLast-overlayClientFirst+1 { // per-session client range (128..254)
+		t.Fatalf("expected %d addresses, got %d", overlayClientLast-overlayClientFirst+1, n)
 	}
+}
+
+func TestMachineIPAllocation(t *testing.T) {
+	used := map[string]bool{}
+	first, err := allocMachineIP(used)
+	if err != nil || first != "100.64.0.2" {
+		t.Fatalf("first machine ip = %q (%v), want 100.64.0.2", first, err)
+	}
+	// The resolver address is skipped.
+	used = map[string]bool{}
+	for x := 2; x < 53; x++ {
+		used[fmtIP(x)] = true
+	}
+	ip, _ := allocMachineIP(used)
+	if ip == OverlayResolverIP {
+		t.Fatalf("machine allocation handed out the reserved resolver IP %s", ip)
+	}
+	if ip != "100.64.0.54" {
+		t.Fatalf("expected .53 skipped -> .54, got %s", ip)
+	}
+}
+
+func fmtIP(x int) string { return "100.64.0." + itoa(x) }
+func itoa(x int) string {
+	if x == 0 {
+		return "0"
+	}
+	var b []byte
+	for x > 0 {
+		b = append([]byte{byte('0' + x%10)}, b...)
+		x /= 10
+	}
+	return string(b)
 }
 
 func TestValidCIDR(t *testing.T) {

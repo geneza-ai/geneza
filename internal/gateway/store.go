@@ -68,6 +68,10 @@ type NodeRecord struct {
 	Approved       bool   `json:"approved,omitempty"`
 	ApprovedBy     string `json:"approved_by,omitempty"` // admin name, or "auto:<provider>"
 	ApprovedAtUnix int64  `json:"approved_at_unix,omitempty"`
+	// OverlayIP is the machine's STABLE overlay address (100.64.0.x in the node
+	// sub-range), assigned at approval. DNS resolves <machine> -> this. Distinct
+	// from the per-session client IPs the overlayAllocator hands out.
+	OverlayIP string `json:"overlay_ip,omitempty"`
 }
 
 type TokenRecord struct {

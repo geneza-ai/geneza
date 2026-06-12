@@ -11,11 +11,13 @@ import (
 	"github.com/spf13/cobra"
 
 	"osie.cloud/geneza/internal/client"
+	genezav1 "osie.cloud/geneza/internal/pb/geneza/v1"
 	"osie.cloud/geneza/internal/types"
 	"osie.cloud/geneza/internal/vpn"
 )
 
 func newVPNCmd() *cobra.Command {
+	var dnsZone string
 	cmd := &cobra.Command{
 		Use:   "vpn NODE SERVICE",
 		Short: "Join the overlay through a node's subnet-route or exit-node service (configures a local TUN)",
@@ -53,16 +55,17 @@ func newVPNCmd() *cobra.Command {
 				return fmt.Errorf("gateway returned an incomplete vpn grant (no overlay ip / routes)")
 			}
 
-			return runVPN(ctx, sess)
+			return runVPN(ctx, sess, api, dnsZone)
 		},
 	}
+	cmd.Flags().StringVar(&dnsZone, "dns-zone", "geneza", "tenant DNS suffix resolved over the VPN (machine names)")
 	return cmd
 }
 
 // runVPN brings up the client TUN, installs routes (pinning the relay so the
 // encrypted tunnel itself does not get routed back into the overlay for an exit
 // node), and pumps IP packets until the context is cancelled.
-func runVPN(ctx context.Context, sess *client.Session) error {
+func runVPN(ctx context.Context, sess *client.Session, api genezav1.UserAPIClient, dnsZone string) error {
 	tun, err := vpn.OpenTUN("gnz%d")
 	if err != nil {
 		return fmt.Errorf("open tun (need root/CAP_NET_ADMIN): %w", err)
@@ -119,6 +122,29 @@ func runVPN(ctx context.Context, sess *client.Session) error {
 		}
 		rr := r
 		cleanups = append(cleanups, func() { vpn.DelRoute(rr, tun.Name()) })
+	}
+
+	// Tenant DNS (MagicDNS-style): a local stub relays *.<zone> queries to the
+	// gateway's policy-aware resolver over the authenticated channel, and the
+	// system resolver is split-pointed at it for the zone only. Best-effort —
+	// the VPN data path works regardless.
+	if proxy, perr := vpn.StartDNSProxy(vpn.DNSStubAddr, func(c context.Context, q []byte) ([]byte, error) {
+		r, err := api.ResolveDNS(c, &genezav1.DNSQuery{Query: q})
+		if err != nil {
+			return nil, err
+		}
+		return r.GetResponse(), nil
+	}); perr != nil {
+		fmt.Fprintf(os.Stderr, "[vpn] tenant DNS stub not started: %v\n", perr)
+	} else {
+		cleanups = append(cleanups, func() { _ = proxy.Close() })
+		dnsIP, _, _ := net.SplitHostPort(vpn.DNSStubAddr)
+		if revert, rerr := vpn.SetLinkResolver(tun.Name(), dnsIP, dnsZone); rerr != nil {
+			fmt.Fprintf(os.Stderr, "[vpn] tenant DNS not auto-configured: %v\n", rerr)
+		} else {
+			cleanups = append(cleanups, revert)
+			fmt.Fprintf(os.Stderr, "[vpn] tenant DNS: *.%s resolved via the gateway (stub %s)\n", dnsZone, vpn.DNSStubAddr)
+		}
 	}
 	defer runCleanups(cleanups)
 

@@ -197,6 +197,21 @@ service UserAPI {
   rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse);
   rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
   rpc WhoAmI(Empty) returns (WhoAmIResponse);
+  // ResolveDNS answers a wire-format DNS query against the caller's tenant zone
+  // (machine names -> overlay IPs), gated by policy: a name resolves only if the
+  // caller could reach that machine (denied/unknown -> NXDOMAIN, no enumeration
+  // oracle). The resolver (miekg/dns) runs in the gateway where identity, policy
+  // and the node directory live; the `geneza vpn` client relays its local
+  // stub-resolver's queries here over this already-authenticated mTLS channel.
+  rpc ResolveDNS(DNSQuery) returns (DNSResponse);
+}
+
+message DNSQuery {
+  bytes query = 1;   // wire-format DNS request (RFC 1035)
+}
+
+message DNSResponse {
+  bytes response = 1; // wire-format DNS reply
 }
 
 message LoginRequest {

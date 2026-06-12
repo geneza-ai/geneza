@@ -115,6 +115,10 @@ type Config struct {
 	// --root-fp the operator pasted, so a compromised gateway cannot swap the
 	// trust anchor at bootstrap (verify-on-first-use, not blind trust-on-first-use).
 	RootPubkeyFile string `yaml:"root_pubkey_file"`
+	// DNSZone is the tenant DNS suffix machine names live under (default
+	// "geneza"): <machine>.<DNSZone> resolves to the machine's overlay IP, gated
+	// by policy. The `geneza vpn` client points its split-DNS resolver here.
+	DNSZone string `yaml:"dns_zone"`
 	// InstallDir holds the stage-1 binaries the curl|bash installer serves:
 	// geneza-bootstrap-<os>-<arch> and geneza-agent-<os>-<arch>. The agent copy is
 	// used only to run `enroll`; the first WORKER binary is pulled by the
@@ -138,6 +142,14 @@ type ConsoleConfig struct {
 }
 
 func (c *Config) ConsoleEnabled() bool { return c.Console.Listen != "" }
+
+// dnsZone is the tenant DNS suffix (default "geneza").
+func (c *Config) dnsZone() string {
+	if c.DNSZone == "" {
+		return "geneza"
+	}
+	return c.DNSZone
+}
 
 // AuditSinkConfig configures the off-box audit mirror.
 //
