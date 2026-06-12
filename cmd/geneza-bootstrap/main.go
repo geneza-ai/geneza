@@ -16,6 +16,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -58,6 +59,11 @@ type bootstrap struct {
 	installer *update.Installer
 	nodeID    string
 
+	// rootTrusted is the pinned TUF-lite root key set (keyed by key-id), present
+	// only in root-anchored mode (cfg.RootPubFile set). Nil = legacy single-key
+	// mode, where the installer trusts cfg.ArtifactPubFile directly.
+	rootTrusted map[string]ed25519.PublicKey
+
 	mu      sync.Mutex
 	current string // version whose binary the worker runs / session host restarts from
 	st      *update.State
@@ -82,6 +88,22 @@ func run(ctx context.Context, cfgPath string, log *slog.Logger) error {
 	}
 	log.Info("pinned artifact signing key loaded", "key_id", types.KeyIDFor(pub), "file", cfg.ArtifactPubFile)
 
+	// TUF-lite root-anchored mode: pin the offline ROOT key. The root never signs
+	// manifests; it authorizes a rotatable signing-key set via a gateway-served
+	// root-keys doc. Loading it fail-closed (configured but unreadable = refuse to
+	// start) is the only safe choice — a missing root would silently downgrade the
+	// node to single-key trust.
+	var rootTrusted map[string]ed25519.PublicKey
+	if cfg.RootPubFile != "" {
+		rootPub, err := types.LoadPublicKeyPEM(cfg.RootPubFile)
+		if err != nil {
+			return fmt.Errorf("pinned root public key (root_pub_file): %w", err)
+		}
+		rootTrusted = map[string]ed25519.PublicKey{types.KeyIDFor(rootPub): rootPub}
+		log.Info("pinned TUF-lite root key loaded (root-anchored mode)",
+			"root_key_id", types.KeyIDFor(rootPub), "file", cfg.RootPubFile)
+	}
+
 	client, err := update.NewHTTPClient(cfg.CARootsFile, log)
 	if err != nil {
 		return err
@@ -102,11 +124,12 @@ func run(ctx context.Context, cfgPath string, log *slog.Logger) error {
 	}
 
 	b := &bootstrap{
-		cfg:    cfg,
-		log:    log,
-		client: client,
-		st:     st,
-		nodeID: nodeID(cfg, log),
+		cfg:         cfg,
+		log:         log,
+		client:      client,
+		st:          st,
+		nodeID:      nodeID(cfg, log),
+		rootTrusted: rootTrusted,
 		installer: &update.Installer{
 			Client:      client,
 			GatewayURL:  cfg.GatewayHTTPURL,
@@ -205,6 +228,10 @@ func (b *bootstrap) resolveCurrent(ctx context.Context) error {
 		case d.SignedManifest == nil:
 			b.log.Warn("gateway desires a version but provided no signed manifest", "version", d.Version)
 		default:
+			if err := b.establishTrust(d); err != nil {
+				b.log.Error("cannot establish update trust; will retry", "version", d.Version, "err", err)
+				break
+			}
 			b.installer.MinCreatedAt = b.floorTime()
 			if _, m, err := b.installer.Install(ctx, d.SignedManifest); err != nil {
 				b.log.Error("first install failed; will retry", "version", d.Version, "err", err)
@@ -331,6 +358,11 @@ func (b *bootstrap) reconcile(ctx context.Context) {
 	}
 
 	b.log.Info("update available", "current", b.current, "desired", d.Version)
+	if err := b.establishTrust(d); err != nil {
+		// Fail closed: current worker keeps running untouched.
+		b.log.Error("cannot establish update trust; keeping current version", "desired", d.Version, "err", err)
+		return
+	}
 	b.installer.MinCreatedAt = b.floorTime()
 	newPath, m, err := b.installer.Install(ctx, d.SignedManifest)
 	if err != nil {
@@ -344,6 +376,38 @@ func (b *bootstrap) reconcile(ctx context.Context) {
 		return
 	}
 	b.swapWorker(ctx, newPath, m.Version, m.CreatedAt.Unix())
+}
+
+// establishTrust prepares the installer's trust set for an install. In
+// root-anchored (TUF-lite) mode it REQUIRES the gateway's root-keys doc,
+// verifies it against the pinned root (signature + monotonic version + expiry),
+// derives the current signing-key set, points the installer at it, and persists
+// the accepted root-keys version (anti-rollback). It fails closed: a configured
+// root with a missing/invalid/rolled-back root-keys doc means no install — never
+// a silent fallback to single-key trust. In legacy mode (no pinned root) it is a
+// no-op and the installer uses its single pinned key.
+func (b *bootstrap) establishTrust(d *types.DesiredVersionResponse) error {
+	if b.rootTrusted == nil {
+		return nil // legacy single-key mode: installer trusts cfg.ArtifactPubFile
+	}
+	if d.SignedRootKeys == nil {
+		return fmt.Errorf("node pins a root key but the gateway served no root-keys doc")
+	}
+	rk, err := types.VerifyRootKeys(b.rootTrusted, d.SignedRootKeys, b.st.RootKeysVersion, time.Now())
+	if err != nil {
+		return fmt.Errorf("root-keys: %w", err)
+	}
+	signers, err := rk.SigningKeys()
+	if err != nil {
+		return err
+	}
+	b.installer.Trusted = signers
+	if b.st.RaiseRootKeysVersion(rk.Version) {
+		b.saveState()
+		b.log.Info("root-keys accepted; signing-key set updated",
+			"version", rk.Version, "signing_keys", len(signers))
+	}
+	return nil
 }
 
 // floorTime is the anti-rollback high-water mark as a time.Time (zero when no

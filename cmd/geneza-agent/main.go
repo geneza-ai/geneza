@@ -27,7 +27,18 @@ var rootCmd = &cobra.Command{
 }
 
 func newLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	// Default INFO. DEBUG is opt-in via GENEZA_LOG=debug — otherwise embedded
+	// node-exporter collectors log per-scrape at DEBUG and flood the journal,
+	// tripping systemd-journald rate limiting (which then drops real INFO/ERROR
+	// lines like update decisions). Quiet by default; verbose on demand.
+	level := slog.LevelInfo
+	switch strings.ToLower(os.Getenv("GENEZA_LOG")) {
+	case "debug":
+		level = slog.LevelDebug
+	case "warn":
+		level = slog.LevelWarn
+	}
+	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 }
 
 // signalContext cancels on SIGINT/SIGTERM so loops shut down cleanly.

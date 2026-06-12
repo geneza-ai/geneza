@@ -97,12 +97,19 @@ type Config struct {
 	CertTTL              CertTTLConfig     `yaml:"cert_ttl"`
 	GrantTTL             Duration          `yaml:"grant_ttl"`
 	DefaultMaxSessionTTL Duration          `yaml:"default_max_session_ttl"`
-	ReauthInterval       Duration          `yaml:"reauth_interval"`    // continuous-authz sweep period (default 15s)
-	MetricsRetention     Duration          `yaml:"metrics_retention"`  // embedded-TSDB retention (default 15d)
+	ReauthInterval       Duration          `yaml:"reauth_interval"`   // continuous-authz sweep period (default 15s)
+	MetricsRetention     Duration          `yaml:"metrics_retention"` // embedded-TSDB retention (default 15d)
 	OIDC                 *OIDCConfig       `yaml:"oidc"`
 	LocalUsers           []LocalUser       `yaml:"local_users"`
 	AgentPolicy          AgentPolicyConfig `yaml:"agent_policy"`
 	ArtifactPubkeyFile   string            `yaml:"artifact_pubkey_file"`
+	// RootKeysFile points at the offline-signed root-keys.json (TUF-lite trust
+	// root authorizing the current release-signing key SET). When set, the
+	// gateway attaches it to every desired-version response so agents verify
+	// manifests against the rotatable signing set anchored to their pinned root
+	// key. The file is re-read per request, so rotating the fleet's trust is a
+	// single atomic file swap — the gateway holds no private key either way.
+	RootKeysFile string `yaml:"root_keys_file"`
 	// AuditSink optionally mirrors every audit record to an append-only
 	// off-box destination (the only real tamper-evidence against a host
 	// compromise that can rewrite the local chain). Empty = local chain only.
@@ -123,9 +130,10 @@ type ConsoleConfig struct {
 func (c *Config) ConsoleEnabled() bool { return c.Console.Listen != "" }
 
 // AuditSinkConfig configures the off-box audit mirror.
-//   type: "" | "none" — local chain only (default)
-//   type: "file"      — append each record to Path (use a different mount/host)
-//   type: "http"      — POST each record (JSON line) to URL (e.g. a SIEM intake)
+//
+//	type: "" | "none" — local chain only (default)
+//	type: "file"      — append each record to Path (use a different mount/host)
+//	type: "http"      — POST each record (JSON line) to URL (e.g. a SIEM intake)
 type AuditSinkConfig struct {
 	Type string `yaml:"type"`
 	Path string `yaml:"path"`
@@ -230,17 +238,17 @@ func (c *Config) validateForServe() error {
 
 // Filesystem layout under data_dir.
 
-func (c *Config) CADir() string          { return filepath.Join(c.DataDir, "ca") }
-func (c *Config) GrantKeyPath() string   { return filepath.Join(c.DataDir, "grant.key") }
-func (c *Config) GrantKeyIDPath() string { return filepath.Join(c.DataDir, "grant.keyid") }
-func (c *Config) TLSDir() string         { return filepath.Join(c.DataDir, "tls") }
-func (c *Config) StatePath() string      { return filepath.Join(c.DataDir, "state.db") }
+func (c *Config) CADir() string           { return filepath.Join(c.DataDir, "ca") }
+func (c *Config) GrantKeyPath() string    { return filepath.Join(c.DataDir, "grant.key") }
+func (c *Config) GrantKeyIDPath() string  { return filepath.Join(c.DataDir, "grant.keyid") }
+func (c *Config) TLSDir() string          { return filepath.Join(c.DataDir, "tls") }
+func (c *Config) StatePath() string       { return filepath.Join(c.DataDir, "state.db") }
 func (c *Config) AuditPath() string       { return filepath.Join(c.DataDir, "audit.jsonl") }
 func (c *Config) AuditKeyPath() string    { return filepath.Join(c.DataDir, "audit.key") }
 func (c *Config) AuditCheckpoint() string { return filepath.Join(c.DataDir, "audit.jsonl.chk") }
-func (c *Config) ArtifactsDir() string   { return filepath.Join(c.DataDir, "artifacts") }
-func (c *Config) RecordingsDir() string  { return filepath.Join(c.DataDir, "recordings") }
-func (c *Config) MetricsDir() string     { return filepath.Join(c.DataDir, "metrics-tsdb") }
+func (c *Config) ArtifactsDir() string    { return filepath.Join(c.DataDir, "artifacts") }
+func (c *Config) RecordingsDir() string   { return filepath.Join(c.DataDir, "recordings") }
+func (c *Config) MetricsDir() string      { return filepath.Join(c.DataDir, "metrics-tsdb") }
 
 func (c *Config) gatewayCertPath() string { return filepath.Join(c.TLSDir(), "gateway.crt") }
 func (c *Config) gatewayKeyPath() string  { return filepath.Join(c.TLSDir(), "gateway.key") }

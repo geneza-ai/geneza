@@ -12,9 +12,16 @@ import (
 // dependency. Defaults below mirror the documented filesystem layout; only
 // gateway_http_url has no usable default.
 type config struct {
-	GatewayHTTPURL    string `json:"gateway_http_url"`
-	CARootsFile       string `json:"ca_roots_file"`
-	ArtifactPubFile   string `json:"artifact_pub_file"`
+	GatewayHTTPURL  string `json:"gateway_http_url"`
+	CARootsFile     string `json:"ca_roots_file"`
+	ArtifactPubFile string `json:"artifact_pub_file"`
+	// RootPubFile pins the PUBLIC half of the offline TUF-lite ROOT key. When set,
+	// the bootstrap runs in root-anchored mode: it requires a root-keys doc from
+	// the gateway, verifies it against this pinned root, and trusts manifests
+	// signed by ANY key the root authorizes (rotation-friendly). The pinned root
+	// itself never signs manifests (role separation). Empty = legacy mode, where
+	// artifact_pub_file is the single trusted release-signing key.
+	RootPubFile       string `json:"root_pub_file"`
 	VersionsDir       string `json:"versions_dir"`
 	StateFile         string `json:"state_file"`
 	NodeIDFile        string `json:"node_id_file"`

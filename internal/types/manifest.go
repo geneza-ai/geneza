@@ -49,4 +49,9 @@ func (m *Manifest) VerifyBlob(r io.Reader) error {
 type DesiredVersionResponse struct {
 	Version        string  `json:"version"`         // desired worker version for this node
 	SignedManifest *Signed `json:"signed_manifest"` // wraps Manifest; absent if no artifact
+	// SignedRootKeys wraps RootKeys, signed by the OFFLINE root key whose public
+	// half is pinned on the node. When present the bootstrap verifies the
+	// manifest against the signing-key SET this authorizes (TUF-lite, rotatable)
+	// instead of a single pinned key. Absent = legacy single-pinned-key mode.
+	SignedRootKeys *Signed `json:"signed_root_keys,omitempty"`
 }

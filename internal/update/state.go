@@ -22,6 +22,11 @@ type State struct {
 	// built before this, so a compromised gateway cannot replay an old, validly
 	// signed manifest to downgrade the fleet to a known-vulnerable worker.
 	FloorUnix int64 `json:"floor_unix,omitempty"`
+	// RootKeysVersion is the highest root-keys (TUF-lite trust-root) version ever
+	// accepted. The bootstrap refuses an older root-keys doc, so a compromised
+	// gateway cannot replay a stale root-keys to revive a retired/compromised
+	// signing key after rotation.
+	RootKeysVersion int64 `json:"root_keys_version,omitempty"`
 }
 
 // RaiseFloor advances the anti-rollback high-water mark to createdUnix if it is
@@ -29,6 +34,15 @@ type State struct {
 func (s *State) RaiseFloor(createdUnix int64) bool {
 	if createdUnix > s.FloorUnix {
 		s.FloorUnix = createdUnix
+		return true
+	}
+	return false
+}
+
+// RaiseRootKeysVersion advances the accepted root-keys version if newer.
+func (s *State) RaiseRootKeysVersion(v int64) bool {
+	if v > s.RootKeysVersion {
+		s.RootKeysVersion = v
 		return true
 	}
 	return false

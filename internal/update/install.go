@@ -84,11 +84,14 @@ func (ins *Installer) Install(ctx context.Context, sm *types.Signed) (string, *t
 	if err := validVersion(m.Version); err != nil {
 		return "", nil, fmt.Errorf("manifest version: %w", err)
 	}
-	// Anti-rollback: reject a manifest built before the highest version we have
-	// ever committed. CreatedAt is inside the offline-signed payload, so a
-	// compromised gateway replaying an old signed manifest cannot forge a newer
-	// timestamp. A small skew tolerance avoids tripping on clock jitter.
-	if !ins.MinCreatedAt.IsZero() && m.CreatedAt.Before(ins.MinCreatedAt.Add(-2*time.Minute)) {
+	// Anti-rollback: reject any manifest built before the highest CreatedAt we
+	// have ever committed. CreatedAt is inside the offline-signed payload and the
+	// floor itself comes from a previously-committed signed manifest, so BOTH
+	// timestamps are the offline signer's clock — there is no wall-clock skew
+	// between them to tolerate. Zero tolerance (strictly-before) closes the
+	// downgrade window a tolerance would open; re-installing the SAME version
+	// (CreatedAt == floor) is still allowed.
+	if !ins.MinCreatedAt.IsZero() && m.CreatedAt.Before(ins.MinCreatedAt) {
 		return "", nil, fmt.Errorf("manifest for %q is older (%s) than the rollback floor (%s): refusing downgrade",
 			m.Version, m.CreatedAt.UTC().Format(time.RFC3339), ins.MinCreatedAt.UTC().Format(time.RFC3339))
 	}

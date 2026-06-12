@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"crypto/ed25519"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -14,6 +15,54 @@ import (
 // The HTTPS listener is deliberately unauthenticated: it serves only public
 // material (CA roots, auth bootstrap hints) and signed artifacts whose trust
 // derives from the offline artifact signature, not from who fetched them.
+
+// loadSignedRootKeys reads and decodes the configured root-keys.json (the
+// offline-signed TUF-lite trust root). It is read fresh on every call so a file
+// swap rotates fleet trust without a restart. Any error (unset, missing,
+// unreadable, corrupt) yields nil — the gateway then simply omits the doc and
+// agents fall back to their single pinned key; trust is never forged by the
+// gateway, so failing open here only foregoes rotation, it cannot weaken trust.
+func (s *Server) loadSignedRootKeys() *types.Signed {
+	if s.cfg.RootKeysFile == "" {
+		return nil
+	}
+	b, err := os.ReadFile(s.cfg.RootKeysFile)
+	if err != nil {
+		return nil
+	}
+	signed, err := types.DecodeSigned(b)
+	if err != nil {
+		return nil
+	}
+	return signed
+}
+
+// publishTrustSet is the gateway's DEFENSE-IN-DEPTH publish gate — NOT the trust
+// boundary (agents verify the full chain against their pinned root before
+// installing anything). It accepts a manifest signed by the single pinned
+// artifact key OR by any signing key the locally-configured root-keys doc lists,
+// so rotating the release-signing key does not break `admin publish`. The
+// root-keys payload is read unverified here on purpose: the gateway has no root
+// public key (it only serves root-keys), and this gate is a sanity check, not
+// the security decision. Empty set = no key configured (publish accepted with a
+// metadata-only parse, exactly as before).
+func (s *Server) publishTrustSet() map[string]ed25519.PublicKey {
+	set := map[string]ed25519.PublicKey{}
+	if s.artifactPub != nil {
+		set[types.KeyIDFor(s.artifactPub)] = s.artifactPub
+	}
+	if signed := s.loadSignedRootKeys(); signed != nil {
+		var rk types.RootKeys
+		if err := json.Unmarshal(signed.Payload, &rk); err == nil {
+			if m, err := rk.SigningKeys(); err == nil {
+				for id, pub := range m {
+					set[id] = pub
+				}
+			}
+		}
+	}
+	return set
+}
 
 func resolveDesired(stable, canary string, canaryNodes []string, nodeID string) string {
 	if canary != "" {
@@ -107,7 +156,17 @@ func (s *Server) httpHandler() http.Handler {
 			http.Error(w, "stored manifest corrupt", http.StatusInternalServerError)
 			return
 		}
-		writeJSON(w, types.DesiredVersionResponse{Version: desired, SignedManifest: signed})
+		resp := types.DesiredVersionResponse{Version: desired, SignedManifest: signed}
+		// Attach the offline-signed root-keys doc (TUF-lite) when configured, so
+		// the agent verifies the manifest against the rotatable signing-key set
+		// anchored to its pinned root. Read per-request: a file swap rotates the
+		// fleet's trust with no gateway restart. A missing/corrupt file is not
+		// fatal — we simply omit it and the agent falls back to its single pinned
+		// key (legacy mode); the gateway cannot forge trust either way.
+		if rk := s.loadSignedRootKeys(); rk != nil {
+			resp.SignedRootKeys = rk
+		}
+		writeJSON(w, resp)
 	})
 
 	// Artifact blobs are public by design: they are signed binaries the

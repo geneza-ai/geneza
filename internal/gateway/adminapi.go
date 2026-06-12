@@ -106,8 +106,12 @@ func (a *adminAPIService) PublishArtifact(stream grpc.ClientStreamingServer[gene
 		return status.Errorf(codes.InvalidArgument, "signed manifest: %v", err)
 	}
 	var m types.Manifest
-	if s.artifactPub != nil {
-		if err := types.VerifyOne(s.artifactPub, "", defaults.ContextManifest, signed, &m); err != nil {
+	trust := s.publishTrustSet()
+	if len(trust) > 0 {
+		// Accept any signing key the single pin OR the configured root-keys doc
+		// authorizes (rotation-safe). Defense in depth only — the agent re-verifies
+		// the full chain against its pinned root before installing anything.
+		if _, err := types.Verify(trust, defaults.ContextManifest, signed, &m); err != nil {
 			return status.Errorf(codes.PermissionDenied, "manifest signature: %v", err)
 		}
 	} else if err := json.Unmarshal(signed.Payload, &m); err != nil {
@@ -181,7 +185,7 @@ func (a *adminAPIService) PublishArtifact(stream grpc.ClientStreamingServer[gene
 	if err := s.audit.Append("artifact_publish", adminActor(stream.Context()), "", "", map[string]string{
 		"product": m.Product, "version": m.Version, "os": m.OS, "arch": m.Arch,
 		"sha256": m.SHA256, "size": strconv.FormatInt(m.Size, 10),
-		"signature_verified": strconv.FormatBool(s.artifactPub != nil),
+		"signature_verified": strconv.FormatBool(len(trust) > 0),
 	}); err != nil {
 		return status.Errorf(codes.Internal, "audit append: %v", err)
 	}

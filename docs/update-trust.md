@@ -75,13 +75,46 @@ window). Nodes pick up v2 and drop the old key — no node is re-touched.
   compromised gateway can serve stale-or-junk bytes but **cannot forge** an
   artifact the root never authorized.
 
+## Wiring (end to end)
+
+```
+maintainer (offline)            gateway (no private key)        agent (pins ROOT)
+  geneza-sign root-keys  ──────► root_keys_file ──► GET ───────► bootstrap.json
+    (root.key)                   (re-read per req)  /v1/updates    root_pub_file
+  geneza-sign manifest           served verbatim     /desired      VerifyRootKeys
+    (signerN.key)        ──────► admin publish ──► SignedManifest   -> signing set
+                                  (publishTrustSet  + SignedRootKeys -> Installer.Trusted
+                                   = pin ∪ root-keys                 -> manifest verify
+                                   signers; rotation- -> floor + blob -> swap
+                                   safe defense-in-depth)
+```
+
+- **gateway** (`internal/gateway`): `root_keys_file` is attached to every
+  `/v1/updates/desired` response as `signed_root_keys` (read per-request → a file
+  swap rotates fleet trust with no restart). `publishTrustSet()` makes the
+  publish-time gate rotation-safe (accepts the single pin OR any signer the local
+  root-keys lists). The gateway holds no signing key — failing to read the file
+  only foregoes rotation, it never forges trust.
+- **bootstrap** (`cmd/geneza-bootstrap`): `root_pub_file` pins the root. When
+  set, `establishTrust` REQUIRES a valid `signed_root_keys` before any install
+  (fail-closed; missing/rolled-back/foreign-root ⇒ no update, never a silent
+  fall back to single-key trust), derives `Installer.Trusted`, and persists
+  `RootKeysVersion` (anti-rollback). Empty `root_pub_file` ⇒ legacy single-key.
+- **Installer** (`internal/update`): zero-tolerance anti-rollback — both the
+  manifest `CreatedAt` and the floor are offline-signer-clock, so there is no
+  skew to tolerate and the downgrade window is closed.
+
 ## Status
 
-- DONE + proven: the two signed docs, the chain verifier, anti-rollback +
-  expiry + role separation, the `geneza-sign` tooling, and the `Installer`
-  consuming the root-anchored signing set (falls back to a single pinned key for
-  backward compatibility).
-- Remaining wiring: gateway serves `root-keys.json`; bootstrap pins the root +
-  loads/caches `root-keys.json` + builds the signing set; gateway mirror +
-  `geneza admin import`; GoReleaser + cosign-keyless transparency receipt in CI;
-  air-gapped lab demo.
+- DONE + proven on the lab VMs (`labs/geneza1/scripts/tuf-proof.sh`): the two
+  signed docs, chain verifier, anti-rollback + expiry + role separation, the
+  `geneza-sign` tooling, the `Installer` consuming the root-anchored signing
+  set, and the full gateway↔bootstrap wiring. The lab proof drives a live
+  gateway+node through: normal update via the chain, **binary downgrade refused**
+  (floor), **key rotation** (signer1→signer2), **retired/foreign signer rejected
+  by the agent**, **rolled-back root-keys refused** (cannot revive the retired
+  signer), **foreign-root-signed root-keys refused**, and a foreign manifest
+  **rejected at publish**. Backward compatible: nodes without `root_pub_file`
+  keep the single-pinned-key path (legacy e2e update test still passes).
+- Remaining (optional): gateway mirror-from-upstream + `geneza admin import` for
+  fully air-gapped sites; GoReleaser + cosign-keyless transparency receipt in CI.
