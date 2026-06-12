@@ -189,5 +189,11 @@ func (w *Worker) runSession(ctx context.Context, grant *types.SessionGrant) {
 		defer t.Stop()
 	}
 
+	// VPN sessions carry raw IP packets, not an SSH transport.
+	if grant.Action == types.ActionVPN {
+		w.serveVPN(sctx, tconn, grant, log)
+		return
+	}
+
 	w.serveSSH(sctx, tconn, grant, log)
 }

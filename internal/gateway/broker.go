@@ -62,6 +62,7 @@ type Broker struct {
 	audit         *Audit
 	agents        AgentDirectory
 	engine        func() policy.Engine
+	overlay       *overlayAllocator
 	grantKey      ed25519.PrivateKey
 	grantKeyID    string
 	relayAddrs    []string
@@ -70,11 +71,11 @@ type Broker struct {
 	now           func() time.Time
 }
 
-func NewBroker(store *Store, audit *Audit, agents AgentDirectory, engine func() policy.Engine,
+func NewBroker(store *Store, audit *Audit, agents AgentDirectory, engine func() policy.Engine, overlay *overlayAllocator,
 	grantKey ed25519.PrivateKey, grantKeyID string, relayAddrs []string,
 	grantTTL, defaultMaxTTL time.Duration) *Broker {
 	return &Broker{
-		store: store, audit: audit, agents: agents, engine: engine,
+		store: store, audit: audit, agents: agents, engine: engine, overlay: overlay,
 		grantKey: grantKey, grantKeyID: grantKeyID, relayAddrs: relayAddrs,
 		grantTTL: grantTTL, defaultMaxTTL: defaultMaxTTL, now: time.Now,
 	}
@@ -96,8 +97,20 @@ func validForwardTarget(t string) error {
 }
 
 // CreateSession evaluates policy and brokers a session offer to the agent.
-// ident is the verified user identity from the caller's mTLS cert.
+// ident is the verified user identity from the caller's mTLS cert. All sessions
+// brokered over the direct user-cert API are native/true-E2E.
 func (b *Broker) CreateSession(ctx context.Context, ident *ca.Identity, req *genezav1.CreateSessionRequest) (*genezav1.CreateSessionResponse, error) {
+	return b.createSession(ctx, ident, req, types.PathNative)
+}
+
+// CreateSessionWeb brokers a session for the in-process web-shell proxy: the
+// gateway is the initiator on behalf of an authenticated console user, so the
+// path is "web" and `require_native` policy rules correctly deny it.
+func (b *Broker) CreateSessionWeb(ctx context.Context, ident *ca.Identity, req *genezav1.CreateSessionRequest) (*genezav1.CreateSessionResponse, error) {
+	return b.createSession(ctx, ident, req, types.PathWeb)
+}
+
+func (b *Broker) createSession(ctx context.Context, ident *ca.Identity, req *genezav1.CreateSessionRequest, clientPath string) (*genezav1.CreateSessionResponse, error) {
 	now := b.now()
 	action := req.GetAction()
 	forwardTarget := req.GetForwardTarget()
@@ -191,13 +204,10 @@ func (b *Broker) CreateSession(ctx context.Context, ident *ca.Identity, req *gen
 		return nil, status.Errorf(codes.Unavailable, "node %s (%s) is offline", node.ID, node.Name)
 	}
 
-	// Derive the client path from the authenticated principal, NEVER from the
-	// client-supplied req.client_path (a client could otherwise assert "native"
-	// to defeat a require_native policy). All sessions brokered over the direct
-	// user-cert API are native/true-E2E. When the web session proxy is built it
-	// authenticates as its own principal and the gateway will map that to "web"
-	// here — the only place client path is decided.
-	clientPath := types.PathNative
+	// The client path is decided HERE by the trusted caller (CreateSession ->
+	// native for the direct user-cert API; CreateSessionWeb -> web for the
+	// in-process proxy), NEVER from the client-supplied req.client_path — a
+	// client could otherwise assert "native" to defeat a require_native policy.
 	decision := b.engine().Evaluate(policy.Input{
 		User:          ident.Name,
 		Roles:         ident.Roles,
@@ -234,6 +244,23 @@ func (b *Broker) CreateSession(ctx context.Context, ident *ca.Identity, req *gen
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "relay token: %v", err)
 	}
+
+	// VPN sessions get an overlay IP and validated routes.
+	var overlayIP string
+	if action == types.ActionVPN {
+		for _, c := range routes {
+			if !validCIDR(c) {
+				return nil, status.Errorf(codes.InvalidArgument, "service route %q is not a valid CIDR", c)
+			}
+		}
+		if b.overlay != nil {
+			overlayIP, err = b.overlay.alloc()
+			if err != nil {
+				return nil, status.Errorf(codes.ResourceExhausted, "overlay address: %v", err)
+			}
+		}
+	}
+
 	grant := &types.SessionGrant{
 		V:              1,
 		ID:             sessionID,
@@ -257,6 +284,7 @@ func (b *Broker) CreateSession(ctx context.Context, ident *ca.Identity, req *gen
 		Service:        svcName,
 		ServiceKind:    svcKind,
 		Routes:         routes,
+		OverlayIP:      overlayIP,
 	}
 	if attachRec != nil {
 		grant.AttachID = attachRec.HostSessionID
@@ -287,6 +315,7 @@ func (b *Broker) CreateSession(ctx context.Context, ident *ca.Identity, req *gen
 		Service:       grant.Service,
 		ServiceKind:   grant.ServiceKind,
 		ServiceLabels: svcLabels,
+		OverlayIP:     overlayIP,
 	}
 	if err := b.store.PutSession(sessRec); err != nil {
 		return nil, status.Errorf(codes.Internal, "store session: %v", err)

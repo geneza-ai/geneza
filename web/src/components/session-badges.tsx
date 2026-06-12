@@ -11,12 +11,13 @@ export function ActionBadge({ action }: { action: SessionAction }) {
 
 const STATE_VARIANT: Record<
   string,
-  "success" | "muted" | "warning" | "secondary"
+  "success" | "muted" | "warning" | "secondary" | "destructive"
 > = {
   active: "success",
   detached: "warning",
   pending: "secondary",
   ended: "muted",
+  revoked: "destructive",
 }
 
 export function StateBadge({ state }: { state: SessionState }) {

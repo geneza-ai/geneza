@@ -217,6 +217,16 @@ func (r *Registry) SendRevoke(nodeID, sessionID, reason string) error {
 	})
 }
 
+// SendModuleConfig pushes a node's desired agent-module set in realtime. Returns
+// an error if the node is not connected (it will get it on next reconnect).
+func (r *Registry) SendModuleConfig(nodeID string, cfg *genezav1.ModuleConfig) error {
+	h := r.get(nodeID)
+	if h == nil {
+		return fmt.Errorf("node %s is not connected", nodeID)
+	}
+	return h.send(&genezav1.GatewayMsg{Msg: &genezav1.GatewayMsg_ModuleConfig{ModuleConfig: cfg}})
+}
+
 // Broadcast pushes a (signed) cluster config to every connected agent.
 // Best-effort: agents that miss it reconcile on their next hello.
 func (r *Registry) Broadcast(signedClusterConfig []byte) {

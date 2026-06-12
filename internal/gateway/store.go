@@ -24,6 +24,7 @@ var (
 	bucketSessions = []byte("sessions")
 	bucketSettings = []byte("settings")
 	bucketArtifact = []byte("artifacts")
+	bucketModules  = []byte("node_modules")
 )
 
 var ErrNotFound = errors.New("not found")
@@ -97,6 +98,7 @@ type SessionRecord struct {
 	ServiceKind   string            `json:"service_kind,omitempty"`
 	ServiceLabels map[string]string `json:"service_labels,omitempty"`
 	ClientPath    string            `json:"client_path,omitempty"`
+	OverlayIP     string            `json:"overlay_ip,omitempty"`
 }
 
 func OpenStore(path string) (*Store, error) {
@@ -105,7 +107,7 @@ func OpenStore(path string) (*Store, error) {
 		return nil, fmt.Errorf("open state db %s: %w", path, err)
 	}
 	err = db.Update(func(tx *bbolt.Tx) error {
-		for _, b := range [][]byte{bucketNodes, bucketTokens, bucketSessions, bucketSettings, bucketArtifact} {
+		for _, b := range [][]byte{bucketNodes, bucketTokens, bucketSessions, bucketSettings, bucketArtifact, bucketModules} {
 			if _, err := tx.CreateBucketIfNotExists(b); err != nil {
 				return err
 			}
@@ -141,6 +143,50 @@ func getJSON(tx *bbolt.Tx, bucket []byte, key string, out any) error {
 
 func (s *Store) PutNode(n *NodeRecord) error {
 	return s.db.Update(func(tx *bbolt.Tx) error { return putJSON(tx, bucketNodes, n.ID, n) })
+}
+
+// NodeModule is one enabled/disabled agent module for a node (monitoring, future
+// exporters). Persisted per node and pushed to the agent in realtime.
+type NodeModule struct {
+	Name     string            `json:"name"`
+	Enabled  bool              `json:"enabled"`
+	Settings map[string]string `json:"settings,omitempty"`
+}
+
+// NodeModulesRecord is the desired module set for a node plus a monotonic
+// version so the agent ignores stale pushes.
+type NodeModulesRecord struct {
+	Version int64        `json:"version"`
+	Modules []NodeModule `json:"modules"`
+}
+
+// GetNodeModules returns the node's desired module set (empty record if none).
+func (s *Store) GetNodeModules(nodeID string) (*NodeModulesRecord, error) {
+	var rec NodeModulesRecord
+	err := s.db.View(func(tx *bbolt.Tx) error { return getJSON(tx, bucketModules, nodeID, &rec) })
+	if errors.Is(err, ErrNotFound) {
+		return &NodeModulesRecord{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &rec, nil
+}
+
+// SetNodeModules replaces a node's desired module set, bumping the version, and
+// returns the stored record.
+func (s *Store) SetNodeModules(nodeID string, modules []NodeModule) (*NodeModulesRecord, error) {
+	var rec NodeModulesRecord
+	err := s.db.Update(func(tx *bbolt.Tx) error {
+		_ = getJSON(tx, bucketModules, nodeID, &rec) // ignore ErrNotFound: start at 0
+		rec.Version++
+		rec.Modules = modules
+		return putJSON(tx, bucketModules, nodeID, &rec)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &rec, nil
 }
 
 func (s *Store) GetNode(id string) (*NodeRecord, error) {

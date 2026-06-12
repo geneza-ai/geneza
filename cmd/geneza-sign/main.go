@@ -31,22 +31,25 @@ func main() {
 		SilenceUsage:  true,
 		SilenceErrors: false,
 	}
-	root.AddCommand(keygenCmd(), manifestCmd(), verifyCmd())
+	root.AddCommand(keygenCmd(), manifestCmd(), verifyCmd(), rootKeysCmd(), verifyChainCmd())
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
 	}
 }
 
 func keygenCmd() *cobra.Command {
-	var outDir string
+	var outDir, name string
 	cmd := &cobra.Command{
-		Use:   "keygen --out-dir DIR",
-		Short: "Generate a new artifact signing keypair (artifact.key/.pub/.keyid)",
+		Use:   "keygen --out-dir DIR [--name root|signer1|...]",
+		Short: "Generate a signing keypair (<name>.key/.pub/.keyid). Use --name root for the offline trust root, --name signerN for rotatable release keys.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			keyPath := filepath.Join(outDir, "artifact.key")
-			pubPath := filepath.Join(outDir, "artifact.pub")
-			idPath := filepath.Join(outDir, "artifact.keyid")
+			if name == "" {
+				name = "artifact"
+			}
+			keyPath := filepath.Join(outDir, name+".key")
+			pubPath := filepath.Join(outDir, name+".pub")
+			idPath := filepath.Join(outDir, name+".keyid")
 			// Refuse to overwrite: clobbering the fleet's signing key by
 			// accident is unrecoverable without re-touching every node.
 			for _, p := range []string{keyPath, pubPath, idPath} {
@@ -75,8 +78,124 @@ func keygenCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&outDir, "out-dir", "", "directory to write artifact.key/.pub/.keyid into")
+	cmd.Flags().StringVar(&outDir, "out-dir", "", "directory to write <name>.key/.pub/.keyid into")
+	cmd.Flags().StringVar(&name, "name", "artifact", "key name (e.g. root, signer1)")
 	_ = cmd.MarkFlagRequired("out-dir")
+	return cmd
+}
+
+// rootKeysCmd builds and offline-signs the RootKeys trust document: the root
+// key authorizes the current set of release-signing keys. Rotating a signing
+// key = re-running this with a bumped --version and the new --signer-pub set.
+func rootKeysCmd() *cobra.Command {
+	var rootKeyPath, outPath string
+	var signerPubs []string
+	var version int64
+	var expiresDays int
+	cmd := &cobra.Command{
+		Use:   "root-keys --root-key root.key --signer-pub signer1.pub [--signer-pub signer2.pub] --version N --out root-keys.json",
+		Short: "Sign the artifact trust root: the rotatable set of release-signing keys, authorized by the offline root key",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			rootPriv, err := types.LoadPrivateKeyPEM(rootKeyPath)
+			if err != nil {
+				return err
+			}
+			rootID := types.KeyIDFor(rootPriv.Public().(ed25519.PublicKey))
+			if len(signerPubs) == 0 {
+				return fmt.Errorf("at least one --signer-pub is required")
+			}
+			rk := types.RootKeys{Version: version}
+			for _, p := range signerPubs {
+				pub, err := types.LoadPublicKeyPEM(p)
+				if err != nil {
+					return fmt.Errorf("load signer pub %s: %w", p, err)
+				}
+				rk.Keys = append(rk.Keys, types.ArtifactKey{KeyID: types.KeyIDFor(pub), PublicKey: pub})
+			}
+			if expiresDays > 0 {
+				rk.ExpiresAt = time.Now().UTC().Add(time.Duration(expiresDays) * 24 * time.Hour)
+			}
+			signed, err := types.Sign(rootPriv, rootID, defaults.ContextRootKeys, &rk)
+			if err != nil {
+				return err
+			}
+			out, err := json.MarshalIndent(signed, "", "  ")
+			if err != nil {
+				return err
+			}
+			if err := os.WriteFile(outPath, append(out, '\n'), 0o644); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "signed root-keys v%d: %d signing key(s), root=%s, expires=%s -> %s\n",
+				rk.Version, len(rk.Keys), rootID, rk.ExpiresAt.Format(time.RFC3339), outPath)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&rootKeyPath, "root-key", "", "offline ROOT private key (root.key)")
+	cmd.Flags().StringArrayVar(&signerPubs, "signer-pub", nil, "release-signing public key(s) to authorize (repeatable)")
+	cmd.Flags().Int64Var(&version, "version", 1, "monotonic root-keys version (bump on every rotation)")
+	cmd.Flags().IntVar(&expiresDays, "expires-days", 365, "days until this trust root expires (0 = never)")
+	cmd.Flags().StringVar(&outPath, "out", "root-keys.json", "output signed root-keys path")
+	_ = cmd.MarkFlagRequired("root-key")
+	return cmd
+}
+
+// verifyChainCmd does exactly what an agent does: pin the root, verify
+// root-keys -> derive signing set -> verify the manifest -> verify the binary.
+func verifyChainCmd() *cobra.Command {
+	var rootPubPath, rootKeysPath, manifestPath, binPath string
+	cmd := &cobra.Command{
+		Use:   "verify-chain --root-pub root.pub --root-keys root-keys.json --manifest m.json --binary PATH",
+		Short: "Verify the full trust chain (root -> signing keys -> manifest -> binary), as the agent does",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			rootPub, err := types.LoadPublicKeyPEM(rootPubPath)
+			if err != nil {
+				return err
+			}
+			rkRaw, err := os.ReadFile(rootKeysPath)
+			if err != nil {
+				return err
+			}
+			rkSigned, err := types.DecodeSigned(rkRaw)
+			if err != nil {
+				return err
+			}
+			mRaw, err := os.ReadFile(manifestPath)
+			if err != nil {
+				return err
+			}
+			mSigned, err := types.DecodeSigned(mRaw)
+			if err != nil {
+				return err
+			}
+			pinned := map[string]ed25519.PublicKey{types.KeyIDFor(rootPub): rootPub}
+			rk, m, err := types.VerifyArtifactChain(pinned, rkSigned, mSigned, 0, time.Now())
+			if err != nil {
+				return err
+			}
+			f, err := os.Open(binPath)
+			if err != nil {
+				return err
+			}
+			defer f.Close()
+			if err := m.VerifyBlob(f); err != nil {
+				return fmt.Errorf("binary does not match manifest: %w", err)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "OK: chain verifies — root-keys v%d (%d signers) -> %s %s (%s/%s) sha256=%s key_id=%s\n",
+				rk.Version, len(rk.Keys), m.Product, m.Version, m.OS, m.Arch, m.SHA256, mSigned.KeyID)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&rootPubPath, "root-pub", "", "pinned ROOT public key (root.pub)")
+	cmd.Flags().StringVar(&rootKeysPath, "root-keys", "", "signed root-keys.json")
+	cmd.Flags().StringVar(&manifestPath, "manifest", "", "signed manifest JSON")
+	cmd.Flags().StringVar(&binPath, "binary", "", "binary to verify against the manifest")
+	_ = cmd.MarkFlagRequired("root-pub")
+	_ = cmd.MarkFlagRequired("root-keys")
+	_ = cmd.MarkFlagRequired("manifest")
+	_ = cmd.MarkFlagRequired("binary")
 	return cmd
 }
 

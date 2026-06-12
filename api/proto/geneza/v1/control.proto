@@ -65,6 +65,7 @@ message AgentMsg {
     Heartbeat heartbeat = 2;
     SessionEvent session_event = 3;
     SessionOfferAck offer_ack = 4;
+    MetricsPush metrics = 5;          // agent module metrics over the control channel
   }
 }
 
@@ -74,7 +75,33 @@ message GatewayMsg {
     bytes cluster_config = 2;        // JSON types.Signed wrapping types.ClusterConfig
     Ping ping = 3;
     SessionRevoke session_revoke = 4; // continuous authz: tear down a live session
+    ModuleConfig module_config = 5;   // pluggable per-node agent modules (monitoring, ...)
   }
+}
+
+// ModuleConfig is the gateway's desired set of agent modules for THIS node,
+// pushed in realtime over the control stream. Generic + pluggable: monitoring
+// (node-exporter) is the first module; future exporters/agents reconcile the
+// same way. The agent diffs against what it's running and starts/stops to match.
+message ModuleConfig {
+  int64 version = 1;                 // monotonic per node; agent ignores stale
+  repeated ModuleSpec modules = 2;   // desired-enabled modules (absent = disabled)
+}
+
+message ModuleSpec {
+  string name = 1;                   // "node-exporter" (future: process-exporter, ...)
+  bool enabled = 2;
+  map<string, string> settings = 3;  // module knobs, e.g. scrape_interval_seconds, collectors
+}
+
+// MetricsPush carries one module's Prometheus exposition (text format) up the
+// control channel. The agent renders + pushes on the module's scrape interval;
+// no listener is opened, so only the gateway ever sees these.
+message MetricsPush {
+  string module = 1;
+  bytes exposition = 2;              // Prometheus text exposition format
+  int64 unix_ms = 3;
+  string error = 4;                  // non-empty if the module failed to gather
 }
 
 // SessionRevoke tells the agent to immediately terminate a live session: the
@@ -288,6 +315,23 @@ service AdminAPI {
   // revokes all of a user's sessions.
   rpc RevokeSession(RevokeSessionRequest) returns (Empty);
   rpc RevokeUser(RevokeUserRequest) returns (RevokeCountResponse);
+  // Per-node agent modules (enable/disable monitoring & future exporters). The
+  // gateway persists the desired set and pushes it to the node in realtime.
+  rpc SetNodeModules(SetNodeModulesRequest) returns (Empty);
+  rpc GetNodeModules(GetNodeModulesRequest) returns (NodeModulesResponse);
+}
+
+message SetNodeModulesRequest {
+  string node = 1;                   // node id or name
+  repeated ModuleSpec modules = 2;
+}
+
+message GetNodeModulesRequest {
+  string node = 1;
+}
+
+message NodeModulesResponse {
+  repeated ModuleSpec modules = 1;
 }
 
 message RevokeSessionRequest {

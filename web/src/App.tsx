@@ -8,6 +8,8 @@ import { AppLayout } from "@/components/layout/app-layout"
 import { RequireAdmin } from "@/components/require-admin"
 import { DashboardPage } from "@/pages/dashboard"
 import { MachinesPage } from "@/pages/machines"
+import { MachineDetailPage } from "@/pages/machine-detail"
+import { MetricsPage } from "@/pages/metrics"
 import { SessionsPage } from "@/pages/sessions"
 import { PolicyPage } from "@/pages/policy"
 import { AuditPage } from "@/pages/audit"
@@ -24,6 +26,8 @@ function App() {
               <Route element={<AppLayout />}>
                 <Route index element={<DashboardPage />} />
                 <Route path="machines" element={<MachinesPage />} />
+                <Route path="machines/:id" element={<MachineDetailPage />} />
+                <Route path="metrics" element={<MetricsPage />} />
                 <Route path="sessions" element={<SessionsPage />} />
                 <Route path="policy" element={<PolicyPage />} />
                 <Route path="audit" element={<AuditPage />} />

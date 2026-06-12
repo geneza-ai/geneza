@@ -24,6 +24,7 @@ interface NavItem {
 const NAV: NavItem[] = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard, end: true },
   { to: "/machines", label: "Machines", icon: Server },
+  { to: "/metrics", label: "Metrics", icon: Activity },
   { to: "/sessions", label: "Sessions", icon: TerminalSquare },
   { to: "/policy", label: "Policy", icon: Shield },
   { to: "/audit", label: "Audit log", icon: ScrollText },

@@ -332,6 +332,45 @@ func (a *adminAPIService) RevokeUser(ctx context.Context, req *genezav1.RevokeUs
 	return &genezav1.RevokeCountResponse{Revoked: int32(n)}, nil
 }
 
+// SetNodeModules replaces a node's desired agent-module set and pushes it in
+// realtime (monitoring on/off, future exporters). Persisted so it survives
+// agent reconnects and gateway restarts.
+func (a *adminAPIService) SetNodeModules(ctx context.Context, req *genezav1.SetNodeModulesRequest) (*genezav1.Empty, error) {
+	node, err := a.s.store.FindNode(req.GetNode())
+	if err != nil {
+		return nil, status.Errorf(codes.NotFound, "node %q not found", req.GetNode())
+	}
+	modules := make([]NodeModule, 0, len(req.GetModules()))
+	for _, m := range req.GetModules() {
+		if m.GetName() == "" {
+			return nil, status.Error(codes.InvalidArgument, "module name required")
+		}
+		modules = append(modules, NodeModule{Name: m.GetName(), Enabled: m.GetEnabled(), Settings: m.GetSettings()})
+	}
+	if _, err := a.s.store.SetNodeModules(node.ID, modules); err != nil {
+		return nil, status.Errorf(codes.Internal, "store node modules: %v", err)
+	}
+	a.s.pushNodeModules(node.ID)
+	if err := a.s.audit.Append("node_modules_set", adminActor(ctx), node.ID, "", map[string]string{
+		"modules": strconv.Itoa(len(modules)),
+	}); err != nil {
+		slog.Error("audit append failed", "type", "node_modules_set", "err", err)
+	}
+	return &genezav1.Empty{}, nil
+}
+
+func (a *adminAPIService) GetNodeModules(ctx context.Context, req *genezav1.GetNodeModulesRequest) (*genezav1.NodeModulesResponse, error) {
+	node, err := a.s.store.FindNode(req.GetNode())
+	if err != nil {
+		return nil, status.Errorf(codes.NotFound, "node %q not found", req.GetNode())
+	}
+	rec, err := a.s.store.GetNodeModules(node.ID)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "load node modules: %v", err)
+	}
+	return &genezav1.NodeModulesResponse{Modules: moduleConfigProto(rec).Modules}, nil
+}
+
 func (a *adminAPIService) QueryAudit(ctx context.Context, req *genezav1.QueryAuditRequest) (*genezav1.QueryAuditResponse, error) {
 	limit := int(req.GetLimit())
 	if limit <= 0 {

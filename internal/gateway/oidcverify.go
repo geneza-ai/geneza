@@ -167,6 +167,22 @@ func parseJWK(j rawJWK) (jwkKey, error) {
 	return out, nil
 }
 
+// Warm pre-fetches discovery + JWKS so the first verify after startup is fast
+// and cannot transiently 401. Best-effort; retries briefly since keycloak may
+// still be coming up (hairpin) right when the gateway restarts.
+func (v *oidcVerifier) Warm(ctx context.Context) {
+	for i := 0; i < 6; i++ {
+		if _, err := v.signingKeys(ctx, ""); err == nil {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(2 * time.Second):
+		}
+	}
+}
+
 // signingKeys returns the cached JWKS, refetching when stale or when the
 // token names a kid we have not seen (key rotation).
 func (v *oidcVerifier) signingKeys(ctx context.Context, wantKid string) ([]jwkKey, error) {

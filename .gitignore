@@ -1,4 +1,11 @@
 /bin/
+# stray top-level built binaries (from `go build` without -o)
+/geneza
+/geneza-sign
+/geneza-gateway
+/geneza-relay
+/geneza-agent
+/geneza-bootstrap
 *.test
 *.out
 # Never commit private keys or issued material.

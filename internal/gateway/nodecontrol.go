@@ -81,6 +81,13 @@ func (n *nodeControlService) Stream(stream grpc.BidiStreamingServer[genezav1.Age
 			return err
 		}
 	}
+	// Push the node's desired agent-module set (monitoring, ...) on connect so a
+	// reconnecting agent restarts whatever was enabled before.
+	nodeName := ident.Name
+	if nr, err := s.store.GetNode(ident.Name); err == nil && nr.Name != "" {
+		nodeName = nr.Name
+	}
+	s.pushNodeModules(ident.Name)
 
 	for {
 		msg, err := stream.Recv()
@@ -107,6 +114,8 @@ func (n *nodeControlService) Stream(stream grpc.BidiStreamingServer[genezav1.Age
 			if !h.deliverAck(m.OfferAck) {
 				slog.Warn("offer ack with no waiter", "node", ident.Name, "session", m.OfferAck.GetSessionId())
 			}
+		case *genezav1.AgentMsg_Metrics:
+			n.s.ingestNodeMetrics(ident.Name, nodeName, m.Metrics)
 		case *genezav1.AgentMsg_Hello:
 			// One hello per stream; a second is a protocol violation.
 			return status.Error(codes.InvalidArgument, "duplicate hello")
@@ -138,37 +147,46 @@ func (n *nodeControlService) handleSessionEvent(nodeID string, ev *genezav1.Sess
 				"session", ev.GetSessionId(), "event", ev.GetEvent(), "err", err)
 		}
 	}
-	// Terminal is terminal: once a session is Ended it must never move back to
-	// Active/Detached, so a node cannot resurrect a finished session record.
+	// Terminal is terminal: once a session is Ended or Revoked it must never move
+	// back to Active/Detached, so a node cannot resurrect a finished session
+	// record — and a revoked session's tunnel-close "ended" must not erase the
+	// "revoked" cause (it stays revoked for audit/UI, only timestamps update).
+	terminal := func(s string) bool { return s == SessionEnded || s == SessionRevoked }
 	switch ev.GetEvent() {
 	case "established":
 		update(func(r *SessionRecord) {
-			if r.State != SessionEnded {
+			if !terminal(r.State) {
 				r.State = SessionActive
 			}
 		})
 	case "attached":
 		update(func(r *SessionRecord) {
-			if r.State != SessionEnded {
+			if !terminal(r.State) {
 				r.State = SessionActive
 			}
 		})
 	case "detached":
 		update(func(r *SessionRecord) {
-			if r.State != SessionEnded {
+			if !terminal(r.State) {
 				r.State = SessionDetached
 			}
 		})
 	case "ended":
 		update(func(r *SessionRecord) {
-			r.State = SessionEnded
+			if r.State != SessionRevoked {
+				r.State = SessionEnded
+			}
 			r.EndedUnix = time.Now().Unix()
 			r.ExitCode = ev.GetExitCode()
+			s.overlay.release(r.OverlayIP)
 		})
 	case "rejected":
 		update(func(r *SessionRecord) {
-			r.State = SessionEnded
+			if r.State != SessionRevoked {
+				r.State = SessionEnded
+			}
 			r.EndedUnix = time.Now().Unix()
+			s.overlay.release(r.OverlayIP)
 		})
 	case "offered":
 		// audit-only

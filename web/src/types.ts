@@ -59,6 +59,7 @@ export type SessionState =
   | "detached"
   | "pending"
   | "ended"
+  | "revoked"
   | string
 
 export interface SessionInfo {
@@ -75,6 +76,35 @@ export interface SessionInfo {
 
 export interface SessionsResponse {
   sessions: SessionInfo[]
+}
+
+// --- monitoring ---
+export interface NodeModule {
+  name: string
+  enabled: boolean
+  settings?: Record<string, string>
+}
+
+export interface NodeModulesResponse {
+  nodeId: string
+  version: number
+  modules: NodeModule[]
+}
+
+// Prometheus HTTP API response shape (matrix/vector), served by the gateway.
+export interface PromSeries {
+  metric: Record<string, string>
+  values?: [number, string][] // matrix
+  value?: [number, string] // vector
+}
+
+export interface PromResponse {
+  status: "success" | "error"
+  error?: string
+  data?: {
+    resultType: "matrix" | "vector" | "scalar"
+    result: PromSeries[]
+  }
 }
 
 export interface Fleet {

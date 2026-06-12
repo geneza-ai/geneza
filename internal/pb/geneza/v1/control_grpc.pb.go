@@ -600,6 +600,8 @@ const (
 	AdminAPI_QueryAudit_FullMethodName        = "/geneza.v1.AdminAPI/QueryAudit"
 	AdminAPI_RevokeSession_FullMethodName     = "/geneza.v1.AdminAPI/RevokeSession"
 	AdminAPI_RevokeUser_FullMethodName        = "/geneza.v1.AdminAPI/RevokeUser"
+	AdminAPI_SetNodeModules_FullMethodName    = "/geneza.v1.AdminAPI/SetNodeModules"
+	AdminAPI_GetNodeModules_FullMethodName    = "/geneza.v1.AdminAPI/GetNodeModules"
 )
 
 // AdminAPIClient is the client API for AdminAPI service.
@@ -616,6 +618,10 @@ type AdminAPIClient interface {
 	// revokes all of a user's sessions.
 	RevokeSession(ctx context.Context, in *RevokeSessionRequest, opts ...grpc.CallOption) (*Empty, error)
 	RevokeUser(ctx context.Context, in *RevokeUserRequest, opts ...grpc.CallOption) (*RevokeCountResponse, error)
+	// Per-node agent modules (enable/disable monitoring & future exporters). The
+	// gateway persists the desired set and pushes it to the node in realtime.
+	SetNodeModules(ctx context.Context, in *SetNodeModulesRequest, opts ...grpc.CallOption) (*Empty, error)
+	GetNodeModules(ctx context.Context, in *GetNodeModulesRequest, opts ...grpc.CallOption) (*NodeModulesResponse, error)
 }
 
 type adminAPIClient struct {
@@ -709,6 +715,26 @@ func (c *adminAPIClient) RevokeUser(ctx context.Context, in *RevokeUserRequest, 
 	return out, nil
 }
 
+func (c *adminAPIClient) SetNodeModules(ctx context.Context, in *SetNodeModulesRequest, opts ...grpc.CallOption) (*Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Empty)
+	err := c.cc.Invoke(ctx, AdminAPI_SetNodeModules_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *adminAPIClient) GetNodeModules(ctx context.Context, in *GetNodeModulesRequest, opts ...grpc.CallOption) (*NodeModulesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(NodeModulesResponse)
+	err := c.cc.Invoke(ctx, AdminAPI_GetNodeModules_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AdminAPIServer is the server API for AdminAPI service.
 // All implementations must embed UnimplementedAdminAPIServer
 // for forward compatibility.
@@ -723,6 +749,10 @@ type AdminAPIServer interface {
 	// revokes all of a user's sessions.
 	RevokeSession(context.Context, *RevokeSessionRequest) (*Empty, error)
 	RevokeUser(context.Context, *RevokeUserRequest) (*RevokeCountResponse, error)
+	// Per-node agent modules (enable/disable monitoring & future exporters). The
+	// gateway persists the desired set and pushes it to the node in realtime.
+	SetNodeModules(context.Context, *SetNodeModulesRequest) (*Empty, error)
+	GetNodeModules(context.Context, *GetNodeModulesRequest) (*NodeModulesResponse, error)
 	mustEmbedUnimplementedAdminAPIServer()
 }
 
@@ -756,6 +786,12 @@ func (UnimplementedAdminAPIServer) RevokeSession(context.Context, *RevokeSession
 }
 func (UnimplementedAdminAPIServer) RevokeUser(context.Context, *RevokeUserRequest) (*RevokeCountResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RevokeUser not implemented")
+}
+func (UnimplementedAdminAPIServer) SetNodeModules(context.Context, *SetNodeModulesRequest) (*Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetNodeModules not implemented")
+}
+func (UnimplementedAdminAPIServer) GetNodeModules(context.Context, *GetNodeModulesRequest) (*NodeModulesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetNodeModules not implemented")
 }
 func (UnimplementedAdminAPIServer) mustEmbedUnimplementedAdminAPIServer() {}
 func (UnimplementedAdminAPIServer) testEmbeddedByValue()                  {}
@@ -911,6 +947,42 @@ func _AdminAPI_RevokeUser_Handler(srv interface{}, ctx context.Context, dec func
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AdminAPI_SetNodeModules_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetNodeModulesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminAPIServer).SetNodeModules(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminAPI_SetNodeModules_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminAPIServer).SetNodeModules(ctx, req.(*SetNodeModulesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AdminAPI_GetNodeModules_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetNodeModulesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminAPIServer).GetNodeModules(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminAPI_GetNodeModules_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminAPIServer).GetNodeModules(ctx, req.(*GetNodeModulesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AdminAPI_ServiceDesc is the grpc.ServiceDesc for AdminAPI service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -945,6 +1017,14 @@ var AdminAPI_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RevokeUser",
 			Handler:    _AdminAPI_RevokeUser_Handler,
+		},
+		{
+			MethodName: "SetNodeModules",
+			Handler:    _AdminAPI_SetNodeModules_Handler,
+		},
+		{
+			MethodName: "GetNodeModules",
+			Handler:    _AdminAPI_GetNodeModules_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

@@ -48,12 +48,21 @@ roles:
       - actions: ["shell", "exec"]
         node_labels: {env: prod}
         max_session_ttl: 4h
+      - service_kinds: ["subnet-route", "exit-node"]
+        node_labels: {env: prod}
   watcher:
     allow:
       - actions: ["shell"]
         node_labels: {"*": "*"}
         allow_detach: false
+  natonly:
+    allow:
+      - actions: ["shell"]
+        node_labels: {"*": "*"}
+        require_native: true
 bindings:
+  - role: natonly
+    users: [nina]
   - role: ops
     users: [alice]
   - role: watcher
@@ -79,7 +88,7 @@ func testBroker(t *testing.T) (*Broker, *fakeAgents, *Store, ed25519.PublicKey) 
 		t.Fatal(err)
 	}
 	agents := &fakeAgents{online: map[string]bool{"n-aaaaaaaaaaaa": true}, accepted: true}
-	b := NewBroker(store, audit, agents, func() policy.Engine { return engine },
+	b := NewBroker(store, audit, agents, func() policy.Engine { return engine }, newOverlayAllocator(),
 		priv, keyID, []string{"10.70.70.10:7403"}, 2*time.Minute, 12*time.Hour)
 
 	noise := make([]byte, 32)
@@ -158,6 +167,114 @@ func TestBrokerGrantConstruction(t *testing.T) {
 	}
 	if rec.State != SessionPending || rec.User != "alice" {
 		t.Fatalf("session record: %+v", rec)
+	}
+}
+
+func TestBrokerVPNGrant(t *testing.T) {
+	b, agents, store, pub := testBroker(t)
+	agents.services = map[string][]types.Service{
+		"n-aaaaaaaaaaaa": {
+			{Name: "lan", Kind: types.KindSubnet, NodeID: "n-aaaaaaaaaaaa", Addr: "192.168.99.0/24"},
+			{Name: "exit", Kind: types.KindExitNode, NodeID: "n-aaaaaaaaaaaa"},
+		},
+	}
+	ident := &ca.Identity{Kind: ca.KindUser, Name: "alice", Roles: []string{"ops"}}
+
+	// Subnet route: action derived to vpn, route = service addr, overlay ip set.
+	resp, err := b.CreateSession(context.Background(), ident, &genezav1.CreateSessionRequest{
+		Node:           "web1",
+		Action:         types.ActionVPN,
+		Service:        "lan",
+		ClientNoisePub: clientNoise(),
+	})
+	if err != nil {
+		t.Fatalf("vpn CreateSession: %v", err)
+	}
+	signed, err := types.DecodeSigned(resp.SignedGrant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant, err := types.VerifyGrant(map[string]ed25519.PublicKey{types.KeyIDFor(pub): pub}, signed)
+	if err != nil {
+		t.Fatalf("vpn grant does not verify: %v", err)
+	}
+	if grant.Action != types.ActionVPN {
+		t.Fatalf("action = %q, want vpn", grant.Action)
+	}
+	if len(grant.Routes) != 1 || grant.Routes[0] != "192.168.99.0/24" {
+		t.Fatalf("routes = %v, want [192.168.99.0/24]", grant.Routes)
+	}
+	if grant.OverlayIP == "" {
+		t.Fatal("vpn grant has no overlay ip")
+	}
+	if grant.Record {
+		t.Fatal("vpn grant must not be recordable (no PTY)")
+	}
+	if err := grant.Validate("n-aaaaaaaaaaaa", grant.AgentNoisePub, time.Now()); err != nil {
+		t.Fatalf("agent-side validate: %v", err)
+	}
+	rec, err := store.GetSession(resp.SessionId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.OverlayIP != grant.OverlayIP {
+		t.Fatalf("session record overlay ip %q != grant %q", rec.OverlayIP, grant.OverlayIP)
+	}
+
+	// Exit node: route becomes the default route.
+	resp2, err := b.CreateSession(context.Background(), ident, &genezav1.CreateSessionRequest{
+		Node:           "web1",
+		Action:         types.ActionVPN,
+		Service:        "exit",
+		ClientNoisePub: clientNoise(),
+	})
+	if err != nil {
+		t.Fatalf("exit-node CreateSession: %v", err)
+	}
+	signed2, _ := types.DecodeSigned(resp2.SignedGrant)
+	grant2, err := types.VerifyGrant(map[string]ed25519.PublicKey{types.KeyIDFor(pub): pub}, signed2)
+	if err != nil {
+		t.Fatalf("exit grant does not verify: %v", err)
+	}
+	if len(grant2.Routes) != 1 || grant2.Routes[0] != "0.0.0.0/0" {
+		t.Fatalf("exit routes = %v, want [0.0.0.0/0]", grant2.Routes)
+	}
+	if grant2.OverlayIP == grant.OverlayIP {
+		t.Fatal("two concurrent vpn sessions got the same overlay ip")
+	}
+}
+
+func TestBrokerVPNServiceDenied(t *testing.T) {
+	// walter (watcher) may shell anywhere but has no service_kinds rule.
+	b, agents, _, _ := testBroker(t)
+	agents.services = map[string][]types.Service{
+		"n-aaaaaaaaaaaa": {{Name: "lan", Kind: types.KindSubnet, NodeID: "n-aaaaaaaaaaaa", Addr: "192.168.99.0/24"}},
+	}
+	ident := &ca.Identity{Kind: ca.KindUser, Name: "walter", Roles: []string{"watcher"}}
+	_, err := b.CreateSession(context.Background(), ident, &genezav1.CreateSessionRequest{
+		Node:           "web1",
+		Action:         types.ActionVPN,
+		Service:        "lan",
+		ClientNoisePub: clientNoise(),
+	})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("want PermissionDenied for vpn without service rule, got %v", err)
+	}
+}
+
+func TestBrokerWebPathPolicyGate(t *testing.T) {
+	b, _, _, _ := testBroker(t)
+	ident := &ca.Identity{Kind: ca.KindUser, Name: "nina", Roles: []string{"natonly"}}
+	req := &genezav1.CreateSessionRequest{Node: "web1", Action: "shell", ClientNoisePub: clientNoise()}
+
+	// Native client path is allowed by the require_native rule.
+	if _, err := b.CreateSession(context.Background(), ident, req); err != nil {
+		t.Fatalf("native shell should be allowed: %v", err)
+	}
+	// The browser shell proxy goes through CreateSessionWeb -> client_path=web,
+	// which require_native must deny.
+	if _, err := b.CreateSessionWeb(context.Background(), ident, req); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("web shell must be denied by require_native, got %v", err)
 	}
 }
 

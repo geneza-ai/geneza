@@ -33,7 +33,77 @@ func newAdminCmd() *cobra.Command {
 		newPolicyReloadCmd(),
 		newAuditCmd(),
 		newRevokeCmd(),
+		newMonitorCmd(),
 	)
+	return cmd
+}
+
+func newMonitorCmd() *cobra.Command {
+	var (
+		off      bool
+		interval int
+		show     bool
+	)
+	cmd := &cobra.Command{
+		Use:   "monitor NODE",
+		Short: "Enable/disable built-in monitoring (node-exporter) on a machine",
+		Long: "Toggle the embedded node-exporter module on a node. Metrics are scraped\n" +
+			"on demand over the dial-out control channel (no listener is opened) and\n" +
+			"stored in the gateway's embedded TSDB. --show prints the current modules.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			e, err := loadEnv()
+			if err != nil {
+				return err
+			}
+			cc, api, err := dialAdmin(e)
+			if err != nil {
+				return err
+			}
+			defer cc.Close()
+			ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
+			defer cancel()
+
+			if show {
+				resp, err := api.GetNodeModules(ctx, &genezav1.GetNodeModulesRequest{Node: args[0]})
+				if err != nil {
+					return client.Humanize(err)
+				}
+				if len(resp.GetModules()) == 0 {
+					fmt.Printf("%s: no modules configured\n", args[0])
+					return nil
+				}
+				for _, m := range resp.GetModules() {
+					state := "disabled"
+					if m.GetEnabled() {
+						state = "enabled"
+					}
+					fmt.Printf("%s: %s (%s) settings=%v\n", args[0], m.GetName(), state, m.GetSettings())
+				}
+				return nil
+			}
+
+			settings := map[string]string{}
+			if interval > 0 {
+				settings["scrape_interval_seconds"] = fmt.Sprintf("%d", interval)
+			}
+			spec := &genezav1.ModuleSpec{Name: "node-exporter", Enabled: !off, Settings: settings}
+			if _, err := api.SetNodeModules(ctx, &genezav1.SetNodeModulesRequest{
+				Node: args[0], Modules: []*genezav1.ModuleSpec{spec},
+			}); err != nil {
+				return client.Humanize(err)
+			}
+			if off {
+				fmt.Printf("Monitoring disabled on %s.\n", args[0])
+			} else {
+				fmt.Printf("Monitoring enabled on %s (node-exporter).\n", args[0])
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&off, "off", false, "disable monitoring instead of enabling")
+	cmd.Flags().IntVar(&interval, "interval", 0, "scrape interval in seconds (default 15)")
+	cmd.Flags().BoolVar(&show, "show", false, "show the node's current modules")
 	return cmd
 }
 

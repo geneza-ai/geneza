@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -36,13 +37,18 @@ func (s *Server) newConsoleAPI() (*consoleAPI, error) {
 	if clientID == "" {
 		clientID = s.cfg.OIDC.ClientID
 	}
-	return &consoleAPI{
+	c := &consoleAPI{
 		s:        s,
 		verifier: newOIDCVerifier(s.cfg.OIDC.Issuer, clientID),
 		clientID: clientID,
 		extURL:   strings.TrimRight(s.cfg.Console.ExternalURL, "/"),
 		static:   s.cfg.Console.StaticDir,
-	}, nil
+	}
+	// Warm the OIDC discovery + JWKS in the background so the FIRST console
+	// request after a (re)start doesn't pay the cold-fetch latency and 401 —
+	// a transient 401 logs the SPA out, which would also kill a live web shell.
+	go c.verifier.Warm(context.Background())
+	return c, nil
 }
 
 type consoleUser struct {
@@ -65,6 +71,15 @@ func (c *consoleAPI) handler() http.Handler {
 	mux.Handle("GET /api/v1/audit", c.auth(c.handleAudit))
 	mux.Handle("POST /api/v1/tokens", c.authAdmin(c.handleMintToken))
 	mux.Handle("DELETE /api/v1/sessions/{id}", c.authAdmin(c.handleRevokeSession))
+	// Monitoring: Prometheus-shaped query API (any role) + per-node module toggle (admin).
+	mux.Handle("GET /api/v1/metrics/query", c.auth(c.handleMetricsQuery))
+	mux.Handle("GET /api/v1/metrics/query_range", c.auth(c.handleMetricsQueryRange))
+	mux.Handle("GET /api/v1/nodes/{id}/modules", c.auth(c.handleGetNodeModules))
+	mux.Handle("PUT /api/v1/nodes/{id}/modules", c.authAdmin(c.handleSetNodeModules))
+	// Browser remote shell (WebSocket; authenticates from ?token= since a WS
+	// handshake can't carry the Authorization header). Policy is enforced
+	// server-side as client_path=web.
+	mux.HandleFunc("GET /api/v1/nodes/{id}/shell", c.handleShell)
 	mux.HandleFunc("/", c.serveSPA)
 	return secHeaders(mux)
 }
@@ -85,7 +100,14 @@ func (c *consoleAPI) authenticate(r *http.Request) (*consoleUser, error) {
 	if !ok || tok == "" {
 		return nil, errors.New("missing bearer token")
 	}
-	claims, err := c.verifier.verify(r.Context(), tok)
+	return c.authenticateToken(r.Context(), tok)
+}
+
+// authenticateToken verifies a raw bearer token and builds the console user.
+// Used by the header-based middleware and by the WebSocket shell (browsers can't
+// set the Authorization header on a WS handshake, so it arrives as ?token=).
+func (c *consoleAPI) authenticateToken(ctx context.Context, tok string) (*consoleUser, error) {
+	claims, err := c.verifier.verify(ctx, tok)
 	if err != nil {
 		return nil, err
 	}

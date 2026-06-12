@@ -97,7 +97,8 @@ type Config struct {
 	CertTTL              CertTTLConfig     `yaml:"cert_ttl"`
 	GrantTTL             Duration          `yaml:"grant_ttl"`
 	DefaultMaxSessionTTL Duration          `yaml:"default_max_session_ttl"`
-	ReauthInterval       Duration          `yaml:"reauth_interval"` // continuous-authz sweep period (default 15s)
+	ReauthInterval       Duration          `yaml:"reauth_interval"`    // continuous-authz sweep period (default 15s)
+	MetricsRetention     Duration          `yaml:"metrics_retention"`  // embedded-TSDB retention (default 15d)
 	OIDC                 *OIDCConfig       `yaml:"oidc"`
 	LocalUsers           []LocalUser       `yaml:"local_users"`
 	AgentPolicy          AgentPolicyConfig `yaml:"agent_policy"`
@@ -239,6 +240,7 @@ func (c *Config) AuditKeyPath() string    { return filepath.Join(c.DataDir, "aud
 func (c *Config) AuditCheckpoint() string { return filepath.Join(c.DataDir, "audit.jsonl.chk") }
 func (c *Config) ArtifactsDir() string   { return filepath.Join(c.DataDir, "artifacts") }
 func (c *Config) RecordingsDir() string  { return filepath.Join(c.DataDir, "recordings") }
+func (c *Config) MetricsDir() string     { return filepath.Join(c.DataDir, "metrics-tsdb") }
 
 func (c *Config) gatewayCertPath() string { return filepath.Join(c.TLSDir(), "gateway.crt") }
 func (c *Config) gatewayKeyPath() string  { return filepath.Join(c.TLSDir(), "gateway.key") }

@@ -52,6 +52,9 @@ type Server struct {
 	ccMu      sync.RWMutex
 	ccVersion int64
 	ccSigned  []byte
+
+	overlay *overlayAllocator
+	metrics *metricsStore
 }
 
 func New(cfg *Config) (*Server, error) {
@@ -114,13 +117,27 @@ func New(cfg *Config) (*Server, error) {
 		artifactPub:  artifactPub,
 		tlsCert:      tlsCert,
 		policyEngine: engine,
+		overlay:      newOverlayAllocator(),
 	}
 	s.enrollProviders = map[string]EnrollProvider{
 		"token":              &tokenProvider{store: store},
 		"openstack-metadata": &openstackMetadataProvider{},
 	}
-	s.broker = NewBroker(store, audit, s.registry, s.policy,
+	s.broker = NewBroker(store, audit, s.registry, s.policy, s.overlay,
 		grantKey, grantKeyID, cfg.RelayAddrs, cfg.GrantTTL.D(), cfg.DefaultMaxSessionTTL.D())
+
+	retention := cfg.MetricsRetention.D()
+	if retention <= 0 {
+		retention = 15 * 24 * time.Hour
+	}
+	// sink is nil = local TSDB only; wire a remoteWriteSink here for Thanos/Mimir.
+	metrics, err := newMetricsStore(cfg.MetricsDir(), retention, slog.Default(), nil)
+	if err != nil {
+		store.Close()
+		audit.Close()
+		return nil, fmt.Errorf("metrics store: %w", err)
+	}
+	s.metrics = metrics
 
 	if err := s.reconcileClusterConfig(); err != nil {
 		s.Close()
@@ -130,6 +147,9 @@ func New(cfg *Config) (*Server, error) {
 }
 
 func (s *Server) Close() {
+	if s.metrics != nil {
+		_ = s.metrics.Close()
+	}
 	if s.audit != nil {
 		_ = s.audit.Close()
 	}

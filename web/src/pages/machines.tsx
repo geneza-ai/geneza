@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react"
+import { useNavigate } from "react-router-dom"
 import { Search, Server } from "lucide-react"
 
 import { api } from "@/api"
@@ -18,16 +19,15 @@ import { EmptyState, ErrorState } from "@/components/states"
 import { PageToolbar } from "@/components/page-toolbar"
 import { StatusDot } from "@/components/status-dot"
 import { CopyId } from "@/components/copy-id"
-import { NodeDetailSheet } from "@/components/node-detail-sheet"
 import { LabelTags } from "@/components/label-tags"
 import { relativeTime } from "@/lib/format"
-import type { NodeInfo, NodesResponse } from "@/types"
+import type { NodesResponse } from "@/types"
 
 export function MachinesPage() {
+  const navigate = useNavigate()
   const { data, error, initialLoading, loading, refresh } =
     usePolling<NodesResponse>((s) => api.getNodes(s), 10000)
   const [query, setQuery] = useState("")
-  const [selected, setSelected] = useState<NodeInfo | null>(null)
 
   const nodes = useMemo(() => data?.nodes ?? [], [data])
   const filtered = useMemo(() => {
@@ -99,7 +99,7 @@ export function MachinesPage() {
                 <TableRow
                   key={node.nodeId}
                   className="cursor-pointer"
-                  onClick={() => setSelected(node)}
+                  onClick={() => navigate(`/machines/${node.nodeId}`)}
                 >
                   <TableCell className="font-medium">{node.name}</TableCell>
                   <TableCell>
@@ -153,12 +153,6 @@ export function MachinesPage() {
           Showing {filtered.length} of {nodes.length}
         </p>
       )}
-
-      <NodeDetailSheet
-        node={selected}
-        open={!!selected}
-        onOpenChange={(open) => !open && setSelected(null)}
-      />
     </div>
   )
 }

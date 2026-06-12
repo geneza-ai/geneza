@@ -94,6 +94,7 @@ func (s *Server) revokeSession(rec *SessionRecord, reason string) error {
 	_ = s.store.UpdateSession(rec.ID, func(r *SessionRecord) {
 		r.State = SessionRevoked
 		r.EndedUnix = time.Now().Unix()
+		s.overlay.release(r.OverlayIP)
 	})
 	if err := s.audit.Append("session_revoked", "", rec.NodeID, rec.ID, map[string]string{
 		"user":   rec.User,

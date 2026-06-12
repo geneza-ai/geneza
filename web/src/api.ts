@@ -4,9 +4,12 @@ import type {
   AuditResponse,
   Fleet,
   Me,
+  NodeModule,
+  NodeModulesResponse,
   NodesResponse,
   Overview,
   Policy,
+  PromResponse,
   SessionsResponse,
   TokenRequest,
   TokenResponse,
@@ -49,7 +52,7 @@ function buildUrl(path: string, query?: RequestOptions["query"]): string {
 }
 
 async function request<T>(
-  method: "GET" | "POST",
+  method: "GET" | "POST" | "PUT" | "DELETE",
   path: string,
   opts: RequestOptions = {},
   body?: unknown
@@ -103,6 +106,9 @@ export const api = {
   post<T>(path: string, body: unknown, opts?: RequestOptions) {
     return request<T>("POST", path, opts, body)
   },
+  del<T>(path: string, opts?: RequestOptions) {
+    return request<T>("DELETE", path, opts)
+  },
 
   // Typed endpoint helpers --------------------------------------------------
   getConfig: (signal?: AbortSignal) =>
@@ -124,4 +130,42 @@ export const api = {
   ) => request<AuditResponse>("GET", "/audit", { query, signal }),
   createToken: (body: TokenRequest) =>
     request<TokenResponse>("POST", "/tokens", {}, body),
+  revokeSession: (id: string) =>
+    request<{ ok: boolean }>("DELETE", `/sessions/${encodeURIComponent(id)}`),
+
+  // --- monitoring ---
+  getNodeModules: (id: string, signal?: AbortSignal) =>
+    request<NodeModulesResponse>(
+      "GET",
+      `/nodes/${encodeURIComponent(id)}/modules`,
+      { signal }
+    ),
+  setNodeModules: (id: string, modules: NodeModule[]) =>
+    request<{ ok: boolean; version: number; modules: NodeModule[] }>(
+      "PUT",
+      `/nodes/${encodeURIComponent(id)}/modules`,
+      {},
+      { modules }
+    ),
+  queryRange: (
+    query: string,
+    startSec: number,
+    endSec: number,
+    stepSec: number,
+    signal?: AbortSignal
+  ) =>
+    request<PromResponse>("GET", "/metrics/query_range", {
+      query: {
+        query,
+        start: startSec,
+        end: endSec,
+        step: stepSec,
+      },
+      signal,
+    }),
+  queryInstant: (query: string, signal?: AbortSignal) =>
+    request<PromResponse>("GET", "/metrics/query", {
+      query: { query },
+      signal,
+    }),
 }

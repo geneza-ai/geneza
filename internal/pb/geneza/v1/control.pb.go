@@ -276,6 +276,7 @@ type AgentMsg struct {
 	//	*AgentMsg_Heartbeat
 	//	*AgentMsg_SessionEvent
 	//	*AgentMsg_OfferAck
+	//	*AgentMsg_Metrics
 	Msg           isAgentMsg_Msg `protobuf_oneof:"msg"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -354,6 +355,15 @@ func (x *AgentMsg) GetOfferAck() *SessionOfferAck {
 	return nil
 }
 
+func (x *AgentMsg) GetMetrics() *MetricsPush {
+	if x != nil {
+		if x, ok := x.Msg.(*AgentMsg_Metrics); ok {
+			return x.Metrics
+		}
+	}
+	return nil
+}
+
 type isAgentMsg_Msg interface {
 	isAgentMsg_Msg()
 }
@@ -374,6 +384,10 @@ type AgentMsg_OfferAck struct {
 	OfferAck *SessionOfferAck `protobuf:"bytes,4,opt,name=offer_ack,json=offerAck,proto3,oneof"`
 }
 
+type AgentMsg_Metrics struct {
+	Metrics *MetricsPush `protobuf:"bytes,5,opt,name=metrics,proto3,oneof"` // agent module metrics over the control channel
+}
+
 func (*AgentMsg_Hello) isAgentMsg_Msg() {}
 
 func (*AgentMsg_Heartbeat) isAgentMsg_Msg() {}
@@ -381,6 +395,8 @@ func (*AgentMsg_Heartbeat) isAgentMsg_Msg() {}
 func (*AgentMsg_SessionEvent) isAgentMsg_Msg() {}
 
 func (*AgentMsg_OfferAck) isAgentMsg_Msg() {}
+
+func (*AgentMsg_Metrics) isAgentMsg_Msg() {}
 
 type GatewayMsg struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -390,6 +406,7 @@ type GatewayMsg struct {
 	//	*GatewayMsg_ClusterConfig
 	//	*GatewayMsg_Ping
 	//	*GatewayMsg_SessionRevoke
+	//	*GatewayMsg_ModuleConfig
 	Msg           isGatewayMsg_Msg `protobuf_oneof:"msg"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -468,6 +485,15 @@ func (x *GatewayMsg) GetSessionRevoke() *SessionRevoke {
 	return nil
 }
 
+func (x *GatewayMsg) GetModuleConfig() *ModuleConfig {
+	if x != nil {
+		if x, ok := x.Msg.(*GatewayMsg_ModuleConfig); ok {
+			return x.ModuleConfig
+		}
+	}
+	return nil
+}
+
 type isGatewayMsg_Msg interface {
 	isGatewayMsg_Msg()
 }
@@ -488,6 +514,10 @@ type GatewayMsg_SessionRevoke struct {
 	SessionRevoke *SessionRevoke `protobuf:"bytes,4,opt,name=session_revoke,json=sessionRevoke,proto3,oneof"` // continuous authz: tear down a live session
 }
 
+type GatewayMsg_ModuleConfig struct {
+	ModuleConfig *ModuleConfig `protobuf:"bytes,5,opt,name=module_config,json=moduleConfig,proto3,oneof"` // pluggable per-node agent modules (monitoring, ...)
+}
+
 func (*GatewayMsg_SessionOffer) isGatewayMsg_Msg() {}
 
 func (*GatewayMsg_ClusterConfig) isGatewayMsg_Msg() {}
@@ -495,6 +525,195 @@ func (*GatewayMsg_ClusterConfig) isGatewayMsg_Msg() {}
 func (*GatewayMsg_Ping) isGatewayMsg_Msg() {}
 
 func (*GatewayMsg_SessionRevoke) isGatewayMsg_Msg() {}
+
+func (*GatewayMsg_ModuleConfig) isGatewayMsg_Msg() {}
+
+// ModuleConfig is the gateway's desired set of agent modules for THIS node,
+// pushed in realtime over the control stream. Generic + pluggable: monitoring
+// (node-exporter) is the first module; future exporters/agents reconcile the
+// same way. The agent diffs against what it's running and starts/stops to match.
+type ModuleConfig struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Version       int64                  `protobuf:"varint,1,opt,name=version,proto3" json:"version,omitempty"` // monotonic per node; agent ignores stale
+	Modules       []*ModuleSpec          `protobuf:"bytes,2,rep,name=modules,proto3" json:"modules,omitempty"`  // desired-enabled modules (absent = disabled)
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ModuleConfig) Reset() {
+	*x = ModuleConfig{}
+	mi := &file_geneza_v1_control_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ModuleConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ModuleConfig) ProtoMessage() {}
+
+func (x *ModuleConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_geneza_v1_control_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ModuleConfig.ProtoReflect.Descriptor instead.
+func (*ModuleConfig) Descriptor() ([]byte, []int) {
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *ModuleConfig) GetVersion() int64 {
+	if x != nil {
+		return x.Version
+	}
+	return 0
+}
+
+func (x *ModuleConfig) GetModules() []*ModuleSpec {
+	if x != nil {
+		return x.Modules
+	}
+	return nil
+}
+
+type ModuleSpec struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"` // "node-exporter" (future: process-exporter, ...)
+	Enabled       bool                   `protobuf:"varint,2,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	Settings      map[string]string      `protobuf:"bytes,3,rep,name=settings,proto3" json:"settings,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"` // module knobs, e.g. scrape_interval_seconds, collectors
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ModuleSpec) Reset() {
+	*x = ModuleSpec{}
+	mi := &file_geneza_v1_control_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ModuleSpec) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ModuleSpec) ProtoMessage() {}
+
+func (x *ModuleSpec) ProtoReflect() protoreflect.Message {
+	mi := &file_geneza_v1_control_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ModuleSpec.ProtoReflect.Descriptor instead.
+func (*ModuleSpec) Descriptor() ([]byte, []int) {
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *ModuleSpec) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *ModuleSpec) GetEnabled() bool {
+	if x != nil {
+		return x.Enabled
+	}
+	return false
+}
+
+func (x *ModuleSpec) GetSettings() map[string]string {
+	if x != nil {
+		return x.Settings
+	}
+	return nil
+}
+
+// MetricsPush carries one module's Prometheus exposition (text format) up the
+// control channel. The agent renders + pushes on the module's scrape interval;
+// no listener is opened, so only the gateway ever sees these.
+type MetricsPush struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Module        string                 `protobuf:"bytes,1,opt,name=module,proto3" json:"module,omitempty"`
+	Exposition    []byte                 `protobuf:"bytes,2,opt,name=exposition,proto3" json:"exposition,omitempty"` // Prometheus text exposition format
+	UnixMs        int64                  `protobuf:"varint,3,opt,name=unix_ms,json=unixMs,proto3" json:"unix_ms,omitempty"`
+	Error         string                 `protobuf:"bytes,4,opt,name=error,proto3" json:"error,omitempty"` // non-empty if the module failed to gather
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MetricsPush) Reset() {
+	*x = MetricsPush{}
+	mi := &file_geneza_v1_control_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MetricsPush) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MetricsPush) ProtoMessage() {}
+
+func (x *MetricsPush) ProtoReflect() protoreflect.Message {
+	mi := &file_geneza_v1_control_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MetricsPush.ProtoReflect.Descriptor instead.
+func (*MetricsPush) Descriptor() ([]byte, []int) {
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *MetricsPush) GetModule() string {
+	if x != nil {
+		return x.Module
+	}
+	return ""
+}
+
+func (x *MetricsPush) GetExposition() []byte {
+	if x != nil {
+		return x.Exposition
+	}
+	return nil
+}
+
+func (x *MetricsPush) GetUnixMs() int64 {
+	if x != nil {
+		return x.UnixMs
+	}
+	return 0
+}
+
+func (x *MetricsPush) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
 
 // SessionRevoke tells the agent to immediately terminate a live session: the
 // gateway re-evaluated it and access is no longer permitted (policy change,
@@ -509,7 +728,7 @@ type SessionRevoke struct {
 
 func (x *SessionRevoke) Reset() {
 	*x = SessionRevoke{}
-	mi := &file_geneza_v1_control_proto_msgTypes[5]
+	mi := &file_geneza_v1_control_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -521,7 +740,7 @@ func (x *SessionRevoke) String() string {
 func (*SessionRevoke) ProtoMessage() {}
 
 func (x *SessionRevoke) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[5]
+	mi := &file_geneza_v1_control_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -534,7 +753,7 @@ func (x *SessionRevoke) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionRevoke.ProtoReflect.Descriptor instead.
 func (*SessionRevoke) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{5}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *SessionRevoke) GetSessionId() string {
@@ -567,7 +786,7 @@ type ServiceAdvert struct {
 
 func (x *ServiceAdvert) Reset() {
 	*x = ServiceAdvert{}
-	mi := &file_geneza_v1_control_proto_msgTypes[6]
+	mi := &file_geneza_v1_control_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -579,7 +798,7 @@ func (x *ServiceAdvert) String() string {
 func (*ServiceAdvert) ProtoMessage() {}
 
 func (x *ServiceAdvert) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[6]
+	mi := &file_geneza_v1_control_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -592,7 +811,7 @@ func (x *ServiceAdvert) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ServiceAdvert.ProtoReflect.Descriptor instead.
 func (*ServiceAdvert) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{6}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ServiceAdvert) GetName() string {
@@ -637,7 +856,7 @@ type AgentHello struct {
 
 func (x *AgentHello) Reset() {
 	*x = AgentHello{}
-	mi := &file_geneza_v1_control_proto_msgTypes[7]
+	mi := &file_geneza_v1_control_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -649,7 +868,7 @@ func (x *AgentHello) String() string {
 func (*AgentHello) ProtoMessage() {}
 
 func (x *AgentHello) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[7]
+	mi := &file_geneza_v1_control_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -662,7 +881,7 @@ func (x *AgentHello) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentHello.ProtoReflect.Descriptor instead.
 func (*AgentHello) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{7}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *AgentHello) GetNodeId() string {
@@ -720,7 +939,7 @@ type Heartbeat struct {
 
 func (x *Heartbeat) Reset() {
 	*x = Heartbeat{}
-	mi := &file_geneza_v1_control_proto_msgTypes[8]
+	mi := &file_geneza_v1_control_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -732,7 +951,7 @@ func (x *Heartbeat) String() string {
 func (*Heartbeat) ProtoMessage() {}
 
 func (x *Heartbeat) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[8]
+	mi := &file_geneza_v1_control_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -745,7 +964,7 @@ func (x *Heartbeat) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Heartbeat.ProtoReflect.Descriptor instead.
 func (*Heartbeat) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{8}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *Heartbeat) GetUnixMs() int64 {
@@ -794,7 +1013,7 @@ type SessionOffer struct {
 
 func (x *SessionOffer) Reset() {
 	*x = SessionOffer{}
-	mi := &file_geneza_v1_control_proto_msgTypes[9]
+	mi := &file_geneza_v1_control_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -806,7 +1025,7 @@ func (x *SessionOffer) String() string {
 func (*SessionOffer) ProtoMessage() {}
 
 func (x *SessionOffer) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[9]
+	mi := &file_geneza_v1_control_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -819,7 +1038,7 @@ func (x *SessionOffer) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionOffer.ProtoReflect.Descriptor instead.
 func (*SessionOffer) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{9}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *SessionOffer) GetSignedGrant() []byte {
@@ -840,7 +1059,7 @@ type SessionOfferAck struct {
 
 func (x *SessionOfferAck) Reset() {
 	*x = SessionOfferAck{}
-	mi := &file_geneza_v1_control_proto_msgTypes[10]
+	mi := &file_geneza_v1_control_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -852,7 +1071,7 @@ func (x *SessionOfferAck) String() string {
 func (*SessionOfferAck) ProtoMessage() {}
 
 func (x *SessionOfferAck) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[10]
+	mi := &file_geneza_v1_control_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -865,7 +1084,7 @@ func (x *SessionOfferAck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionOfferAck.ProtoReflect.Descriptor instead.
 func (*SessionOfferAck) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{10}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *SessionOfferAck) GetSessionId() string {
@@ -905,7 +1124,7 @@ type SessionEvent struct {
 
 func (x *SessionEvent) Reset() {
 	*x = SessionEvent{}
-	mi := &file_geneza_v1_control_proto_msgTypes[11]
+	mi := &file_geneza_v1_control_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -917,7 +1136,7 @@ func (x *SessionEvent) String() string {
 func (*SessionEvent) ProtoMessage() {}
 
 func (x *SessionEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[11]
+	mi := &file_geneza_v1_control_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -930,7 +1149,7 @@ func (x *SessionEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionEvent.ProtoReflect.Descriptor instead.
 func (*SessionEvent) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{11}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *SessionEvent) GetSessionId() string {
@@ -986,7 +1205,7 @@ type RecordingChunk struct {
 
 func (x *RecordingChunk) Reset() {
 	*x = RecordingChunk{}
-	mi := &file_geneza_v1_control_proto_msgTypes[12]
+	mi := &file_geneza_v1_control_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -998,7 +1217,7 @@ func (x *RecordingChunk) String() string {
 func (*RecordingChunk) ProtoMessage() {}
 
 func (x *RecordingChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[12]
+	mi := &file_geneza_v1_control_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1011,7 +1230,7 @@ func (x *RecordingChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RecordingChunk.ProtoReflect.Descriptor instead.
 func (*RecordingChunk) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{12}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *RecordingChunk) GetSessionId() string {
@@ -1044,7 +1263,7 @@ type UploadAck struct {
 
 func (x *UploadAck) Reset() {
 	*x = UploadAck{}
-	mi := &file_geneza_v1_control_proto_msgTypes[13]
+	mi := &file_geneza_v1_control_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1056,7 +1275,7 @@ func (x *UploadAck) String() string {
 func (*UploadAck) ProtoMessage() {}
 
 func (x *UploadAck) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[13]
+	mi := &file_geneza_v1_control_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1069,7 +1288,7 @@ func (x *UploadAck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UploadAck.ProtoReflect.Descriptor instead.
 func (*UploadAck) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{13}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *UploadAck) GetOk() bool {
@@ -1088,7 +1307,7 @@ type RenewCertRequest struct {
 
 func (x *RenewCertRequest) Reset() {
 	*x = RenewCertRequest{}
-	mi := &file_geneza_v1_control_proto_msgTypes[14]
+	mi := &file_geneza_v1_control_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1100,7 +1319,7 @@ func (x *RenewCertRequest) String() string {
 func (*RenewCertRequest) ProtoMessage() {}
 
 func (x *RenewCertRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[14]
+	mi := &file_geneza_v1_control_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1113,7 +1332,7 @@ func (x *RenewCertRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RenewCertRequest.ProtoReflect.Descriptor instead.
 func (*RenewCertRequest) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{14}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *RenewCertRequest) GetCsrPem() []byte {
@@ -1133,7 +1352,7 @@ type RenewCertResponse struct {
 
 func (x *RenewCertResponse) Reset() {
 	*x = RenewCertResponse{}
-	mi := &file_geneza_v1_control_proto_msgTypes[15]
+	mi := &file_geneza_v1_control_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1145,7 +1364,7 @@ func (x *RenewCertResponse) String() string {
 func (*RenewCertResponse) ProtoMessage() {}
 
 func (x *RenewCertResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[15]
+	mi := &file_geneza_v1_control_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1158,7 +1377,7 @@ func (x *RenewCertResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RenewCertResponse.ProtoReflect.Descriptor instead.
 func (*RenewCertResponse) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{15}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *RenewCertResponse) GetNodeCertPem() []byte {
@@ -1184,7 +1403,7 @@ type Ping struct {
 
 func (x *Ping) Reset() {
 	*x = Ping{}
-	mi := &file_geneza_v1_control_proto_msgTypes[16]
+	mi := &file_geneza_v1_control_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1196,7 +1415,7 @@ func (x *Ping) String() string {
 func (*Ping) ProtoMessage() {}
 
 func (x *Ping) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[16]
+	mi := &file_geneza_v1_control_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1209,7 +1428,7 @@ func (x *Ping) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Ping.ProtoReflect.Descriptor instead.
 func (*Ping) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{16}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *Ping) GetUnixMs() int64 {
@@ -1232,7 +1451,7 @@ type LoginRequest struct {
 
 func (x *LoginRequest) Reset() {
 	*x = LoginRequest{}
-	mi := &file_geneza_v1_control_proto_msgTypes[17]
+	mi := &file_geneza_v1_control_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1244,7 +1463,7 @@ func (x *LoginRequest) String() string {
 func (*LoginRequest) ProtoMessage() {}
 
 func (x *LoginRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[17]
+	mi := &file_geneza_v1_control_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1257,7 +1476,7 @@ func (x *LoginRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LoginRequest.ProtoReflect.Descriptor instead.
 func (*LoginRequest) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{17}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *LoginRequest) GetProvider() string {
@@ -1308,7 +1527,7 @@ type LoginResponse struct {
 
 func (x *LoginResponse) Reset() {
 	*x = LoginResponse{}
-	mi := &file_geneza_v1_control_proto_msgTypes[18]
+	mi := &file_geneza_v1_control_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1320,7 +1539,7 @@ func (x *LoginResponse) String() string {
 func (*LoginResponse) ProtoMessage() {}
 
 func (x *LoginResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[18]
+	mi := &file_geneza_v1_control_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1333,7 +1552,7 @@ func (x *LoginResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LoginResponse.ProtoReflect.Descriptor instead.
 func (*LoginResponse) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{18}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *LoginResponse) GetUserCertPem() []byte {
@@ -1389,7 +1608,7 @@ type NodeSummary struct {
 
 func (x *NodeSummary) Reset() {
 	*x = NodeSummary{}
-	mi := &file_geneza_v1_control_proto_msgTypes[19]
+	mi := &file_geneza_v1_control_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1401,7 +1620,7 @@ func (x *NodeSummary) String() string {
 func (*NodeSummary) ProtoMessage() {}
 
 func (x *NodeSummary) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[19]
+	mi := &file_geneza_v1_control_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1414,7 +1633,7 @@ func (x *NodeSummary) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NodeSummary.ProtoReflect.Descriptor instead.
 func (*NodeSummary) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{19}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *NodeSummary) GetNodeId() string {
@@ -1495,7 +1714,7 @@ type ListNodesRequest struct {
 
 func (x *ListNodesRequest) Reset() {
 	*x = ListNodesRequest{}
-	mi := &file_geneza_v1_control_proto_msgTypes[20]
+	mi := &file_geneza_v1_control_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1507,7 +1726,7 @@ func (x *ListNodesRequest) String() string {
 func (*ListNodesRequest) ProtoMessage() {}
 
 func (x *ListNodesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[20]
+	mi := &file_geneza_v1_control_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1520,7 +1739,7 @@ func (x *ListNodesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListNodesRequest.ProtoReflect.Descriptor instead.
 func (*ListNodesRequest) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{20}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{23}
 }
 
 type ListNodesResponse struct {
@@ -1532,7 +1751,7 @@ type ListNodesResponse struct {
 
 func (x *ListNodesResponse) Reset() {
 	*x = ListNodesResponse{}
-	mi := &file_geneza_v1_control_proto_msgTypes[21]
+	mi := &file_geneza_v1_control_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1544,7 +1763,7 @@ func (x *ListNodesResponse) String() string {
 func (*ListNodesResponse) ProtoMessage() {}
 
 func (x *ListNodesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[21]
+	mi := &file_geneza_v1_control_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1557,7 +1776,7 @@ func (x *ListNodesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListNodesResponse.ProtoReflect.Descriptor instead.
 func (*ListNodesResponse) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{21}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *ListNodesResponse) GetNodes() []*NodeSummary {
@@ -1585,7 +1804,7 @@ type CreateSessionRequest struct {
 
 func (x *CreateSessionRequest) Reset() {
 	*x = CreateSessionRequest{}
-	mi := &file_geneza_v1_control_proto_msgTypes[22]
+	mi := &file_geneza_v1_control_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1597,7 +1816,7 @@ func (x *CreateSessionRequest) String() string {
 func (*CreateSessionRequest) ProtoMessage() {}
 
 func (x *CreateSessionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[22]
+	mi := &file_geneza_v1_control_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1610,7 +1829,7 @@ func (x *CreateSessionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateSessionRequest.ProtoReflect.Descriptor instead.
 func (*CreateSessionRequest) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{22}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *CreateSessionRequest) GetNode() string {
@@ -1696,7 +1915,7 @@ type CreateSessionResponse struct {
 
 func (x *CreateSessionResponse) Reset() {
 	*x = CreateSessionResponse{}
-	mi := &file_geneza_v1_control_proto_msgTypes[23]
+	mi := &file_geneza_v1_control_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1708,7 +1927,7 @@ func (x *CreateSessionResponse) String() string {
 func (*CreateSessionResponse) ProtoMessage() {}
 
 func (x *CreateSessionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[23]
+	mi := &file_geneza_v1_control_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1721,7 +1940,7 @@ func (x *CreateSessionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateSessionResponse.ProtoReflect.Descriptor instead.
 func (*CreateSessionResponse) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{23}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *CreateSessionResponse) GetSignedGrant() []byte {
@@ -1777,7 +1996,7 @@ type SessionInfo struct {
 
 func (x *SessionInfo) Reset() {
 	*x = SessionInfo{}
-	mi := &file_geneza_v1_control_proto_msgTypes[24]
+	mi := &file_geneza_v1_control_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1789,7 +2008,7 @@ func (x *SessionInfo) String() string {
 func (*SessionInfo) ProtoMessage() {}
 
 func (x *SessionInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[24]
+	mi := &file_geneza_v1_control_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1802,7 +2021,7 @@ func (x *SessionInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionInfo.ProtoReflect.Descriptor instead.
 func (*SessionInfo) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{24}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *SessionInfo) GetSessionId() string {
@@ -1890,7 +2109,7 @@ type ServiceInfo struct {
 
 func (x *ServiceInfo) Reset() {
 	*x = ServiceInfo{}
-	mi := &file_geneza_v1_control_proto_msgTypes[25]
+	mi := &file_geneza_v1_control_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1902,7 +2121,7 @@ func (x *ServiceInfo) String() string {
 func (*ServiceInfo) ProtoMessage() {}
 
 func (x *ServiceInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[25]
+	mi := &file_geneza_v1_control_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1915,7 +2134,7 @@ func (x *ServiceInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ServiceInfo.ProtoReflect.Descriptor instead.
 func (*ServiceInfo) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{25}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *ServiceInfo) GetName() string {
@@ -1976,7 +2195,7 @@ type ListServicesRequest struct {
 
 func (x *ListServicesRequest) Reset() {
 	*x = ListServicesRequest{}
-	mi := &file_geneza_v1_control_proto_msgTypes[26]
+	mi := &file_geneza_v1_control_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1988,7 +2207,7 @@ func (x *ListServicesRequest) String() string {
 func (*ListServicesRequest) ProtoMessage() {}
 
 func (x *ListServicesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[26]
+	mi := &file_geneza_v1_control_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2001,7 +2220,7 @@ func (x *ListServicesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListServicesRequest.ProtoReflect.Descriptor instead.
 func (*ListServicesRequest) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{26}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *ListServicesRequest) GetNode() string {
@@ -2020,7 +2239,7 @@ type ListServicesResponse struct {
 
 func (x *ListServicesResponse) Reset() {
 	*x = ListServicesResponse{}
-	mi := &file_geneza_v1_control_proto_msgTypes[27]
+	mi := &file_geneza_v1_control_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2032,7 +2251,7 @@ func (x *ListServicesResponse) String() string {
 func (*ListServicesResponse) ProtoMessage() {}
 
 func (x *ListServicesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[27]
+	mi := &file_geneza_v1_control_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2045,7 +2264,7 @@ func (x *ListServicesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListServicesResponse.ProtoReflect.Descriptor instead.
 func (*ListServicesResponse) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{27}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *ListServicesResponse) GetServices() []*ServiceInfo {
@@ -2064,7 +2283,7 @@ type ListSessionsRequest struct {
 
 func (x *ListSessionsRequest) Reset() {
 	*x = ListSessionsRequest{}
-	mi := &file_geneza_v1_control_proto_msgTypes[28]
+	mi := &file_geneza_v1_control_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2076,7 +2295,7 @@ func (x *ListSessionsRequest) String() string {
 func (*ListSessionsRequest) ProtoMessage() {}
 
 func (x *ListSessionsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[28]
+	mi := &file_geneza_v1_control_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2089,7 +2308,7 @@ func (x *ListSessionsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSessionsRequest.ProtoReflect.Descriptor instead.
 func (*ListSessionsRequest) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{28}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *ListSessionsRequest) GetMineOnly() bool {
@@ -2108,7 +2327,7 @@ type ListSessionsResponse struct {
 
 func (x *ListSessionsResponse) Reset() {
 	*x = ListSessionsResponse{}
-	mi := &file_geneza_v1_control_proto_msgTypes[29]
+	mi := &file_geneza_v1_control_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2120,7 +2339,7 @@ func (x *ListSessionsResponse) String() string {
 func (*ListSessionsResponse) ProtoMessage() {}
 
 func (x *ListSessionsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[29]
+	mi := &file_geneza_v1_control_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2133,7 +2352,7 @@ func (x *ListSessionsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSessionsResponse.ProtoReflect.Descriptor instead.
 func (*ListSessionsResponse) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{29}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *ListSessionsResponse) GetSessions() []*SessionInfo {
@@ -2154,7 +2373,7 @@ type WhoAmIResponse struct {
 
 func (x *WhoAmIResponse) Reset() {
 	*x = WhoAmIResponse{}
-	mi := &file_geneza_v1_control_proto_msgTypes[30]
+	mi := &file_geneza_v1_control_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2166,7 +2385,7 @@ func (x *WhoAmIResponse) String() string {
 func (*WhoAmIResponse) ProtoMessage() {}
 
 func (x *WhoAmIResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[30]
+	mi := &file_geneza_v1_control_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2179,7 +2398,7 @@ func (x *WhoAmIResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WhoAmIResponse.ProtoReflect.Descriptor instead.
 func (*WhoAmIResponse) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{30}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *WhoAmIResponse) GetUser() string {
@@ -2203,6 +2422,146 @@ func (x *WhoAmIResponse) GetCertExpiresUnix() int64 {
 	return 0
 }
 
+type SetNodeModulesRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Node          string                 `protobuf:"bytes,1,opt,name=node,proto3" json:"node,omitempty"` // node id or name
+	Modules       []*ModuleSpec          `protobuf:"bytes,2,rep,name=modules,proto3" json:"modules,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetNodeModulesRequest) Reset() {
+	*x = SetNodeModulesRequest{}
+	mi := &file_geneza_v1_control_proto_msgTypes[34]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetNodeModulesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetNodeModulesRequest) ProtoMessage() {}
+
+func (x *SetNodeModulesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_geneza_v1_control_proto_msgTypes[34]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetNodeModulesRequest.ProtoReflect.Descriptor instead.
+func (*SetNodeModulesRequest) Descriptor() ([]byte, []int) {
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{34}
+}
+
+func (x *SetNodeModulesRequest) GetNode() string {
+	if x != nil {
+		return x.Node
+	}
+	return ""
+}
+
+func (x *SetNodeModulesRequest) GetModules() []*ModuleSpec {
+	if x != nil {
+		return x.Modules
+	}
+	return nil
+}
+
+type GetNodeModulesRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Node          string                 `protobuf:"bytes,1,opt,name=node,proto3" json:"node,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetNodeModulesRequest) Reset() {
+	*x = GetNodeModulesRequest{}
+	mi := &file_geneza_v1_control_proto_msgTypes[35]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetNodeModulesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetNodeModulesRequest) ProtoMessage() {}
+
+func (x *GetNodeModulesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_geneza_v1_control_proto_msgTypes[35]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetNodeModulesRequest.ProtoReflect.Descriptor instead.
+func (*GetNodeModulesRequest) Descriptor() ([]byte, []int) {
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{35}
+}
+
+func (x *GetNodeModulesRequest) GetNode() string {
+	if x != nil {
+		return x.Node
+	}
+	return ""
+}
+
+type NodeModulesResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Modules       []*ModuleSpec          `protobuf:"bytes,1,rep,name=modules,proto3" json:"modules,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *NodeModulesResponse) Reset() {
+	*x = NodeModulesResponse{}
+	mi := &file_geneza_v1_control_proto_msgTypes[36]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *NodeModulesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*NodeModulesResponse) ProtoMessage() {}
+
+func (x *NodeModulesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_geneza_v1_control_proto_msgTypes[36]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use NodeModulesResponse.ProtoReflect.Descriptor instead.
+func (*NodeModulesResponse) Descriptor() ([]byte, []int) {
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{36}
+}
+
+func (x *NodeModulesResponse) GetModules() []*ModuleSpec {
+	if x != nil {
+		return x.Modules
+	}
+	return nil
+}
+
 type RevokeSessionRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
@@ -2213,7 +2572,7 @@ type RevokeSessionRequest struct {
 
 func (x *RevokeSessionRequest) Reset() {
 	*x = RevokeSessionRequest{}
-	mi := &file_geneza_v1_control_proto_msgTypes[31]
+	mi := &file_geneza_v1_control_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2225,7 +2584,7 @@ func (x *RevokeSessionRequest) String() string {
 func (*RevokeSessionRequest) ProtoMessage() {}
 
 func (x *RevokeSessionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[31]
+	mi := &file_geneza_v1_control_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2238,7 +2597,7 @@ func (x *RevokeSessionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RevokeSessionRequest.ProtoReflect.Descriptor instead.
 func (*RevokeSessionRequest) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{31}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *RevokeSessionRequest) GetSessionId() string {
@@ -2265,7 +2624,7 @@ type RevokeUserRequest struct {
 
 func (x *RevokeUserRequest) Reset() {
 	*x = RevokeUserRequest{}
-	mi := &file_geneza_v1_control_proto_msgTypes[32]
+	mi := &file_geneza_v1_control_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2277,7 +2636,7 @@ func (x *RevokeUserRequest) String() string {
 func (*RevokeUserRequest) ProtoMessage() {}
 
 func (x *RevokeUserRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[32]
+	mi := &file_geneza_v1_control_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2290,7 +2649,7 @@ func (x *RevokeUserRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RevokeUserRequest.ProtoReflect.Descriptor instead.
 func (*RevokeUserRequest) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{32}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *RevokeUserRequest) GetUser() string {
@@ -2316,7 +2675,7 @@ type RevokeCountResponse struct {
 
 func (x *RevokeCountResponse) Reset() {
 	*x = RevokeCountResponse{}
-	mi := &file_geneza_v1_control_proto_msgTypes[33]
+	mi := &file_geneza_v1_control_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2328,7 +2687,7 @@ func (x *RevokeCountResponse) String() string {
 func (*RevokeCountResponse) ProtoMessage() {}
 
 func (x *RevokeCountResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[33]
+	mi := &file_geneza_v1_control_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2341,7 +2700,7 @@ func (x *RevokeCountResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RevokeCountResponse.ProtoReflect.Descriptor instead.
 func (*RevokeCountResponse) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{33}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *RevokeCountResponse) GetRevoked() int32 {
@@ -2362,7 +2721,7 @@ type CreateJoinTokenRequest struct {
 
 func (x *CreateJoinTokenRequest) Reset() {
 	*x = CreateJoinTokenRequest{}
-	mi := &file_geneza_v1_control_proto_msgTypes[34]
+	mi := &file_geneza_v1_control_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2374,7 +2733,7 @@ func (x *CreateJoinTokenRequest) String() string {
 func (*CreateJoinTokenRequest) ProtoMessage() {}
 
 func (x *CreateJoinTokenRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[34]
+	mi := &file_geneza_v1_control_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2387,7 +2746,7 @@ func (x *CreateJoinTokenRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateJoinTokenRequest.ProtoReflect.Descriptor instead.
 func (*CreateJoinTokenRequest) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{34}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *CreateJoinTokenRequest) GetTtlSeconds() int64 {
@@ -2421,7 +2780,7 @@ type CreateJoinTokenResponse struct {
 
 func (x *CreateJoinTokenResponse) Reset() {
 	*x = CreateJoinTokenResponse{}
-	mi := &file_geneza_v1_control_proto_msgTypes[35]
+	mi := &file_geneza_v1_control_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2433,7 +2792,7 @@ func (x *CreateJoinTokenResponse) String() string {
 func (*CreateJoinTokenResponse) ProtoMessage() {}
 
 func (x *CreateJoinTokenResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[35]
+	mi := &file_geneza_v1_control_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2446,7 +2805,7 @@ func (x *CreateJoinTokenResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateJoinTokenResponse.ProtoReflect.Descriptor instead.
 func (*CreateJoinTokenResponse) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{35}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *CreateJoinTokenResponse) GetToken() string {
@@ -2478,7 +2837,7 @@ type ArtifactChunk struct {
 
 func (x *ArtifactChunk) Reset() {
 	*x = ArtifactChunk{}
-	mi := &file_geneza_v1_control_proto_msgTypes[36]
+	mi := &file_geneza_v1_control_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2490,7 +2849,7 @@ func (x *ArtifactChunk) String() string {
 func (*ArtifactChunk) ProtoMessage() {}
 
 func (x *ArtifactChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[36]
+	mi := &file_geneza_v1_control_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2503,7 +2862,7 @@ func (x *ArtifactChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ArtifactChunk.ProtoReflect.Descriptor instead.
 func (*ArtifactChunk) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{36}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *ArtifactChunk) GetSignedManifest() []byte {
@@ -2537,7 +2896,7 @@ type PublishArtifactResponse struct {
 
 func (x *PublishArtifactResponse) Reset() {
 	*x = PublishArtifactResponse{}
-	mi := &file_geneza_v1_control_proto_msgTypes[37]
+	mi := &file_geneza_v1_control_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2549,7 +2908,7 @@ func (x *PublishArtifactResponse) String() string {
 func (*PublishArtifactResponse) ProtoMessage() {}
 
 func (x *PublishArtifactResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[37]
+	mi := &file_geneza_v1_control_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2562,7 +2921,7 @@ func (x *PublishArtifactResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PublishArtifactResponse.ProtoReflect.Descriptor instead.
 func (*PublishArtifactResponse) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{37}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *PublishArtifactResponse) GetVersion() string {
@@ -2590,7 +2949,7 @@ type SetDesiredVersionRequest struct {
 
 func (x *SetDesiredVersionRequest) Reset() {
 	*x = SetDesiredVersionRequest{}
-	mi := &file_geneza_v1_control_proto_msgTypes[38]
+	mi := &file_geneza_v1_control_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2602,7 +2961,7 @@ func (x *SetDesiredVersionRequest) String() string {
 func (*SetDesiredVersionRequest) ProtoMessage() {}
 
 func (x *SetDesiredVersionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[38]
+	mi := &file_geneza_v1_control_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2615,7 +2974,7 @@ func (x *SetDesiredVersionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetDesiredVersionRequest.ProtoReflect.Descriptor instead.
 func (*SetDesiredVersionRequest) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{38}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *SetDesiredVersionRequest) GetRing() string {
@@ -2651,7 +3010,7 @@ type FleetStatus struct {
 
 func (x *FleetStatus) Reset() {
 	*x = FleetStatus{}
-	mi := &file_geneza_v1_control_proto_msgTypes[39]
+	mi := &file_geneza_v1_control_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2663,7 +3022,7 @@ func (x *FleetStatus) String() string {
 func (*FleetStatus) ProtoMessage() {}
 
 func (x *FleetStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[39]
+	mi := &file_geneza_v1_control_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2676,7 +3035,7 @@ func (x *FleetStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FleetStatus.ProtoReflect.Descriptor instead.
 func (*FleetStatus) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{39}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *FleetStatus) GetNodes() []*NodeSummary {
@@ -2718,7 +3077,7 @@ type QueryAuditRequest struct {
 
 func (x *QueryAuditRequest) Reset() {
 	*x = QueryAuditRequest{}
-	mi := &file_geneza_v1_control_proto_msgTypes[40]
+	mi := &file_geneza_v1_control_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2730,7 +3089,7 @@ func (x *QueryAuditRequest) String() string {
 func (*QueryAuditRequest) ProtoMessage() {}
 
 func (x *QueryAuditRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[40]
+	mi := &file_geneza_v1_control_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2743,7 +3102,7 @@ func (x *QueryAuditRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryAuditRequest.ProtoReflect.Descriptor instead.
 func (*QueryAuditRequest) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{40}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *QueryAuditRequest) GetSinceUnix() int64 {
@@ -2776,7 +3135,7 @@ type AuditRecord struct {
 
 func (x *AuditRecord) Reset() {
 	*x = AuditRecord{}
-	mi := &file_geneza_v1_control_proto_msgTypes[41]
+	mi := &file_geneza_v1_control_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2788,7 +3147,7 @@ func (x *AuditRecord) String() string {
 func (*AuditRecord) ProtoMessage() {}
 
 func (x *AuditRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[41]
+	mi := &file_geneza_v1_control_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2801,7 +3160,7 @@ func (x *AuditRecord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AuditRecord.ProtoReflect.Descriptor instead.
 func (*AuditRecord) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{41}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *AuditRecord) GetJson() []byte {
@@ -2821,7 +3180,7 @@ type QueryAuditResponse struct {
 
 func (x *QueryAuditResponse) Reset() {
 	*x = QueryAuditResponse{}
-	mi := &file_geneza_v1_control_proto_msgTypes[42]
+	mi := &file_geneza_v1_control_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2833,7 +3192,7 @@ func (x *QueryAuditResponse) String() string {
 func (*QueryAuditResponse) ProtoMessage() {}
 
 func (x *QueryAuditResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[42]
+	mi := &file_geneza_v1_control_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2846,7 +3205,7 @@ func (x *QueryAuditResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryAuditResponse.ProtoReflect.Descriptor instead.
 func (*QueryAuditResponse) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{42}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *QueryAuditResponse) GetRecords() []*AuditRecord {
@@ -2871,7 +3230,7 @@ type Empty struct {
 
 func (x *Empty) Reset() {
 	*x = Empty{}
-	mi := &file_geneza_v1_control_proto_msgTypes[43]
+	mi := &file_geneza_v1_control_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2883,7 +3242,7 @@ func (x *Empty) String() string {
 func (*Empty) ProtoMessage() {}
 
 func (x *Empty) ProtoReflect() protoreflect.Message {
-	mi := &file_geneza_v1_control_proto_msgTypes[43]
+	mi := &file_geneza_v1_control_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2896,7 +3255,7 @@ func (x *Empty) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Empty.ProtoReflect.Descriptor instead.
 func (*Empty) Descriptor() ([]byte, []int) {
-	return file_geneza_v1_control_proto_rawDescGZIP(), []int{43}
+	return file_geneza_v1_control_proto_rawDescGZIP(), []int{49}
 }
 
 var File_geneza_v1_control_proto protoreflect.FileDescriptor
@@ -2926,20 +3285,40 @@ const file_geneza_v1_control_proto_rawDesc = "" +
 	"\rnode_cert_pem\x18\x02 \x01(\fR\vnodeCertPem\x12 \n" +
 	"\fca_roots_pem\x18\x03 \x01(\fR\n" +
 	"caRootsPem\x122\n" +
-	"\x15signed_cluster_config\x18\x04 \x01(\fR\x13signedClusterConfig\"\xf1\x01\n" +
+	"\x15signed_cluster_config\x18\x04 \x01(\fR\x13signedClusterConfig\"\xa5\x02\n" +
 	"\bAgentMsg\x12-\n" +
 	"\x05hello\x18\x01 \x01(\v2\x15.geneza.v1.AgentHelloH\x00R\x05hello\x124\n" +
 	"\theartbeat\x18\x02 \x01(\v2\x14.geneza.v1.HeartbeatH\x00R\theartbeat\x12>\n" +
 	"\rsession_event\x18\x03 \x01(\v2\x17.geneza.v1.SessionEventH\x00R\fsessionEvent\x129\n" +
-	"\toffer_ack\x18\x04 \x01(\v2\x1a.geneza.v1.SessionOfferAckH\x00R\bofferAckB\x05\n" +
-	"\x03msg\"\xe6\x01\n" +
+	"\toffer_ack\x18\x04 \x01(\v2\x1a.geneza.v1.SessionOfferAckH\x00R\bofferAck\x122\n" +
+	"\ametrics\x18\x05 \x01(\v2\x16.geneza.v1.MetricsPushH\x00R\ametricsB\x05\n" +
+	"\x03msg\"\xa6\x02\n" +
 	"\n" +
 	"GatewayMsg\x12>\n" +
 	"\rsession_offer\x18\x01 \x01(\v2\x17.geneza.v1.SessionOfferH\x00R\fsessionOffer\x12'\n" +
 	"\x0ecluster_config\x18\x02 \x01(\fH\x00R\rclusterConfig\x12%\n" +
 	"\x04ping\x18\x03 \x01(\v2\x0f.geneza.v1.PingH\x00R\x04ping\x12A\n" +
-	"\x0esession_revoke\x18\x04 \x01(\v2\x18.geneza.v1.SessionRevokeH\x00R\rsessionRevokeB\x05\n" +
-	"\x03msg\"F\n" +
+	"\x0esession_revoke\x18\x04 \x01(\v2\x18.geneza.v1.SessionRevokeH\x00R\rsessionRevoke\x12>\n" +
+	"\rmodule_config\x18\x05 \x01(\v2\x17.geneza.v1.ModuleConfigH\x00R\fmoduleConfigB\x05\n" +
+	"\x03msg\"Y\n" +
+	"\fModuleConfig\x12\x18\n" +
+	"\aversion\x18\x01 \x01(\x03R\aversion\x12/\n" +
+	"\amodules\x18\x02 \x03(\v2\x15.geneza.v1.ModuleSpecR\amodules\"\xb8\x01\n" +
+	"\n" +
+	"ModuleSpec\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
+	"\aenabled\x18\x02 \x01(\bR\aenabled\x12?\n" +
+	"\bsettings\x18\x03 \x03(\v2#.geneza.v1.ModuleSpec.SettingsEntryR\bsettings\x1a;\n" +
+	"\rSettingsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"t\n" +
+	"\vMetricsPush\x12\x16\n" +
+	"\x06module\x18\x01 \x01(\tR\x06module\x12\x1e\n" +
+	"\n" +
+	"exposition\x18\x02 \x01(\fR\n" +
+	"exposition\x12\x17\n" +
+	"\aunix_ms\x18\x03 \x01(\x03R\x06unixMs\x12\x14\n" +
+	"\x05error\x18\x04 \x01(\tR\x05error\"F\n" +
 	"\rSessionRevoke\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x16\n" +
@@ -3089,7 +3468,14 @@ const file_geneza_v1_control_proto_rawDesc = "" +
 	"\x0eWhoAmIResponse\x12\x12\n" +
 	"\x04user\x18\x01 \x01(\tR\x04user\x12\x14\n" +
 	"\x05roles\x18\x02 \x03(\tR\x05roles\x12*\n" +
-	"\x11cert_expires_unix\x18\x03 \x01(\x03R\x0fcertExpiresUnix\"M\n" +
+	"\x11cert_expires_unix\x18\x03 \x01(\x03R\x0fcertExpiresUnix\"\\\n" +
+	"\x15SetNodeModulesRequest\x12\x12\n" +
+	"\x04node\x18\x01 \x01(\tR\x04node\x12/\n" +
+	"\amodules\x18\x02 \x03(\v2\x15.geneza.v1.ModuleSpecR\amodules\"+\n" +
+	"\x15GetNodeModulesRequest\x12\x12\n" +
+	"\x04node\x18\x01 \x01(\tR\x04node\"F\n" +
+	"\x13NodeModulesResponse\x12/\n" +
+	"\amodules\x18\x01 \x03(\v2\x15.geneza.v1.ModuleSpecR\amodules\"M\n" +
 	"\x14RevokeSessionRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x16\n" +
@@ -3151,7 +3537,7 @@ const file_geneza_v1_control_proto_rawDesc = "" +
 	"\fListServices\x12\x1e.geneza.v1.ListServicesRequest\x1a\x1f.geneza.v1.ListServicesResponse\x12R\n" +
 	"\rCreateSession\x12\x1f.geneza.v1.CreateSessionRequest\x1a .geneza.v1.CreateSessionResponse\x12O\n" +
 	"\fListSessions\x12\x1e.geneza.v1.ListSessionsRequest\x1a\x1f.geneza.v1.ListSessionsResponse\x125\n" +
-	"\x06WhoAmI\x12\x10.geneza.v1.Empty\x1a\x19.geneza.v1.WhoAmIResponse2\xce\x04\n" +
+	"\x06WhoAmI\x12\x10.geneza.v1.Empty\x1a\x19.geneza.v1.WhoAmIResponse2\xe8\x05\n" +
 	"\bAdminAPI\x12X\n" +
 	"\x0fCreateJoinToken\x12!.geneza.v1.CreateJoinTokenRequest\x1a\".geneza.v1.CreateJoinTokenResponse\x12Q\n" +
 	"\x0fPublishArtifact\x12\x18.geneza.v1.ArtifactChunk\x1a\".geneza.v1.PublishArtifactResponse(\x01\x12J\n" +
@@ -3162,7 +3548,9 @@ const file_geneza_v1_control_proto_rawDesc = "" +
 	"QueryAudit\x12\x1c.geneza.v1.QueryAuditRequest\x1a\x1d.geneza.v1.QueryAuditResponse\x12B\n" +
 	"\rRevokeSession\x12\x1f.geneza.v1.RevokeSessionRequest\x1a\x10.geneza.v1.Empty\x12J\n" +
 	"\n" +
-	"RevokeUser\x12\x1c.geneza.v1.RevokeUserRequest\x1a\x1e.geneza.v1.RevokeCountResponseB2Z0osie.cloud/geneza/internal/pb/geneza/v1;genezav1b\x06proto3"
+	"RevokeUser\x12\x1c.geneza.v1.RevokeUserRequest\x1a\x1e.geneza.v1.RevokeCountResponse\x12D\n" +
+	"\x0eSetNodeModules\x12 .geneza.v1.SetNodeModulesRequest\x1a\x10.geneza.v1.Empty\x12R\n" +
+	"\x0eGetNodeModules\x12 .geneza.v1.GetNodeModulesRequest\x1a\x1e.geneza.v1.NodeModulesResponseB2Z0osie.cloud/geneza/internal/pb/geneza/v1;genezav1b\x06proto3"
 
 var (
 	file_geneza_v1_control_proto_rawDescOnce sync.Once
@@ -3176,121 +3564,138 @@ func file_geneza_v1_control_proto_rawDescGZIP() []byte {
 	return file_geneza_v1_control_proto_rawDescData
 }
 
-var file_geneza_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 50)
+var file_geneza_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 57)
 var file_geneza_v1_control_proto_goTypes = []any{
 	(*EnrollRequest)(nil),            // 0: geneza.v1.EnrollRequest
 	(*PlatformInfo)(nil),             // 1: geneza.v1.PlatformInfo
 	(*EnrollResponse)(nil),           // 2: geneza.v1.EnrollResponse
 	(*AgentMsg)(nil),                 // 3: geneza.v1.AgentMsg
 	(*GatewayMsg)(nil),               // 4: geneza.v1.GatewayMsg
-	(*SessionRevoke)(nil),            // 5: geneza.v1.SessionRevoke
-	(*ServiceAdvert)(nil),            // 6: geneza.v1.ServiceAdvert
-	(*AgentHello)(nil),               // 7: geneza.v1.AgentHello
-	(*Heartbeat)(nil),                // 8: geneza.v1.Heartbeat
-	(*SessionOffer)(nil),             // 9: geneza.v1.SessionOffer
-	(*SessionOfferAck)(nil),          // 10: geneza.v1.SessionOfferAck
-	(*SessionEvent)(nil),             // 11: geneza.v1.SessionEvent
-	(*RecordingChunk)(nil),           // 12: geneza.v1.RecordingChunk
-	(*UploadAck)(nil),                // 13: geneza.v1.UploadAck
-	(*RenewCertRequest)(nil),         // 14: geneza.v1.RenewCertRequest
-	(*RenewCertResponse)(nil),        // 15: geneza.v1.RenewCertResponse
-	(*Ping)(nil),                     // 16: geneza.v1.Ping
-	(*LoginRequest)(nil),             // 17: geneza.v1.LoginRequest
-	(*LoginResponse)(nil),            // 18: geneza.v1.LoginResponse
-	(*NodeSummary)(nil),              // 19: geneza.v1.NodeSummary
-	(*ListNodesRequest)(nil),         // 20: geneza.v1.ListNodesRequest
-	(*ListNodesResponse)(nil),        // 21: geneza.v1.ListNodesResponse
-	(*CreateSessionRequest)(nil),     // 22: geneza.v1.CreateSessionRequest
-	(*CreateSessionResponse)(nil),    // 23: geneza.v1.CreateSessionResponse
-	(*SessionInfo)(nil),              // 24: geneza.v1.SessionInfo
-	(*ServiceInfo)(nil),              // 25: geneza.v1.ServiceInfo
-	(*ListServicesRequest)(nil),      // 26: geneza.v1.ListServicesRequest
-	(*ListServicesResponse)(nil),     // 27: geneza.v1.ListServicesResponse
-	(*ListSessionsRequest)(nil),      // 28: geneza.v1.ListSessionsRequest
-	(*ListSessionsResponse)(nil),     // 29: geneza.v1.ListSessionsResponse
-	(*WhoAmIResponse)(nil),           // 30: geneza.v1.WhoAmIResponse
-	(*RevokeSessionRequest)(nil),     // 31: geneza.v1.RevokeSessionRequest
-	(*RevokeUserRequest)(nil),        // 32: geneza.v1.RevokeUserRequest
-	(*RevokeCountResponse)(nil),      // 33: geneza.v1.RevokeCountResponse
-	(*CreateJoinTokenRequest)(nil),   // 34: geneza.v1.CreateJoinTokenRequest
-	(*CreateJoinTokenResponse)(nil),  // 35: geneza.v1.CreateJoinTokenResponse
-	(*ArtifactChunk)(nil),            // 36: geneza.v1.ArtifactChunk
-	(*PublishArtifactResponse)(nil),  // 37: geneza.v1.PublishArtifactResponse
-	(*SetDesiredVersionRequest)(nil), // 38: geneza.v1.SetDesiredVersionRequest
-	(*FleetStatus)(nil),              // 39: geneza.v1.FleetStatus
-	(*QueryAuditRequest)(nil),        // 40: geneza.v1.QueryAuditRequest
-	(*AuditRecord)(nil),              // 41: geneza.v1.AuditRecord
-	(*QueryAuditResponse)(nil),       // 42: geneza.v1.QueryAuditResponse
-	(*Empty)(nil),                    // 43: geneza.v1.Empty
-	nil,                              // 44: geneza.v1.EnrollRequest.LabelsEntry
-	nil,                              // 45: geneza.v1.ServiceAdvert.LabelsEntry
-	nil,                              // 46: geneza.v1.AgentHello.LabelsEntry
-	nil,                              // 47: geneza.v1.NodeSummary.LabelsEntry
-	nil,                              // 48: geneza.v1.ServiceInfo.LabelsEntry
-	nil,                              // 49: geneza.v1.CreateJoinTokenRequest.LabelsEntry
+	(*ModuleConfig)(nil),             // 5: geneza.v1.ModuleConfig
+	(*ModuleSpec)(nil),               // 6: geneza.v1.ModuleSpec
+	(*MetricsPush)(nil),              // 7: geneza.v1.MetricsPush
+	(*SessionRevoke)(nil),            // 8: geneza.v1.SessionRevoke
+	(*ServiceAdvert)(nil),            // 9: geneza.v1.ServiceAdvert
+	(*AgentHello)(nil),               // 10: geneza.v1.AgentHello
+	(*Heartbeat)(nil),                // 11: geneza.v1.Heartbeat
+	(*SessionOffer)(nil),             // 12: geneza.v1.SessionOffer
+	(*SessionOfferAck)(nil),          // 13: geneza.v1.SessionOfferAck
+	(*SessionEvent)(nil),             // 14: geneza.v1.SessionEvent
+	(*RecordingChunk)(nil),           // 15: geneza.v1.RecordingChunk
+	(*UploadAck)(nil),                // 16: geneza.v1.UploadAck
+	(*RenewCertRequest)(nil),         // 17: geneza.v1.RenewCertRequest
+	(*RenewCertResponse)(nil),        // 18: geneza.v1.RenewCertResponse
+	(*Ping)(nil),                     // 19: geneza.v1.Ping
+	(*LoginRequest)(nil),             // 20: geneza.v1.LoginRequest
+	(*LoginResponse)(nil),            // 21: geneza.v1.LoginResponse
+	(*NodeSummary)(nil),              // 22: geneza.v1.NodeSummary
+	(*ListNodesRequest)(nil),         // 23: geneza.v1.ListNodesRequest
+	(*ListNodesResponse)(nil),        // 24: geneza.v1.ListNodesResponse
+	(*CreateSessionRequest)(nil),     // 25: geneza.v1.CreateSessionRequest
+	(*CreateSessionResponse)(nil),    // 26: geneza.v1.CreateSessionResponse
+	(*SessionInfo)(nil),              // 27: geneza.v1.SessionInfo
+	(*ServiceInfo)(nil),              // 28: geneza.v1.ServiceInfo
+	(*ListServicesRequest)(nil),      // 29: geneza.v1.ListServicesRequest
+	(*ListServicesResponse)(nil),     // 30: geneza.v1.ListServicesResponse
+	(*ListSessionsRequest)(nil),      // 31: geneza.v1.ListSessionsRequest
+	(*ListSessionsResponse)(nil),     // 32: geneza.v1.ListSessionsResponse
+	(*WhoAmIResponse)(nil),           // 33: geneza.v1.WhoAmIResponse
+	(*SetNodeModulesRequest)(nil),    // 34: geneza.v1.SetNodeModulesRequest
+	(*GetNodeModulesRequest)(nil),    // 35: geneza.v1.GetNodeModulesRequest
+	(*NodeModulesResponse)(nil),      // 36: geneza.v1.NodeModulesResponse
+	(*RevokeSessionRequest)(nil),     // 37: geneza.v1.RevokeSessionRequest
+	(*RevokeUserRequest)(nil),        // 38: geneza.v1.RevokeUserRequest
+	(*RevokeCountResponse)(nil),      // 39: geneza.v1.RevokeCountResponse
+	(*CreateJoinTokenRequest)(nil),   // 40: geneza.v1.CreateJoinTokenRequest
+	(*CreateJoinTokenResponse)(nil),  // 41: geneza.v1.CreateJoinTokenResponse
+	(*ArtifactChunk)(nil),            // 42: geneza.v1.ArtifactChunk
+	(*PublishArtifactResponse)(nil),  // 43: geneza.v1.PublishArtifactResponse
+	(*SetDesiredVersionRequest)(nil), // 44: geneza.v1.SetDesiredVersionRequest
+	(*FleetStatus)(nil),              // 45: geneza.v1.FleetStatus
+	(*QueryAuditRequest)(nil),        // 46: geneza.v1.QueryAuditRequest
+	(*AuditRecord)(nil),              // 47: geneza.v1.AuditRecord
+	(*QueryAuditResponse)(nil),       // 48: geneza.v1.QueryAuditResponse
+	(*Empty)(nil),                    // 49: geneza.v1.Empty
+	nil,                              // 50: geneza.v1.EnrollRequest.LabelsEntry
+	nil,                              // 51: geneza.v1.ModuleSpec.SettingsEntry
+	nil,                              // 52: geneza.v1.ServiceAdvert.LabelsEntry
+	nil,                              // 53: geneza.v1.AgentHello.LabelsEntry
+	nil,                              // 54: geneza.v1.NodeSummary.LabelsEntry
+	nil,                              // 55: geneza.v1.ServiceInfo.LabelsEntry
+	nil,                              // 56: geneza.v1.CreateJoinTokenRequest.LabelsEntry
 }
 var file_geneza_v1_control_proto_depIdxs = []int32{
-	44, // 0: geneza.v1.EnrollRequest.labels:type_name -> geneza.v1.EnrollRequest.LabelsEntry
+	50, // 0: geneza.v1.EnrollRequest.labels:type_name -> geneza.v1.EnrollRequest.LabelsEntry
 	1,  // 1: geneza.v1.EnrollRequest.platform:type_name -> geneza.v1.PlatformInfo
-	7,  // 2: geneza.v1.AgentMsg.hello:type_name -> geneza.v1.AgentHello
-	8,  // 3: geneza.v1.AgentMsg.heartbeat:type_name -> geneza.v1.Heartbeat
-	11, // 4: geneza.v1.AgentMsg.session_event:type_name -> geneza.v1.SessionEvent
-	10, // 5: geneza.v1.AgentMsg.offer_ack:type_name -> geneza.v1.SessionOfferAck
-	9,  // 6: geneza.v1.GatewayMsg.session_offer:type_name -> geneza.v1.SessionOffer
-	16, // 7: geneza.v1.GatewayMsg.ping:type_name -> geneza.v1.Ping
-	5,  // 8: geneza.v1.GatewayMsg.session_revoke:type_name -> geneza.v1.SessionRevoke
-	45, // 9: geneza.v1.ServiceAdvert.labels:type_name -> geneza.v1.ServiceAdvert.LabelsEntry
-	46, // 10: geneza.v1.AgentHello.labels:type_name -> geneza.v1.AgentHello.LabelsEntry
-	6,  // 11: geneza.v1.AgentHello.services:type_name -> geneza.v1.ServiceAdvert
-	47, // 12: geneza.v1.NodeSummary.labels:type_name -> geneza.v1.NodeSummary.LabelsEntry
-	19, // 13: geneza.v1.ListNodesResponse.nodes:type_name -> geneza.v1.NodeSummary
-	48, // 14: geneza.v1.ServiceInfo.labels:type_name -> geneza.v1.ServiceInfo.LabelsEntry
-	25, // 15: geneza.v1.ListServicesResponse.services:type_name -> geneza.v1.ServiceInfo
-	24, // 16: geneza.v1.ListSessionsResponse.sessions:type_name -> geneza.v1.SessionInfo
-	49, // 17: geneza.v1.CreateJoinTokenRequest.labels:type_name -> geneza.v1.CreateJoinTokenRequest.LabelsEntry
-	19, // 18: geneza.v1.FleetStatus.nodes:type_name -> geneza.v1.NodeSummary
-	41, // 19: geneza.v1.QueryAuditResponse.records:type_name -> geneza.v1.AuditRecord
-	0,  // 20: geneza.v1.Enrollment.Enroll:input_type -> geneza.v1.EnrollRequest
-	3,  // 21: geneza.v1.NodeControl.Stream:input_type -> geneza.v1.AgentMsg
-	14, // 22: geneza.v1.NodeControl.RenewCert:input_type -> geneza.v1.RenewCertRequest
-	12, // 23: geneza.v1.NodeControl.UploadRecording:input_type -> geneza.v1.RecordingChunk
-	17, // 24: geneza.v1.UserAPI.Login:input_type -> geneza.v1.LoginRequest
-	20, // 25: geneza.v1.UserAPI.ListNodes:input_type -> geneza.v1.ListNodesRequest
-	26, // 26: geneza.v1.UserAPI.ListServices:input_type -> geneza.v1.ListServicesRequest
-	22, // 27: geneza.v1.UserAPI.CreateSession:input_type -> geneza.v1.CreateSessionRequest
-	28, // 28: geneza.v1.UserAPI.ListSessions:input_type -> geneza.v1.ListSessionsRequest
-	43, // 29: geneza.v1.UserAPI.WhoAmI:input_type -> geneza.v1.Empty
-	34, // 30: geneza.v1.AdminAPI.CreateJoinToken:input_type -> geneza.v1.CreateJoinTokenRequest
-	36, // 31: geneza.v1.AdminAPI.PublishArtifact:input_type -> geneza.v1.ArtifactChunk
-	38, // 32: geneza.v1.AdminAPI.SetDesiredVersion:input_type -> geneza.v1.SetDesiredVersionRequest
-	43, // 33: geneza.v1.AdminAPI.GetFleetStatus:input_type -> geneza.v1.Empty
-	43, // 34: geneza.v1.AdminAPI.ReloadPolicy:input_type -> geneza.v1.Empty
-	40, // 35: geneza.v1.AdminAPI.QueryAudit:input_type -> geneza.v1.QueryAuditRequest
-	31, // 36: geneza.v1.AdminAPI.RevokeSession:input_type -> geneza.v1.RevokeSessionRequest
-	32, // 37: geneza.v1.AdminAPI.RevokeUser:input_type -> geneza.v1.RevokeUserRequest
-	2,  // 38: geneza.v1.Enrollment.Enroll:output_type -> geneza.v1.EnrollResponse
-	4,  // 39: geneza.v1.NodeControl.Stream:output_type -> geneza.v1.GatewayMsg
-	15, // 40: geneza.v1.NodeControl.RenewCert:output_type -> geneza.v1.RenewCertResponse
-	13, // 41: geneza.v1.NodeControl.UploadRecording:output_type -> geneza.v1.UploadAck
-	18, // 42: geneza.v1.UserAPI.Login:output_type -> geneza.v1.LoginResponse
-	21, // 43: geneza.v1.UserAPI.ListNodes:output_type -> geneza.v1.ListNodesResponse
-	27, // 44: geneza.v1.UserAPI.ListServices:output_type -> geneza.v1.ListServicesResponse
-	23, // 45: geneza.v1.UserAPI.CreateSession:output_type -> geneza.v1.CreateSessionResponse
-	29, // 46: geneza.v1.UserAPI.ListSessions:output_type -> geneza.v1.ListSessionsResponse
-	30, // 47: geneza.v1.UserAPI.WhoAmI:output_type -> geneza.v1.WhoAmIResponse
-	35, // 48: geneza.v1.AdminAPI.CreateJoinToken:output_type -> geneza.v1.CreateJoinTokenResponse
-	37, // 49: geneza.v1.AdminAPI.PublishArtifact:output_type -> geneza.v1.PublishArtifactResponse
-	43, // 50: geneza.v1.AdminAPI.SetDesiredVersion:output_type -> geneza.v1.Empty
-	39, // 51: geneza.v1.AdminAPI.GetFleetStatus:output_type -> geneza.v1.FleetStatus
-	43, // 52: geneza.v1.AdminAPI.ReloadPolicy:output_type -> geneza.v1.Empty
-	42, // 53: geneza.v1.AdminAPI.QueryAudit:output_type -> geneza.v1.QueryAuditResponse
-	43, // 54: geneza.v1.AdminAPI.RevokeSession:output_type -> geneza.v1.Empty
-	33, // 55: geneza.v1.AdminAPI.RevokeUser:output_type -> geneza.v1.RevokeCountResponse
-	38, // [38:56] is the sub-list for method output_type
-	20, // [20:38] is the sub-list for method input_type
-	20, // [20:20] is the sub-list for extension type_name
-	20, // [20:20] is the sub-list for extension extendee
-	0,  // [0:20] is the sub-list for field type_name
+	10, // 2: geneza.v1.AgentMsg.hello:type_name -> geneza.v1.AgentHello
+	11, // 3: geneza.v1.AgentMsg.heartbeat:type_name -> geneza.v1.Heartbeat
+	14, // 4: geneza.v1.AgentMsg.session_event:type_name -> geneza.v1.SessionEvent
+	13, // 5: geneza.v1.AgentMsg.offer_ack:type_name -> geneza.v1.SessionOfferAck
+	7,  // 6: geneza.v1.AgentMsg.metrics:type_name -> geneza.v1.MetricsPush
+	12, // 7: geneza.v1.GatewayMsg.session_offer:type_name -> geneza.v1.SessionOffer
+	19, // 8: geneza.v1.GatewayMsg.ping:type_name -> geneza.v1.Ping
+	8,  // 9: geneza.v1.GatewayMsg.session_revoke:type_name -> geneza.v1.SessionRevoke
+	5,  // 10: geneza.v1.GatewayMsg.module_config:type_name -> geneza.v1.ModuleConfig
+	6,  // 11: geneza.v1.ModuleConfig.modules:type_name -> geneza.v1.ModuleSpec
+	51, // 12: geneza.v1.ModuleSpec.settings:type_name -> geneza.v1.ModuleSpec.SettingsEntry
+	52, // 13: geneza.v1.ServiceAdvert.labels:type_name -> geneza.v1.ServiceAdvert.LabelsEntry
+	53, // 14: geneza.v1.AgentHello.labels:type_name -> geneza.v1.AgentHello.LabelsEntry
+	9,  // 15: geneza.v1.AgentHello.services:type_name -> geneza.v1.ServiceAdvert
+	54, // 16: geneza.v1.NodeSummary.labels:type_name -> geneza.v1.NodeSummary.LabelsEntry
+	22, // 17: geneza.v1.ListNodesResponse.nodes:type_name -> geneza.v1.NodeSummary
+	55, // 18: geneza.v1.ServiceInfo.labels:type_name -> geneza.v1.ServiceInfo.LabelsEntry
+	28, // 19: geneza.v1.ListServicesResponse.services:type_name -> geneza.v1.ServiceInfo
+	27, // 20: geneza.v1.ListSessionsResponse.sessions:type_name -> geneza.v1.SessionInfo
+	6,  // 21: geneza.v1.SetNodeModulesRequest.modules:type_name -> geneza.v1.ModuleSpec
+	6,  // 22: geneza.v1.NodeModulesResponse.modules:type_name -> geneza.v1.ModuleSpec
+	56, // 23: geneza.v1.CreateJoinTokenRequest.labels:type_name -> geneza.v1.CreateJoinTokenRequest.LabelsEntry
+	22, // 24: geneza.v1.FleetStatus.nodes:type_name -> geneza.v1.NodeSummary
+	47, // 25: geneza.v1.QueryAuditResponse.records:type_name -> geneza.v1.AuditRecord
+	0,  // 26: geneza.v1.Enrollment.Enroll:input_type -> geneza.v1.EnrollRequest
+	3,  // 27: geneza.v1.NodeControl.Stream:input_type -> geneza.v1.AgentMsg
+	17, // 28: geneza.v1.NodeControl.RenewCert:input_type -> geneza.v1.RenewCertRequest
+	15, // 29: geneza.v1.NodeControl.UploadRecording:input_type -> geneza.v1.RecordingChunk
+	20, // 30: geneza.v1.UserAPI.Login:input_type -> geneza.v1.LoginRequest
+	23, // 31: geneza.v1.UserAPI.ListNodes:input_type -> geneza.v1.ListNodesRequest
+	29, // 32: geneza.v1.UserAPI.ListServices:input_type -> geneza.v1.ListServicesRequest
+	25, // 33: geneza.v1.UserAPI.CreateSession:input_type -> geneza.v1.CreateSessionRequest
+	31, // 34: geneza.v1.UserAPI.ListSessions:input_type -> geneza.v1.ListSessionsRequest
+	49, // 35: geneza.v1.UserAPI.WhoAmI:input_type -> geneza.v1.Empty
+	40, // 36: geneza.v1.AdminAPI.CreateJoinToken:input_type -> geneza.v1.CreateJoinTokenRequest
+	42, // 37: geneza.v1.AdminAPI.PublishArtifact:input_type -> geneza.v1.ArtifactChunk
+	44, // 38: geneza.v1.AdminAPI.SetDesiredVersion:input_type -> geneza.v1.SetDesiredVersionRequest
+	49, // 39: geneza.v1.AdminAPI.GetFleetStatus:input_type -> geneza.v1.Empty
+	49, // 40: geneza.v1.AdminAPI.ReloadPolicy:input_type -> geneza.v1.Empty
+	46, // 41: geneza.v1.AdminAPI.QueryAudit:input_type -> geneza.v1.QueryAuditRequest
+	37, // 42: geneza.v1.AdminAPI.RevokeSession:input_type -> geneza.v1.RevokeSessionRequest
+	38, // 43: geneza.v1.AdminAPI.RevokeUser:input_type -> geneza.v1.RevokeUserRequest
+	34, // 44: geneza.v1.AdminAPI.SetNodeModules:input_type -> geneza.v1.SetNodeModulesRequest
+	35, // 45: geneza.v1.AdminAPI.GetNodeModules:input_type -> geneza.v1.GetNodeModulesRequest
+	2,  // 46: geneza.v1.Enrollment.Enroll:output_type -> geneza.v1.EnrollResponse
+	4,  // 47: geneza.v1.NodeControl.Stream:output_type -> geneza.v1.GatewayMsg
+	18, // 48: geneza.v1.NodeControl.RenewCert:output_type -> geneza.v1.RenewCertResponse
+	16, // 49: geneza.v1.NodeControl.UploadRecording:output_type -> geneza.v1.UploadAck
+	21, // 50: geneza.v1.UserAPI.Login:output_type -> geneza.v1.LoginResponse
+	24, // 51: geneza.v1.UserAPI.ListNodes:output_type -> geneza.v1.ListNodesResponse
+	30, // 52: geneza.v1.UserAPI.ListServices:output_type -> geneza.v1.ListServicesResponse
+	26, // 53: geneza.v1.UserAPI.CreateSession:output_type -> geneza.v1.CreateSessionResponse
+	32, // 54: geneza.v1.UserAPI.ListSessions:output_type -> geneza.v1.ListSessionsResponse
+	33, // 55: geneza.v1.UserAPI.WhoAmI:output_type -> geneza.v1.WhoAmIResponse
+	41, // 56: geneza.v1.AdminAPI.CreateJoinToken:output_type -> geneza.v1.CreateJoinTokenResponse
+	43, // 57: geneza.v1.AdminAPI.PublishArtifact:output_type -> geneza.v1.PublishArtifactResponse
+	49, // 58: geneza.v1.AdminAPI.SetDesiredVersion:output_type -> geneza.v1.Empty
+	45, // 59: geneza.v1.AdminAPI.GetFleetStatus:output_type -> geneza.v1.FleetStatus
+	49, // 60: geneza.v1.AdminAPI.ReloadPolicy:output_type -> geneza.v1.Empty
+	48, // 61: geneza.v1.AdminAPI.QueryAudit:output_type -> geneza.v1.QueryAuditResponse
+	49, // 62: geneza.v1.AdminAPI.RevokeSession:output_type -> geneza.v1.Empty
+	39, // 63: geneza.v1.AdminAPI.RevokeUser:output_type -> geneza.v1.RevokeCountResponse
+	49, // 64: geneza.v1.AdminAPI.SetNodeModules:output_type -> geneza.v1.Empty
+	36, // 65: geneza.v1.AdminAPI.GetNodeModules:output_type -> geneza.v1.NodeModulesResponse
+	46, // [46:66] is the sub-list for method output_type
+	26, // [26:46] is the sub-list for method input_type
+	26, // [26:26] is the sub-list for extension type_name
+	26, // [26:26] is the sub-list for extension extendee
+	0,  // [0:26] is the sub-list for field type_name
 }
 
 func init() { file_geneza_v1_control_proto_init() }
@@ -3303,12 +3708,14 @@ func file_geneza_v1_control_proto_init() {
 		(*AgentMsg_Heartbeat)(nil),
 		(*AgentMsg_SessionEvent)(nil),
 		(*AgentMsg_OfferAck)(nil),
+		(*AgentMsg_Metrics)(nil),
 	}
 	file_geneza_v1_control_proto_msgTypes[4].OneofWrappers = []any{
 		(*GatewayMsg_SessionOffer)(nil),
 		(*GatewayMsg_ClusterConfig)(nil),
 		(*GatewayMsg_Ping)(nil),
 		(*GatewayMsg_SessionRevoke)(nil),
+		(*GatewayMsg_ModuleConfig)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -3316,7 +3723,7 @@ func file_geneza_v1_control_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_geneza_v1_control_proto_rawDesc), len(file_geneza_v1_control_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   50,
+			NumMessages:   57,
 			NumExtensions: 0,
 			NumServices:   4,
 		},

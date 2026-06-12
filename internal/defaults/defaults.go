@@ -32,6 +32,7 @@ const (
 	ContextGrant         = "grant"
 	ContextClusterConfig = "cluster-config"
 	ContextManifest      = "artifact-manifest"
+	ContextRootKeys      = "artifact-root" // root doc authorizing the signing-key set
 )
 
 // Certificate / credential lifetimes (overridable in gateway config).

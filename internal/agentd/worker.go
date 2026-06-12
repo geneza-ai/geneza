@@ -73,6 +73,10 @@ type Worker struct {
 	// (continuous authorization) can tear one down immediately.
 	liveMu sync.Mutex
 	live   map[string]context.CancelFunc
+
+	// modules reconciles pluggable agent modules (monitoring, future exporters)
+	// against the gateway's pushed ModuleConfig and streams their metrics up.
+	modules *moduleManager
 }
 
 // advertisedServices converts the configured services into the hello message.
@@ -132,6 +136,7 @@ func NewWorker(log *slog.Logger, cfg *Config, noSpawnSessionHost bool) (*Worker,
 		events:     make(chan *genezav1.AgentMsg, 256),
 		uploadKick: make(chan struct{}, 1),
 	}
+	w.modules = newModuleManager(log, w.enqueue)
 	cluster, trusted, err := parseAndCheckClusterConfig(st.ClusterRaw, 0)
 	if err != nil {
 		return nil, fmt.Errorf("cluster config in state dir: %w", err)
@@ -238,6 +243,7 @@ func (w *Worker) Run(ctx context.Context) error {
 	run(w.streamLoop)
 
 	wg.Wait()
+	w.modules.stopAll()
 	w.closeConn()
 	w.closeHostConn()
 	return ctx.Err()
@@ -450,6 +456,8 @@ func (w *Worker) streamOnce(ctx context.Context) error {
 			w.revokeLive(m.SessionRevoke.GetSessionId(), m.SessionRevoke.GetReason())
 		case *genezav1.GatewayMsg_ClusterConfig:
 			w.handleClusterConfig(ctx, m.ClusterConfig)
+		case *genezav1.GatewayMsg_ModuleConfig:
+			w.modules.reconcile(m.ModuleConfig)
 		case *genezav1.GatewayMsg_Ping:
 			// Liveness probe; the next heartbeat answers it implicitly.
 		default:
@@ -458,15 +466,21 @@ func (w *Worker) streamOnce(ctx context.Context) error {
 	}
 }
 
+// enqueue best-effort queues any AgentMsg on the control stream outbox; dropped
+// on overflow (metrics/events are re-sent on the next tick / reconnect).
+func (w *Worker) enqueue(m *genezav1.AgentMsg) {
+	select {
+	case w.events <- m:
+	default:
+		w.log.Warn("agent message dropped (queue full)", "type", fmt.Sprintf("%T", m.GetMsg()))
+	}
+}
+
 // emitEvent queues a session lifecycle event for the audit trail.
 // Best-effort: events buffered across reconnects, dropped on overflow.
 func (w *Worker) emitEvent(ev *genezav1.SessionEvent) {
 	ev.UnixMs = time.Now().UnixMilli()
-	select {
-	case w.events <- &genezav1.AgentMsg{Msg: &genezav1.AgentMsg_SessionEvent{SessionEvent: ev}}:
-	default:
-		w.log.Warn("session event dropped (queue full)", "session", ev.SessionId, "event", ev.Event)
-	}
+	w.enqueue(&genezav1.AgentMsg{Msg: &genezav1.AgentMsg_SessionEvent{SessionEvent: ev}})
 }
 
 // ---------------------------------------------------------------------------

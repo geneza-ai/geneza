@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/flynn/noise"
 	"golang.org/x/crypto/ssh"
 
 	"osie.cloud/geneza/internal/tunnel"
@@ -34,11 +35,15 @@ type SessionParams struct {
 	Service         string // action=connect|vpn: named service on the node
 }
 
-// Session is one established end-to-end tunnel with the SSH channel layer on
-// top. Close tears down the whole stack (ssh -> noise -> relay TCP).
+// Session is one established end-to-end tunnel. For shell/exec/sftp/forward the
+// SSH channel layer rides on top; for vpn there is no SSH layer and Tunnel is
+// the raw Noise conn carrying IP packets. Close tears down the whole stack.
 type Session struct {
 	ID  string // gateway session id
 	SSH *ssh.Client
+	// Tunnel is the raw Noise tunnel conn, set only for vpn sessions (SSH is
+	// nil then). The VPN pump reads/writes IP-packet frames directly on it.
+	Tunnel net.Conn
 	// HostSessionID is reported by the agent in its acceptance payload when
 	// it created/attached a persistent host session (may be empty).
 	HostSessionID string
@@ -51,10 +56,16 @@ type Session struct {
 }
 
 func (s *Session) Close() error {
-	if s == nil || s.SSH == nil {
+	if s == nil {
 		return nil
 	}
-	return s.SSH.Close()
+	if s.SSH != nil {
+		return s.SSH.Close()
+	}
+	if s.Tunnel != nil {
+		return s.Tunnel.Close()
+	}
+	return nil
 }
 
 // acceptance is the agent's Noise-handshake response payload.
@@ -97,6 +108,25 @@ func Establish(ctx context.Context, api genezav1.UserAPIClient, pool *x509.CertP
 	if err != nil {
 		return nil, Humanize(err)
 	}
+	return DialGrant(ctx, pool, resp, key)
+}
+
+// DialGrant builds the E2E data path from a brokered CreateSessionResponse and
+// the ephemeral noise key bound into its grant: TLS to the relay (pinned geneza
+// CA) -> rendezvous -> Noise IK handshake carrying the signed grant -> SSH (or,
+// for vpn, the bare tunnel conn). Factored out of Establish so a server-side
+// initiator (the web-shell proxy) can reuse the exact same client data path
+// after brokering a session in-process instead of over gRPC.
+func DialGrant(ctx context.Context, pool *x509.CertPool, resp *genezav1.CreateSessionResponse, key noise.DHKey) (*Session, error) {
+	return DialGrantVia(ctx, pool, resp, key, "")
+}
+
+// DialGrantVia is DialGrant with an optional dialAddr that overrides the TCP
+// target while keeping the grant's relay host as the TLS ServerName. The
+// in-process web-shell proxy uses this to reach the relay LOCALLY
+// (e.g. 127.0.0.1:7403) instead of NAT-hairpinning to the public relay address
+// the grant advertises to external clients.
+func DialGrantVia(ctx context.Context, pool *x509.CertPool, resp *genezav1.CreateSessionResponse, key noise.DHKey, dialAddr string) (*Session, error) {
 	// Decode the (gateway-signed) grant payload for its resolved scope. We do
 	// not verify it here — the agent does — we just read what the gateway chose
 	// for a service connect / vpn (forward target, routes, overlay IP).
@@ -114,12 +144,16 @@ func Establish(ctx context.Context, api genezav1.UserAPIClient, pool *x509.CertP
 	}
 	dialer := &tls.Dialer{Config: &tls.Config{
 		RootCAs:    pool, // relay certs are issued by the geneza CA
-		ServerName: host,
+		ServerName: host, // always the grant's relay host (matches the cert SAN)
 		MinVersion: tls.VersionTLS12,
 	}}
-	raw, err := dialer.DialContext(ctx, "tcp", resp.GetRelayAddr())
+	target := resp.GetRelayAddr()
+	if dialAddr != "" {
+		target = dialAddr // dial locally; ServerName stays the public relay host
+	}
+	raw, err := dialer.DialContext(ctx, "tcp", target)
 	if err != nil {
-		return nil, fmt.Errorf("relay connect %s: %w", resp.GetRelayAddr(), err)
+		return nil, fmt.Errorf("relay connect %s: %w", target, err)
 	}
 	ok := false
 	defer func() {
@@ -171,6 +205,19 @@ func Establish(ctx context.Context, api genezav1.UserAPIClient, pool *x509.CertP
 			acc.Error = "no reason given"
 		}
 		return nil, fmt.Errorf("agent rejected grant: %s", acc.Error)
+	}
+
+	// VPN sessions carry raw IP packets, not an SSH transport: hand back the
+	// bare tunnel conn for the packet pump and skip the SSH channel layer.
+	if resolved.Action == types.ActionVPN {
+		ok = true
+		return &Session{
+			ID:        resp.GetSessionId(),
+			Tunnel:    tconn,
+			Action:    resolved.Action,
+			Routes:    resolved.Routes,
+			OverlayIP: resolved.OverlayIP,
+		}, nil
 	}
 
 	// SECURITY NOTE: the SSH layer here is used ONLY for its channel/session

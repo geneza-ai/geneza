@@ -29,6 +29,13 @@ type Installer struct {
 	Pub        ed25519.PublicKey
 	KeyID      string // optional key-id pin; "" accepts any id (signature must still verify with Pub)
 
+	// Trusted is the root-anchored set of release-SIGNING keys (derived from a
+	// verified RootKeys doc). When non-empty it takes precedence over the single
+	// pinned Pub: a manifest is accepted if signed by ANY trusted key, which is
+	// what enables key rotation (root authorizes a new key set; nodes pick it up)
+	// without re-touching the pinned root. Empty falls back to the single Pub.
+	Trusted map[string]ed25519.PublicKey
+
 	// Required-match fields: a manifest for another product/platform is
 	// rejected even with a valid signature (prevents cross-product or
 	// cross-arch confusion attacks via a replayed valid manifest).
@@ -50,15 +57,22 @@ type Installer struct {
 // and the verified manifest. Every failure is fail-closed: nothing is left
 // at the final path unless every check passed.
 func (ins *Installer) Install(ctx context.Context, sm *types.Signed) (string, *types.Manifest, error) {
-	if len(ins.Pub) != ed25519.PublicKeySize {
-		return "", nil, fmt.Errorf("installer: no pinned artifact public key")
-	}
 	if ins.Client == nil {
 		return "", nil, fmt.Errorf("installer: no http client")
 	}
 
+	// Trust set: the root-anchored signing keys if provided (rotation-friendly),
+	// else the single pinned key for backward compatibility. A manifest verifies
+	// if signed by any trusted key under the artifact-manifest context.
+	trusted := ins.Trusted
+	if len(trusted) == 0 {
+		if len(ins.Pub) != ed25519.PublicKeySize {
+			return "", nil, fmt.Errorf("installer: no trusted artifact keys")
+		}
+		trusted = map[string]ed25519.PublicKey{types.KeyIDFor(ins.Pub): ins.Pub}
+	}
 	var m types.Manifest
-	if err := types.VerifyOne(ins.Pub, ins.KeyID, defaults.ContextManifest, sm, &m); err != nil {
+	if _, err := types.Verify(trusted, defaults.ContextManifest, sm, &m); err != nil {
 		return "", nil, fmt.Errorf("manifest signature: %w", err)
 	}
 	if m.Product != ins.Product {

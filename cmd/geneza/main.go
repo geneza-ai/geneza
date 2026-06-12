@@ -58,6 +58,7 @@ func main() {
 		newForwardCmd(),
 		newServicesCmd(),
 		newConnectCmd(),
+		newVPNCmd(),
 		newAdminCmd(),
 	)
 
