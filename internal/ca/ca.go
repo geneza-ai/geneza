@@ -45,10 +45,15 @@ const (
 
 // Identity is what a verified peer certificate asserts.
 type Identity struct {
-	Kind     string // node|user|gateway|relay
-	Name     string // node id / username / service name
-	Roles    []string
-	Provider string // identity provider that authenticated the user
+	Kind string // node|user|gateway|relay
+	// Workspace is the tenant the node/user belongs to (multi-tenancy). It is
+	// encoded in the cert URI (geneza://user/<ws>/<name>) and is the SOLE source
+	// of a peer's workspace — never client-supplied. Empty/legacy 2-segment certs
+	// resolve to "default" for node/user kinds; gateway/relay carry no workspace.
+	Workspace string
+	Name      string // node id / username / service name
+	Roles     []string
+	Provider  string // identity provider that authenticated the user
 }
 
 // IdentityClaims is the JSON payload of OIDRolesExt.
@@ -59,8 +64,8 @@ type IdentityClaims struct {
 
 // CA wraps the issuing certificate and its signer.
 type CA struct {
-	Cert    *x509.Certificate
-	Signer  crypto.Signer
+	Cert   *x509.Certificate
+	Signer crypto.Signer
 	// Roots is the PEM bundle agents/clients should trust (root cert(s)).
 	RootsPEM []byte
 	// chainPEM is the issuing cert PEM, served alongside leaves.
@@ -243,16 +248,24 @@ func Load(dir string) (*CA, error) {
 
 // Profile describes a leaf certificate to issue.
 type Profile struct {
-	Kind     string // node|user|gateway|relay
-	Name     string
-	TTL      time.Duration
-	Claims   *IdentityClaims // user certs
-	DNSNames []string        // server certs
-	IPs      []net.IP        // server certs
+	Kind      string // node|user|gateway|relay
+	Workspace string // tenant for node/user certs; empty for gateway/relay
+	Name      string
+	TTL       time.Duration
+	Claims    *IdentityClaims // user certs
+	DNSNames  []string        // server certs
+	IPs       []net.IP        // server certs
 }
 
-func identityURI(kind, name string) *url.URL {
-	return &url.URL{Scheme: "geneza", Host: kind, Path: "/" + name}
+// identityURI builds geneza://<kind>/<workspace>/<name> for tenant-scoped
+// node/user certs, or geneza://<kind>/<name> when workspace is empty
+// (gateway/relay server certs).
+func identityURI(kind, workspace, name string) *url.URL {
+	p := "/" + name
+	if workspace != "" {
+		p = "/" + workspace + "/" + name
+	}
+	return &url.URL{Scheme: "geneza", Host: kind, Path: p}
 }
 
 // IssueFromCSR verifies the CSR signature and issues a leaf for profile.
@@ -285,7 +298,7 @@ func (c *CA) issue(pub any, p Profile) ([]byte, error) {
 		NotBefore:    now.Add(-2 * time.Minute), // small skew tolerance
 		NotAfter:     now.Add(p.TTL),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
-		URIs:         []*url.URL{identityURI(p.Kind, p.Name)},
+		URIs:         []*url.URL{identityURI(p.Kind, p.Workspace, p.Name)},
 	}
 	switch p.Kind {
 	case KindNode, KindUser:
@@ -348,7 +361,19 @@ func PeerIdentity(cert *x509.Certificate) (*Identity, error) {
 		if u.Scheme != "geneza" {
 			continue
 		}
-		id := &Identity{Kind: u.Host, Name: strings.TrimPrefix(u.Path, "/")}
+		// Path is /<name> (gateway/relay, legacy) or /<workspace>/<name>
+		// (tenant-scoped node/user). node/user with no workspace segment resolve
+		// to "default" for backward compatibility.
+		var ws, name string
+		if parts := strings.SplitN(strings.TrimPrefix(u.Path, "/"), "/", 2); len(parts) == 2 {
+			ws, name = parts[0], parts[1]
+		} else {
+			name = parts[0]
+		}
+		if ws == "" && (u.Host == KindNode || u.Host == KindUser) {
+			ws = "default"
+		}
+		id := &Identity{Kind: u.Host, Workspace: ws, Name: name}
 		for _, ext := range cert.Extensions {
 			if ext.Id.Equal(OIDRolesExt) {
 				var claims IdentityClaims

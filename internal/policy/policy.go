@@ -233,6 +233,30 @@ func matchList(list []string, v string) bool {
 	return false
 }
 
+// LabelsMatch reports whether labels satisfy a label selector. For each entry in
+// selector: key "*" matches anything; otherwise labels must contain the key, and
+// the value must equal the selector value (or the selector value is "*"). An
+// EMPTY selector matches everything (default-open). This is the one wildcard
+// label matcher shared by access rules (NodeLabels/ServiceLabels) AND tenant
+// Network membership (a node is a member of a Network iff its labels match the
+// Network's selector — Tailscale-ACL-tag style; remove a tag and continuous
+// authz drops the node from the Network).
+func LabelsMatch(selector, labels map[string]string) bool {
+	for k, v := range selector {
+		if k == "*" {
+			continue
+		}
+		got, ok := labels[k]
+		if !ok {
+			return false
+		}
+		if v != "*" && got != v {
+			return false
+		}
+	}
+	return true
+}
+
 func (r *Rule) matches(in Input, now time.Time) bool {
 	// Fail closed: a require_native rule grants ONLY when the path is proven
 	// native. An empty/unknown client_path must not satisfy it — otherwise the
@@ -267,29 +291,11 @@ func (r *Rule) matches(in Input, now time.Time) bool {
 	if len(r.ServiceKinds) > 0 && !matchList(r.ServiceKinds, in.ServiceKind) {
 		return false
 	}
-	for k, v := range r.ServiceLabels {
-		if k == "*" {
-			continue
-		}
-		got, ok := in.ServiceLabels[k]
-		if !ok {
-			return false
-		}
-		if v != "*" && got != v {
-			return false
-		}
+	if !LabelsMatch(r.ServiceLabels, in.ServiceLabels) {
+		return false
 	}
-	for k, v := range r.NodeLabels {
-		if k == "*" {
-			continue
-		}
-		got, ok := in.NodeLabels[k]
-		if !ok {
-			return false
-		}
-		if v != "*" && got != v {
-			return false
-		}
+	if !LabelsMatch(r.NodeLabels, in.NodeLabels) {
+		return false
 	}
 	if r.TimeWindow != nil && !r.TimeWindow.contains(now) {
 		return false
