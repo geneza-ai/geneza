@@ -147,6 +147,20 @@ message NetworkSpec {
   string name = 2;
   string overlay_cidr = 3;           // THIS principal's overlay IP/CIDR on this Network
   repeated WGPeer peers = 4;
+  // In-network DNS (pushed, resolved LOCALLY at the agent — never queried back):
+  // dns_zone is THIS Network's zone suffix / search domain (e.g. "prod.acme.geneza");
+  // dns_records is the policy-filtered name->overlayIP set this node may resolve in
+  // this Network (== the peer membership set + self). The agent runs a local
+  // resolver at 100.64.0.53 holding the UNION across its Networks. See
+  // docs/dns-coredns-design.md / memory geneza-roadmap-coredns-tenancy.
+  string dns_zone = 5;
+  repeated DnsRecord dns_records = 6;
+}
+
+message DnsRecord {
+  string name = 1;                   // bare machine label (DNS-safe), zone-relative
+  string ip   = 2;                   // overlay IPv4 (A record)
+  uint32 ttl  = 3;                   // seconds
 }
 
 message WGPeer {

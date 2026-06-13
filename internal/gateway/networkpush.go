@@ -158,14 +158,92 @@ func (s *Server) networkConfigProto(ws string, node *NodeRecord, version int64) 
 			continue
 		}
 		cidr := s.networkSubnet(ws, net)
+		zone, recs := s.networkDNS(ws, net, node, ip)
 		cfg.Networks = append(cfg.Networks, &genezav1.NetworkSpec{
 			Vni:         net.VNI,
 			Name:        net.Name,
 			OverlayCidr: ip + "/" + prefixLen(cidr),
 			Peers:       s.networkPeers(ws, net, node),
+			DnsZone:     zone,
+			DnsRecords:  recs,
 		})
 	}
 	return cfg
+}
+
+// networkDNS builds THIS Network's zone suffix + the policy-filtered name->overlayIP
+// record set this node may resolve, for the in-network local resolver. CRITICAL:
+// the membership filter is IDENTICAL to networkPeers (approved + WG-keyed +
+// LabelsMatch + has overlay IP), so a node's DNS-visible set == its WG peer set
+// (node-scoped, Tailscale-style) — it can resolve exactly what it can route to,
+// nothing more (isolation/policy by construction). selfIP is the node's own
+// overlay IP on this Network (already computed by the caller).
+func (s *Server) networkDNS(ws string, net *NetworkRecord, self *NodeRecord, selfIP string) (string, []*genezav1.DnsRecord) {
+	zone := s.dnsZoneFor(ws, net.Name)
+	var recs []*genezav1.DnsRecord
+	if lbl := dnsLabel(self.Name); lbl != "" && selfIP != "" {
+		recs = append(recs, &genezav1.DnsRecord{Name: lbl, Ip: selfIP, Ttl: dnsTTL})
+	}
+	nodes, err := s.store.ListNodes(ws)
+	if err != nil {
+		return zone, recs
+	}
+	for _, peer := range nodes {
+		if peer.ID == self.ID || !peer.Approved || len(peer.WGPub) == 0 {
+			continue
+		}
+		if !policy.LabelsMatch(net.Selector, peer.Labels) {
+			continue
+		}
+		lbl := dnsLabel(peer.Name)
+		if lbl == "" {
+			continue
+		}
+		ip, err := s.networkOverlayIP(ws, net, peer)
+		if err != nil || ip == "" {
+			continue
+		}
+		recs = append(recs, &genezav1.DnsRecord{Name: lbl, Ip: ip, Ttl: dnsTTL})
+	}
+	return zone, recs
+}
+
+// dnsZoneFor is THIS Network's zone suffix / search domain. The base zone (default
+// "geneza") is prefixed with the non-default network + workspace segments so each
+// Network in each workspace has a distinct search domain, while the default
+// workspace's default Network stays the bare base ("geneza") for back-compat:
+//
+//	default ws / default net      -> "geneza"
+//	default ws / net "prod"       -> "prod.geneza"
+//	ws "acme"  / net "prod"       -> "prod.acme.geneza"
+//	ws "acme"  / default net      -> "acme.geneza"
+func (s *Server) dnsZoneFor(ws, netName string) string {
+	base := s.cfg.dnsZone()
+	var segs []string
+	if l := dnsLabel(netName); l != "" && l != "default" {
+		segs = append(segs, l)
+	}
+	if l := dnsLabel(ws); l != "" && l != defaultWorkspace {
+		segs = append(segs, l)
+	}
+	segs = append(segs, base)
+	return strings.Join(segs, ".")
+}
+
+// dnsLabel sanitizes a machine/network/workspace name into a single DNS label
+// (lowercase a-z0-9-, '.'/'_'/' ' -> '-', trimmed). Empty if nothing valid.
+func dnsLabel(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-':
+			b.WriteRune(r)
+		case r == '.' || r == '_' || r == ' ':
+			b.WriteRune('-')
+		}
+	}
+	return strings.Trim(b.String(), "-")
 }
 
 // pushNodeNetworks sends a node its current desired Network set (best-effort:

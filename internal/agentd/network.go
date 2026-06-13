@@ -32,6 +32,10 @@ type networkManager struct {
 	// per-Network WG listen ports so the worker can forward them to the gateway
 	// for direct-path endpoint discovery.
 	report func([]wgEndpoint)
+	// dns is the in-network local resolver (100.64.0.53), fed the pushed per-
+	// Network zones on each reconcile — resolves name->overlayIP locally, never
+	// querying the gateway/relay.
+	dns *dnsResolver
 
 	mu      sync.Mutex
 	running map[uint32]*wgIface
@@ -81,6 +85,7 @@ func newNetworkManager(log *slog.Logger, wgPriv wgtypes.Key, wg wgBackend) *netw
 		log:     log.With("component", "networks"),
 		wgPriv:  wgPriv,
 		wg:      wg,
+		dns:     newDNSResolver(log),
 		running: map[uint32]*wgIface{},
 	}
 }
@@ -116,6 +121,11 @@ func (m *networkManager) reconcile(cfg *genezav1.NetworkConfig) {
 		m.upOrSyncLocked(vni, spec)
 	}
 	m.reportEndpointsLocked()
+	// Feed the in-network resolver the pushed per-Network zones (union across all
+	// the node's Networks). Local resolution from here on — no gateway query.
+	if m.dns != nil {
+		m.dns.Update(cfg.GetNetworks())
+	}
 }
 
 // reportEndpointsLocked gathers each live interface's kernel-assigned WG listen
@@ -180,6 +190,9 @@ func (m *networkManager) downLocked(vni uint32) {
 
 // downAll tears down every interface (worker shutdown).
 func (m *networkManager) downAll() {
+	if m.dns != nil {
+		m.dns.Stop()
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for vni := range m.running {
