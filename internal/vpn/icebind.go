@@ -79,12 +79,21 @@ type peerICE struct {
 }
 
 type recvMsg struct {
-	ep   *genezaEndpoint
-	data []byte
+	ep  *genezaEndpoint
+	buf []byte // pooled; returned to bufPool after the device copies it out
+	n   int
 }
 
+// bufPool recycles per-datagram read buffers so the hot inbound path does no
+// per-packet allocation (throughput).
+var bufPool = sync.Pool{New: func() any { return make([]byte, iceReadBuf) }}
+
+// numDrainers is how many ReceiveFunc goroutines the device runs draining recvCh
+// concurrently (removes the single-goroutine inbound funnel).
+const numDrainers = 4
+
 // iceBind is the conn.Bind for one Network (VNI): one ice.Agent + *ice.Conn per
-// peer, multiplexed under a single ReceiveFunc.
+// peer, multiplexed under N concurrent ReceiveFuncs.
 type ICEBind struct {
 	vni       uint32
 	relayOnly bool // P-libs1: relay candidates only (force the TURN floor)
@@ -95,6 +104,7 @@ type ICEBind struct {
 	selfPub [32]byte
 	peers   map[[32]byte]*peerICE
 	recvCh  chan recvMsg
+	done    chan struct{} // closed on Close; readers/drainers exit on it (recvCh is never closed -> no send-on-closed panic)
 	closed  bool
 }
 
@@ -111,7 +121,8 @@ func NewICEBind(vni uint32, relayOnly bool, log *slog.Logger) *ICEBind {
 		relayOnly: relayOnly,
 		log:       log.With("component", "icebind", "vni", vni),
 		peers:     map[[32]byte]*peerICE{},
-		recvCh:    make(chan recvMsg, 256),
+		recvCh:    make(chan recvMsg, 1024),
+		done:      make(chan struct{}),
 	}
 }
 
@@ -127,28 +138,52 @@ func (b *ICEBind) SetSelfPub(pub [32]byte) {
 	b.mu.Unlock()
 }
 
-// Open returns one ReceiveFunc draining recvCh. There is no single shared socket
-// (each ice.Agent owns its sockets); port 0 is reported — the ICE model doesn't
-// expose a fixed WG listen port.
+// Open returns numDrainers ReceiveFuncs so the device drains recvCh on several
+// goroutines concurrently (no single inbound funnel). No single shared socket
+// (each ice.Agent owns its sockets); port 0 is reported.
 func (b *ICEBind) Open(uint16) ([]conn.ReceiveFunc, uint16, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.closed {
 		b.closed = false
-		b.recvCh = make(chan recvMsg, 256)
+		b.recvCh = make(chan recvMsg, 1024)
+		b.done = make(chan struct{})
 	}
-	return []conn.ReceiveFunc{b.receive}, 0, nil
+	fns := make([]conn.ReceiveFunc, numDrainers)
+	for i := range fns {
+		fns[i] = b.receive
+	}
+	return fns, 0, nil
 }
 
+// receive blocks for one datagram then opportunistically batches more (up to the
+// device's slice width) so wireguard-go processes several per call. Pooled read
+// buffers are returned after the copy-out. Closure is signalled via b.done so a
+// per-peer reader never sends on a closed channel.
 func (b *ICEBind) receive(pkts [][]byte, sizes []int, eps []conn.Endpoint) (int, error) {
-	msg, ok := <-b.recvCh
-	if !ok {
+	var msg recvMsg
+	select {
+	case msg = <-b.recvCh:
+	case <-b.done:
 		return 0, net.ErrClosed
 	}
-	n := copy(pkts[0], msg.data)
-	sizes[0] = n
-	eps[0] = msg.ep
-	return 1, nil
+	count := 0
+	put := func(m recvMsg) {
+		sizes[count] = copy(pkts[count], m.buf[:m.n])
+		eps[count] = m.ep
+		bufPool.Put(m.buf) //nolint:staticcheck // pooled []byte
+		count++
+	}
+	put(msg)
+	for count < len(pkts) {
+		select {
+		case m := <-b.recvCh:
+			put(m)
+		default:
+			return count, nil
+		}
+	}
+	return count, nil
 }
 
 func (b *ICEBind) Send(bufs [][]byte, ep conn.Endpoint) error {
@@ -201,6 +236,7 @@ func (b *ICEBind) Close() error {
 		return nil
 	}
 	b.closed = true
+	close(b.done) // wakes drainers (ErrClosed) + stops reader sends; recvCh is never closed
 	for _, p := range b.peers {
 		p.mu.Lock()
 		if p.cancel != nil {
@@ -212,7 +248,6 @@ func (b *ICEBind) Close() error {
 		}
 	}
 	b.peers = map[[32]byte]*peerICE{}
-	close(b.recvCh)
 	return nil
 }
 
@@ -487,21 +522,26 @@ func (b *ICEBind) connect(p *peerICE) {
 	b.log.Info("ice connected", "peer", shortHex(p.wgPub), "controlling", ctrl)
 
 	// Per-peer reader: one Read == one inbound WG datagram -> recvCh -> ReceiveFunc.
+	// Pooled buffers (no per-packet alloc); the drainer returns each to the pool.
 	go func() {
-		buf := make([]byte, iceReadBuf)
 		for {
+			buf := bufPool.Get().([]byte)
 			n, rerr := c.Read(buf)
 			if n > 0 {
-				d := make([]byte, n)
-				copy(d, buf[:n])
 				select {
-				case b.recvCh <- recvMsg{ep: &genezaEndpoint{wgPub: p.wgPub}, data: d}:
-				default: // drop on backpressure, like a UDP socket
+				case b.recvCh <- recvMsg{ep: &genezaEndpoint{wgPub: p.wgPub}, buf: buf, n: n}:
+				case <-b.done:
+					bufPool.Put(buf)
+					return
+				default: // backpressure: drop, like a UDP socket
+					bufPool.Put(buf)
 				}
+			} else {
+				bufPool.Put(buf)
 			}
 			if rerr != nil {
 				if errors.Is(rerr, io.ErrShortBuffer) {
-					continue // datagram too big for buf; drop it, keep reading
+					continue // datagram too big for buf; dropped, keep reading
 				}
 				return // closed / fatal
 			}
