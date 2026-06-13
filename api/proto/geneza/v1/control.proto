@@ -331,6 +331,8 @@ service AdminAPI {
   // control): an unapproved node has an identity but no session can be brokered
   // to it until an admin approves. approve=false re-quarantines a node.
   rpc ApproveNode(ApproveNodeRequest) returns (Empty);
+  // ListWorkspaces lists the tenants this gateway hosts.
+  rpc ListWorkspaces(Empty) returns (ListWorkspacesResponse);
   // RemoveNode decommissions a machine: deletes its record so it no longer
   // appears in the fleet and must re-enroll (and re-be-approved) to return.
   rpc RemoveNode(RemoveNodeRequest) returns (Empty);
@@ -404,6 +406,16 @@ message ApproveNodeRequest {
 
 message RemoveNodeRequest {
   string node = 1;      // node id or name
+}
+
+message WorkspaceInfo {
+  string id = 1;
+  string name = 2;
+  string overlay_cidr = 3;
+}
+
+message ListWorkspacesResponse {
+  repeated WorkspaceInfo workspaces = 1;
 }
 
 // First chunk must carry signed_manifest (JSON types.Signed wrapping

@@ -64,6 +64,7 @@ func newWhoamiCmd() *cobra.Command {
 				return client.Humanize(err)
 			}
 			fmt.Printf("User:        %s\n", resp.GetUser())
+			fmt.Printf("Workspace:   %s\n", orDash(resp.GetWorkspace()))
 			fmt.Printf("Roles:       %s\n", strings.Join(resp.GetRoles(), ", "))
 			fmt.Printf("Provider:    %s\n", e.profile.Provider)
 			fmt.Printf("Gateway:     %s\n", e.profile.GatewayGRPC)

@@ -124,6 +124,12 @@ type Config struct {
 	// used only to run `enroll`; the first WORKER binary is pulled by the
 	// bootstrap through the full rooted update chain. Empty = installer disabled.
 	InstallDir string `yaml:"install_dir"`
+	// Workspaces declares the tenants this gateway hosts (multi-tenancy). Empty =
+	// a single synthesized "default" workspace whose policy is PolicyFile and whose
+	// membership is open (single-tenant behavior, unchanged). Each workspace has
+	// its own policy and membership; a user's workspace is validated against this
+	// at login and is then carried in the cert.
+	Workspaces []WorkspaceConfig `yaml:"workspaces"`
 	// AuditSink optionally mirrors every audit record to an append-only
 	// off-box destination (the only real tamper-evidence against a host
 	// compromise that can rewrite the local chain). Empty = local chain only.
@@ -132,6 +138,23 @@ type Config struct {
 	// TLS terminated by a front proxy). Empty Listen = disabled.
 	Console ConsoleConfig `yaml:"console"`
 }
+
+// WorkspaceConfig declares one tenant. A user is a MEMBER of the workspace iff
+// their username is in Members OR one of their IdP groups is in MemberGroups; a
+// workspace with NEITHER set is OPEN (every authenticated user) — which is what
+// keeps the synthesized "default" workspace single-tenant-compatible.
+type WorkspaceConfig struct {
+	ID           string   `yaml:"id"`
+	Name         string   `yaml:"name,omitempty"`
+	PolicyFile   string   `yaml:"policy_file,omitempty"`   // defaults to the top-level policy_file
+	OverlayCIDR  string   `yaml:"overlay_cidr,omitempty"`  // defaults to 100.64.0.0/24
+	Members      []string `yaml:"members,omitempty"`       // usernames
+	MemberGroups []string `yaml:"member_groups,omitempty"` // IdP groups
+}
+
+// open reports whether the workspace admits any authenticated user (no explicit
+// membership configured).
+func (w WorkspaceConfig) open() bool { return len(w.Members) == 0 && len(w.MemberGroups) == 0 }
 
 // ConsoleConfig configures the web control panel.
 type ConsoleConfig struct {
@@ -214,6 +237,19 @@ func (c *Config) applyDefaults() {
 			c.OIDC.GroupsClaim = "groups"
 		}
 	}
+	// Single-tenant compatibility: no workspaces declared = one open "default"
+	// workspace whose policy is the top-level policy_file.
+	if len(c.Workspaces) == 0 {
+		c.Workspaces = []WorkspaceConfig{{ID: defaultWorkspace, Name: "Default"}}
+	}
+	for i := range c.Workspaces {
+		if c.Workspaces[i].PolicyFile == "" {
+			c.Workspaces[i].PolicyFile = c.PolicyFile
+		}
+		if c.Workspaces[i].OverlayCIDR == "" {
+			c.Workspaces[i].OverlayCIDR = defaultOverlayCIDR
+		}
+	}
 }
 
 func (c *Config) validate() error {
@@ -237,6 +273,26 @@ func (c *Config) validate() error {
 		if u.Username == "" || u.PasswordBcrypt == "" {
 			return fmt.Errorf("local_users[%d]: username and password_bcrypt are required", i)
 		}
+	}
+	seen := map[string]bool{}
+	hasDefault := false
+	for i, w := range c.Workspaces {
+		if w.ID == "" {
+			return fmt.Errorf("workspaces[%d]: id is required", i)
+		}
+		if seen[w.ID] {
+			return fmt.Errorf("workspaces: duplicate id %q", w.ID)
+		}
+		seen[w.ID] = true
+		if w.ID == defaultWorkspace {
+			hasDefault = true
+		}
+		if w.PolicyFile == "" {
+			return fmt.Errorf("workspaces[%q]: policy_file is required (no top-level policy_file to inherit)", w.ID)
+		}
+	}
+	if !hasDefault {
+		return fmt.Errorf("workspaces: a %q workspace is required (legacy certs + break-glass resolve to it)", defaultWorkspace)
 	}
 	return nil
 }

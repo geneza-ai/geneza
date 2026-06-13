@@ -33,6 +33,7 @@ type loginOpts struct {
 	caFile        string
 	noBrowser     bool
 	manual        bool
+	workspace     string
 }
 
 func newLoginCmd() *cobra.Command {
@@ -55,6 +56,7 @@ func newLoginCmd() *cobra.Command {
 	f.BoolVar(&o.passwordStdin, "password-stdin", false, "read the password from stdin (first line)")
 	f.StringVar(&o.caFile, "ca-file", "", "trust this CA bundle instead of TOFU-fetching it")
 	f.BoolVar(&o.noBrowser, "no-browser", false, "do not try to open a browser for the OIDC flow")
+	f.StringVar(&o.workspace, "workspace", "", "tenant workspace to log into (omit to use your only/last)")
 	f.BoolVar(&o.manual, "manual", false, "remote/headless OIDC: print the auth URL and paste the redirected callback URL back (for when the CLI's loopback is unreachable from the browser)")
 	return cmd
 }
@@ -122,7 +124,7 @@ func runLogin(ctx context.Context, o *loginOpts) error {
 		return err
 	}
 
-	req := &genezav1.LoginRequest{Provider: provider}
+	req := &genezav1.LoginRequest{Provider: provider, Workspace: o.workspace}
 	switch provider {
 	case "oidc":
 		if ac.OIDCIssuer == "" || ac.OIDCClientID == "" {
@@ -198,6 +200,9 @@ func runLogin(ctx context.Context, o *loginOpts) error {
 		return client.Humanize(err)
 	}
 	if len(resp.GetUserCertPem()) == 0 {
+		if ws := resp.GetAvailableWorkspaces(); len(ws) > 0 {
+			return fmt.Errorf("you belong to multiple workspaces; re-run with --workspace <id>\n  available: %s", strings.Join(ws, ", "))
+		}
 		return errors.New("gateway returned no certificate")
 	}
 	if err := os.WriteFile(st.CertPath(), resp.GetUserCertPem(), 0o600); err != nil {
@@ -219,6 +224,7 @@ func runLogin(ctx context.Context, o *loginOpts) error {
 		GatewayGRPC: gatewayGRPC,
 		GatewayHTTP: gatewayHTTP,
 		User:        resp.GetUser(),
+		Workspace:   resp.GetWorkspace(),
 		Provider:    provider,
 		CASHA256:    pin,
 	}); err != nil {
@@ -227,6 +233,7 @@ func runLogin(ctx context.Context, o *loginOpts) error {
 
 	exp := time.Unix(resp.GetExpiresUnix(), 0)
 	fmt.Printf("Logged in as %s (provider %s)\n", resp.GetUser(), provider)
+	fmt.Printf("Workspace:   %s\n", resp.GetWorkspace())
 	fmt.Printf("Roles:       %s\n", strings.Join(resp.GetRoles(), ", "))
 	fmt.Printf("Cert expiry: %s (%s)\n", exp.Local().Format(time.RFC3339), time.Until(exp).Round(time.Minute))
 	return nil

@@ -2,7 +2,9 @@ package gateway
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"os"
 	"path/filepath"
@@ -346,6 +348,84 @@ func TestCrossWorkspaceIsolation(t *testing.T) {
 	// INV-CP3 (DNS): bravo does not resolve for a wsA caller.
 	if _, _, ok := srv.dnsLookupA(identA)("bravo"); ok {
 		t.Fatal("wsA resolved bravo (a wsB machine) — cross-tenant DNS leak")
+	}
+}
+
+// TestWorkspaceMembershipLogin proves the Phase-2 config-driven membership
+// gate: a user lands in exactly the workspaces they belong to (open OR matched),
+// an ambiguous login returns candidates (no cert), an explicit pick mints a cert
+// scoped to that workspace, and a non-member workspace is refused.
+func TestWorkspaceMembershipLogin(t *testing.T) {
+	cfg := testServerConfig(t)
+	// default (synthesized, open) + prod (group "admins") + secret (only "bob").
+	// alice carries group "admins", so she is a member of {default, prod} but not
+	// secret. All three share the one test policy file (binds ops→group admins).
+	cfg.Workspaces = append(cfg.Workspaces,
+		WorkspaceConfig{ID: "prod", PolicyFile: cfg.PolicyFile, OverlayCIDR: defaultOverlayCIDR, MemberGroups: []string{"admins"}},
+		WorkspaceConfig{ID: "secret", PolicyFile: cfg.PolicyFile, OverlayCIDR: defaultOverlayCIDR, Members: []string{"bob"}},
+	)
+	if err := cfg.validate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := InitDataDir(cfg); err != nil {
+		t.Fatal(err)
+	}
+	srv, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+
+	// workspacesForUser: alice ∈ {default, prod}, never secret.
+	got := srv.workspacesForUser("alice", []string{"admins"})
+	if !contains(got, "default") || !contains(got, "prod") || contains(got, "secret") {
+		t.Fatalf("workspacesForUser(alice) = %v, want {default, prod}", got)
+	}
+
+	key, _ := ca.GenerateKey()
+	csr, _ := ca.MakeCSR(key, "alice")
+	login := func(ws string) (*genezav1.LoginResponse, error) {
+		return srv.handleLogin(context.Background(), &genezav1.LoginRequest{
+			Provider: "local", Username: "alice", Password: "hunter2", Workspace: ws, CsrPem: csr,
+		})
+	}
+
+	// No workspace + ambiguous membership -> candidates, no cert.
+	resp, err := login("")
+	if err != nil {
+		t.Fatalf("ambiguous login: %v", err)
+	}
+	if len(resp.GetUserCertPem()) != 0 {
+		t.Fatal("ambiguous login returned a cert; want candidates only")
+	}
+	if a := resp.GetAvailableWorkspaces(); !contains(a, "default") || !contains(a, "prod") || contains(a, "secret") {
+		t.Fatalf("ambiguous candidates = %v, want {default, prod}", a)
+	}
+
+	// Explicit pick -> cert scoped to that workspace (verify via the issued cert).
+	resp, err = login("prod")
+	if err != nil {
+		t.Fatalf("login --workspace prod: %v", err)
+	}
+	if resp.GetWorkspace() != "prod" || len(resp.GetUserCertPem()) == 0 {
+		t.Fatalf("login prod: ws=%q cert=%d", resp.GetWorkspace(), len(resp.GetUserCertPem()))
+	}
+	blk, _ := pem.Decode(resp.GetUserCertPem())
+	leaf, err := x509.ParseCertificate(blk.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := ca.PeerIdentity(leaf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id.Workspace != "prod" {
+		t.Fatalf("issued cert workspace = %q, want prod", id.Workspace)
+	}
+
+	// A workspace she is not a member of is refused.
+	if _, err := login("secret"); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("login --workspace secret = %v, want PermissionDenied", err)
 	}
 }
 

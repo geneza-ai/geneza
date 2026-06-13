@@ -27,9 +27,12 @@ func newAdminCmd() *cobra.Command {
 	tokens.AddCommand(newTokensNewCmd())
 	nodes := &cobra.Command{Use: "nodes", Short: "Machine admission (approve / quarantine / remove)"}
 	nodes.AddCommand(newNodeApproveCmd(true), newNodeApproveCmd(false), newNodeRemoveCmd())
+	workspaces := &cobra.Command{Use: "workspaces", Aliases: []string{"ws"}, Short: "Tenant workspaces hosted by this gateway"}
+	workspaces.AddCommand(newWorkspacesLsCmd())
 	cmd.AddCommand(
 		tokens,
 		nodes,
+		workspaces,
 		newFleetCmd(),
 		newPublishCmd(),
 		newDesiredCmd(),
@@ -342,6 +345,45 @@ func newFleetCmd() *cobra.Command {
 			}
 			client.PrintTable(os.Stdout,
 				[]string{"NAME", "NODE-ID", "ADMISSION", "ONLINE", "VERSION", "PLATFORM", "LABELS", "LAST-SEEN"}, rows)
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "JSON output")
+	return cmd
+}
+
+// newWorkspacesLsCmd builds `admin workspaces ls` — list hosted tenants.
+func newWorkspacesLsCmd() *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:     "ls",
+		Aliases: []string{"list"},
+		Short:   "List the tenant workspaces this gateway hosts",
+		Args:    cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			e, err := loadEnv()
+			if err != nil {
+				return err
+			}
+			cc, api, err := dialAdmin(e)
+			if err != nil {
+				return err
+			}
+			defer cc.Close()
+			ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
+			defer cancel()
+			resp, err := api.ListWorkspaces(ctx, &genezav1.Empty{})
+			if err != nil {
+				return client.Humanize(err)
+			}
+			if asJSON {
+				return printJSON(resp)
+			}
+			rows := make([][]string, 0, len(resp.GetWorkspaces()))
+			for _, w := range resp.GetWorkspaces() {
+				rows = append(rows, []string{w.GetId(), orDash(w.GetName()), w.GetOverlayCidr()})
+			}
+			client.PrintTable(os.Stdout, []string{"ID", "NAME", "OVERLAY"}, rows)
 			return nil
 		},
 	}

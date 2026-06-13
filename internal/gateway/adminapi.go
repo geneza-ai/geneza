@@ -20,7 +20,6 @@ import (
 
 	"osie.cloud/geneza/internal/defaults"
 	genezav1 "osie.cloud/geneza/internal/pb/geneza/v1"
-	"osie.cloud/geneza/internal/policy"
 	"osie.cloud/geneza/internal/types"
 )
 
@@ -121,6 +120,19 @@ func (a *adminAPIService) ApproveNode(ctx context.Context, req *genezav1.Approve
 	}
 	slog.Info("node approval changed", "node", node.ID, "name", node.Name, "approved", req.GetApprove(), "by", by)
 	return &genezav1.Empty{}, nil
+}
+
+// ListWorkspaces lists the tenants this gateway hosts (from the store registry).
+func (a *adminAPIService) ListWorkspaces(ctx context.Context, _ *genezav1.Empty) (*genezav1.ListWorkspacesResponse, error) {
+	wss, err := a.s.store.ListWorkspaces()
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "list workspaces: %v", err)
+	}
+	out := make([]*genezav1.WorkspaceInfo, 0, len(wss))
+	for _, w := range wss {
+		out = append(out, &genezav1.WorkspaceInfo{Id: w.ID, Name: w.Name, OverlayCidr: w.OverlayCIDR})
+	}
+	return &genezav1.ListWorkspacesResponse{Workspaces: out}, nil
 }
 
 // RemoveNode decommissions a machine: revoke its live sessions, then delete the
@@ -369,12 +381,10 @@ func (a *adminAPIService) GetFleetStatus(ctx context.Context, _ *genezav1.Empty)
 
 func (a *adminAPIService) ReloadPolicy(ctx context.Context, _ *genezav1.Empty) (*genezav1.Empty, error) {
 	s := a.s
-	engine, err := policy.Load(s.cfg.PolicyFile)
-	if err != nil {
-		// Fail closed: the previous policy stays in force.
+	// Reload every workspace's policy file (fail closed: previous stays on error).
+	if err := s.reloadPolicies(); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "policy reload failed (previous policy kept): %v", err)
 	}
-	s.setPolicy(engine)
 	if err := s.audit.Append("policy_reload", adminActor(ctx), "", "", map[string]string{
 		"file": s.cfg.PolicyFile,
 	}); err != nil {

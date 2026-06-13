@@ -47,8 +47,9 @@ type Server struct {
 
 	enrollProviders map[string]EnrollProvider
 
-	policyMu     sync.RWMutex
-	policyEngine policy.Engine
+	policyMu      sync.RWMutex
+	policyEngines map[string]policy.Engine // per-workspace
+	members       []WorkspaceConfig        // membership (from config)
 
 	ccMu      sync.RWMutex
 	ccVersion int64
@@ -98,9 +99,15 @@ func New(cfg *Config) (*Server, error) {
 			return nil, fmt.Errorf("load artifact pubkey: %w", err)
 		}
 	}
-	engine, err := policy.Load(cfg.PolicyFile)
-	if err != nil {
-		return nil, fmt.Errorf("load policy: %w", err)
+	// One policy engine per workspace (config-driven). applyDefaults guarantees a
+	// "default" workspace whose policy_file = the top-level policy_file.
+	engines := make(map[string]policy.Engine, len(cfg.Workspaces))
+	for _, w := range cfg.Workspaces {
+		eng, err := policy.Load(w.PolicyFile)
+		if err != nil {
+			return nil, fmt.Errorf("load policy for workspace %q (%s): %w", w.ID, w.PolicyFile, err)
+		}
+		engines[w.ID] = eng
 	}
 	store, err := OpenStore(cfg.StatePath())
 	if err != nil {
@@ -118,29 +125,36 @@ func New(cfg *Config) (*Server, error) {
 	}
 
 	s := &Server{
-		cfg:          cfg,
-		ca:           caInst,
-		store:        store,
-		audit:        audit,
-		registry:     NewRegistry(),
-		identity:     newIdentityAuth(cfg),
-		grantKey:     grantKey,
-		grantKeyID:   grantKeyID,
-		artifactPub:  artifactPub,
-		tlsCert:      tlsCert,
-		policyEngine: engine,
-		overlays:     map[string]*overlayAllocator{},
-		resolver:     genezadns.NewResolver(cfg.dnsZone()),
+		cfg:           cfg,
+		ca:            caInst,
+		store:         store,
+		audit:         audit,
+		registry:      NewRegistry(),
+		identity:      newIdentityAuth(cfg),
+		grantKey:      grantKey,
+		grantKeyID:    grantKeyID,
+		artifactPub:   artifactPub,
+		tlsCert:       tlsCert,
+		policyEngines: engines,
+		members:       cfg.Workspaces,
+		overlays:      map[string]*overlayAllocator{},
+		resolver:      genezadns.NewResolver(cfg.dnsZone()),
 	}
 	s.enrollProviders = map[string]EnrollProvider{
 		"token":              &tokenProvider{store: store},
 		"openstack-metadata": &openstackMetadataProvider{},
 	}
-	// Ensure the default workspace exists (with one default Network + Subnet) so a
-	// single-tenant deployment is a one-workspace tenant; idempotent.
-	if err := s.ensureWorkspace(defaultWorkspace, "Default", defaultOverlayCIDR); err != nil {
-		s.Close()
-		return nil, fmt.Errorf("bootstrap default workspace: %w", err)
+	// Ensure each configured workspace exists in the store (record + one default
+	// Network + Subnet); idempotent. The default workspace is always present.
+	for _, w := range cfg.Workspaces {
+		name := w.Name
+		if name == "" {
+			name = w.ID
+		}
+		if err := s.ensureWorkspace(w.ID, name, w.OverlayCIDR); err != nil {
+			s.Close()
+			return nil, fmt.Errorf("bootstrap workspace %q: %w", w.ID, err)
+		}
 	}
 	s.broker = NewBroker(store, audit, s.registry, s.policyFor, s.overlayFor,
 		grantKey, grantKeyID, cfg.RelayAddrs, cfg.GrantTTL.D(), cfg.DefaultMaxSessionTTL.D())
@@ -179,22 +193,71 @@ func (s *Server) Close() {
 
 // --- policy hot-swap ---
 
-func (s *Server) policy() policy.Engine {
+// policyFor returns the policy engine for a workspace, or a fail-closed deny-all
+// engine for an unknown/unconfigured workspace (never a default fallback).
+func (s *Server) policyFor(ws string) policy.Engine {
 	s.policyMu.RLock()
 	defer s.policyMu.RUnlock()
-	return s.policyEngine
+	if e := s.policyEngines[ws]; e != nil {
+		return e
+	}
+	return denyAllPolicy{}
 }
 
-func (s *Server) setPolicy(e policy.Engine) {
+// policy returns the default workspace's engine (compat for the console's
+// pre-workspace-resolution role lookup).
+func (s *Server) policy() policy.Engine { return s.policyFor(defaultWorkspace) }
+
+// reloadPolicies re-loads every workspace's policy file (admin ReloadPolicy).
+func (s *Server) reloadPolicies() error {
+	engines := make(map[string]policy.Engine, len(s.cfg.Workspaces))
+	for _, w := range s.cfg.Workspaces {
+		eng, err := policy.Load(w.PolicyFile)
+		if err != nil {
+			return fmt.Errorf("workspace %q (%s): %w", w.ID, w.PolicyFile, err)
+		}
+		engines[w.ID] = eng
+	}
 	s.policyMu.Lock()
-	s.policyEngine = e
+	s.policyEngines = engines
 	s.policyMu.Unlock()
+	return nil
 }
 
-// policyFor returns the policy engine for a workspace. Phase 1 runs one engine
-// for all workspaces (per-workspace policy files are a later refinement); the
-// per-workspace accessor is the seam that makes that drop-in.
-func (s *Server) policyFor(ws string) policy.Engine { return s.policy() }
+// workspacesForUser returns the workspaces a principal may log into: those whose
+// membership matches (username or IdP group), plus every OPEN workspace.
+func (s *Server) workspacesForUser(user string, groups []string) []string {
+	gset := make(map[string]bool, len(groups))
+	for _, g := range groups {
+		gset[g] = true
+	}
+	var out []string
+	for _, w := range s.members {
+		member := w.open()
+		for _, u := range w.Members {
+			if u == user {
+				member = true
+			}
+		}
+		for _, g := range w.MemberGroups {
+			if gset[g] {
+				member = true
+			}
+		}
+		if member {
+			out = append(out, w.ID)
+		}
+	}
+	return out
+}
+
+// denyAllPolicy is the fail-closed engine returned for an unknown workspace.
+type denyAllPolicy struct{}
+
+func (denyAllPolicy) Evaluate(policy.Input) policy.Decision {
+	return policy.Decision{Allow: false, Reason: "unknown workspace"}
+}
+func (denyAllPolicy) RolesFor(string, []string) []string { return nil }
 
 // overlayFor returns the per-workspace overlay allocator, creating it on first
 // use. Each workspace gets its own 100.64/24 namespace so two tenants never

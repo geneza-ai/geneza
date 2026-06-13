@@ -131,12 +131,31 @@ func (s *Server) handleLogin(ctx context.Context, req *genezav1.LoginRequest) (*
 		}
 		return nil, status.Errorf(codes.Unauthenticated, "login failed: %v", err)
 	}
-	// Resolve the workspace to mint a cert for. Phase 1: honor the requested
-	// workspace (default if unset); roles come from that workspace's policy.
-	// Phase 2 adds membership validation (deny a workspace the user isn't in).
+	// Resolve the workspace to mint a cert for, validated against membership.
+	// A requested workspace must be one the user belongs to; if none requested
+	// and the user belongs to exactly one, use it; if several, return the
+	// candidates so the client re-logs in with a choice; if none, deny.
+	cands := s.workspacesForUser(user, groups)
 	ws := req.GetWorkspace()
-	if ws == "" {
-		ws = defaultWorkspace
+	if ws != "" {
+		if !contains(cands, ws) {
+			if aerr := s.audit.Append("login_denied", user, "", "", map[string]string{
+				"provider": provider, "reason": "not a member of workspace " + ws,
+			}); aerr != nil {
+				return nil, status.Errorf(codes.Internal, "audit append: %v", aerr)
+			}
+			return nil, status.Errorf(codes.PermissionDenied, "user %q is not a member of workspace %q", user, ws)
+		}
+	} else {
+		switch len(cands) {
+		case 0:
+			return nil, status.Errorf(codes.PermissionDenied, "user %q belongs to no workspace", user)
+		case 1:
+			ws = cands[0]
+		default:
+			// Ambiguous: let the client pick from the candidates and retry.
+			return &genezav1.LoginResponse{User: user, AvailableWorkspaces: cands}, nil
+		}
 	}
 	roles := s.policyFor(ws).RolesFor(user, groups)
 	if len(roles) == 0 {

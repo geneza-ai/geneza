@@ -18,6 +18,7 @@ type Profile struct {
 	GatewayGRPC string `json:"gateway_grpc"` // host:7401
 	GatewayHTTP string `json:"gateway_http"` // https://host:7402
 	User        string `json:"user,omitempty"`
+	Workspace   string `json:"workspace,omitempty"` // tenant the cert is scoped to
 	Provider    string `json:"provider,omitempty"`
 	// CASHA256 pins the SHA-256 (hex) of the ca.pem bundle accepted at login
 	// (TOFU or --ca-file). Every later load fails closed on a mismatch.

@@ -644,6 +644,7 @@ var UserAPI_ServiceDesc = grpc.ServiceDesc{
 const (
 	AdminAPI_CreateJoinToken_FullMethodName   = "/geneza.v1.AdminAPI/CreateJoinToken"
 	AdminAPI_ApproveNode_FullMethodName       = "/geneza.v1.AdminAPI/ApproveNode"
+	AdminAPI_ListWorkspaces_FullMethodName    = "/geneza.v1.AdminAPI/ListWorkspaces"
 	AdminAPI_RemoveNode_FullMethodName        = "/geneza.v1.AdminAPI/RemoveNode"
 	AdminAPI_PublishArtifact_FullMethodName   = "/geneza.v1.AdminAPI/PublishArtifact"
 	AdminAPI_SetDesiredVersion_FullMethodName = "/geneza.v1.AdminAPI/SetDesiredVersion"
@@ -665,6 +666,8 @@ type AdminAPIClient interface {
 	// control): an unapproved node has an identity but no session can be brokered
 	// to it until an admin approves. approve=false re-quarantines a node.
 	ApproveNode(ctx context.Context, in *ApproveNodeRequest, opts ...grpc.CallOption) (*Empty, error)
+	// ListWorkspaces lists the tenants this gateway hosts.
+	ListWorkspaces(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*ListWorkspacesResponse, error)
 	// RemoveNode decommissions a machine: deletes its record so it no longer
 	// appears in the fleet and must re-enroll (and re-be-approved) to return.
 	RemoveNode(ctx context.Context, in *RemoveNodeRequest, opts ...grpc.CallOption) (*Empty, error)
@@ -705,6 +708,16 @@ func (c *adminAPIClient) ApproveNode(ctx context.Context, in *ApproveNodeRequest
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(Empty)
 	err := c.cc.Invoke(ctx, AdminAPI_ApproveNode_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *adminAPIClient) ListWorkspaces(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*ListWorkspacesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListWorkspacesResponse)
+	err := c.cc.Invoke(ctx, AdminAPI_ListWorkspaces_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -823,6 +836,8 @@ type AdminAPIServer interface {
 	// control): an unapproved node has an identity but no session can be brokered
 	// to it until an admin approves. approve=false re-quarantines a node.
 	ApproveNode(context.Context, *ApproveNodeRequest) (*Empty, error)
+	// ListWorkspaces lists the tenants this gateway hosts.
+	ListWorkspaces(context.Context, *Empty) (*ListWorkspacesResponse, error)
 	// RemoveNode decommissions a machine: deletes its record so it no longer
 	// appears in the fleet and must re-enroll (and re-be-approved) to return.
 	RemoveNode(context.Context, *RemoveNodeRequest) (*Empty, error)
@@ -854,6 +869,9 @@ func (UnimplementedAdminAPIServer) CreateJoinToken(context.Context, *CreateJoinT
 }
 func (UnimplementedAdminAPIServer) ApproveNode(context.Context, *ApproveNodeRequest) (*Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method ApproveNode not implemented")
+}
+func (UnimplementedAdminAPIServer) ListWorkspaces(context.Context, *Empty) (*ListWorkspacesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListWorkspaces not implemented")
 }
 func (UnimplementedAdminAPIServer) RemoveNode(context.Context, *RemoveNodeRequest) (*Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method RemoveNode not implemented")
@@ -938,6 +956,24 @@ func _AdminAPI_ApproveNode_Handler(srv interface{}, ctx context.Context, dec fun
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(AdminAPIServer).ApproveNode(ctx, req.(*ApproveNodeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AdminAPI_ListWorkspaces_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminAPIServer).ListWorkspaces(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminAPI_ListWorkspaces_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminAPIServer).ListWorkspaces(ctx, req.(*Empty))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1125,6 +1161,10 @@ var AdminAPI_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ApproveNode",
 			Handler:    _AdminAPI_ApproveNode_Handler,
+		},
+		{
+			MethodName: "ListWorkspaces",
+			Handler:    _AdminAPI_ListWorkspaces_Handler,
 		},
 		{
 			MethodName: "RemoveNode",
