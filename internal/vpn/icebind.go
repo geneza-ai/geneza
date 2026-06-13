@@ -301,7 +301,7 @@ func (b *ICEBind) ensurePeer(s PeerSetup) {
 		}
 	})
 	_ = a.OnConnectionStateChange(func(st ice.ConnectionState) {
-		b.log.Debug("ice state", "peer", shortHex(s.WGPub), "state", st.String())
+		b.log.Info("ice state", "peer", shortHex(s.WGPub), "state", st.String())
 		switch st {
 		case ice.ConnectionStateConnected:
 			p.mu.Lock()
