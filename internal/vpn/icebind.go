@@ -72,8 +72,6 @@ type peerICE struct {
 	cancel       context.CancelFunc
 	remoteUfrag  string
 	remotePwd    string
-	setRemoteU   string // remote creds currently applied to the agent
-	setRemoteP   string
 	connecting   bool
 	iceConnected bool // ICE state == Connected (distinct from conn!=nil, which survives a restart)
 	restarting   bool
@@ -310,10 +308,11 @@ func (b *ICEBind) ensurePeer(s PeerSetup) {
 			p.mu.Unlock()
 		case ice.ConnectionStateFailed:
 			// Recovery from a path failure (e.g. the relay restarted, killing the
-			// selected pair) on an ALREADY-established conn: pion's in-place
-			// agent.Restart re-gathers + re-runs checks under the SAME *ice.Conn
-			// (no re-Dial, no new conn), so WG never re-handshakes. Both peers'
-			// pairs fail together, both restart, both re-exchange creds -> reconnect.
+			// selected pair). pion's in-place agent.Restart does NOT reliably resume
+			// the check loop for an established agent, so we fully RECREATE the peer's
+			// ICE agent (fresh Dial), reusing the proven initial-connect path. The WG
+			// endpoint is gz:<wgpub> (unchanged), so the bind just swaps to the new
+			// *ice.Conn — WG keeps its session (no re-handshake within the rekey window).
 			p.mu.Lock()
 			established := p.conn != nil && !p.restarting
 			if established {
@@ -322,7 +321,7 @@ func (b *ICEBind) ensurePeer(s PeerSetup) {
 			p.iceConnected = false
 			p.mu.Unlock()
 			if established {
-				go b.restartICE(p, sink)
+				go b.recreatePeer(p)
 			}
 		case ice.ConnectionStateDisconnected:
 			p.mu.Lock()
@@ -360,6 +359,12 @@ func (b *ICEBind) reannounce(p *peerICE, sink SignalSink, ufrag, pwd string) {
 	}
 	for i := 0; i < 20; i++ {
 		time.Sleep(2 * time.Second)
+		b.mu.Lock()
+		replaced := b.peers[p.wgPub] != p
+		b.mu.Unlock()
+		if replaced {
+			return // this peerICE was recreated; its re-announce goroutine is stale
+		}
 		p.mu.Lock()
 		connected := p.iceConnected
 		cands := append([]string(nil), p.localCands...)
@@ -374,30 +379,39 @@ func (b *ICEBind) reannounce(p *peerICE, sink SignalSink, ufrag, pwd string) {
 	}
 }
 
-// restartICE performs an in-place ICE restart after a path failure: fresh local
-// creds, re-gather (new TURN allocation on the recovered relay), re-announce. The
-// *ice.Conn is preserved, so WireGuard never re-handshakes; the peer adopts our
-// new creds via SetRemoteCredentials (OnICECreds), and connectivity checks re-run.
-func (b *ICEBind) restartICE(p *peerICE, sink SignalSink) {
-	if err := p.agent.Restart("", ""); err != nil {
-		b.log.Warn("ice restart failed", "peer", shortHex(p.wgPub), "err", err)
-		p.mu.Lock()
-		p.restarting = false
-		p.mu.Unlock()
-		return
+// recreatePeer tears down a failed peer's ICE agent and rebuilds it from scratch
+// (fresh agent + fresh Dial), reusing the initial-connect path. Both peers' pairs
+// fail together on a relay restart, so both recreate and reconverge via the same
+// re-announce mechanism that brought them up initially. Bounded by pion's
+// FailedTimeout (~25s) per attempt; a brief asymmetric-timing window may need one
+// extra cycle. The WG endpoint (gz:<wgpub>) is unchanged, so the bind swaps to
+// the new *ice.Conn transparently — no WG re-handshake within the rekey window.
+func (b *ICEBind) recreatePeer(p *peerICE) {
+	b.mu.Lock()
+	if b.closed || b.peers[p.wgPub] != p {
+		b.mu.Unlock()
+		return // already replaced or shutting down
 	}
-	ufrag, pwd, _ := p.agent.GetLocalUserCredentials()
+	delete(b.peers, p.wgPub)
+	setup := p.setup
+	b.mu.Unlock()
+
 	p.mu.Lock()
-	p.localCands = nil // old candidates (old relay allocation) are dead
+	if p.cancel != nil {
+		p.cancel()
+	}
 	p.mu.Unlock()
-	b.log.Info("ice restart: re-gathering after path failure", "peer", shortHex(p.wgPub))
-	if sink != nil {
-		sink.SendICECreds(b.vni, p.wgPub, ufrag, pwd)
+	if p.agent != nil {
+		_ = p.agent.Close()
 	}
-	if err := p.agent.GatherCandidates(); err != nil {
-		b.log.Warn("ice re-gather failed", "peer", shortHex(p.wgPub), "err", err)
+	b.log.Info("ice path failed; recreating peer agent", "peer", shortHex(p.wgPub))
+	time.Sleep(2 * time.Second) // brief backoff (also lets a restarted relay settle)
+	b.mu.Lock()
+	closed := b.closed
+	b.mu.Unlock()
+	if !closed {
+		b.ensurePeer(setup)
 	}
-	go b.reannounce(p, sink, ufrag, pwd) // re-send until reconnected
 }
 
 // AddRemoteCandidate feeds a peer's gateway-forwarded ICE candidate to its agent.
@@ -432,22 +446,13 @@ func (b *ICEBind) OnICECreds(peerWGPub [32]byte, ufrag, pwd string) {
 	}
 	p.mu.Lock()
 	p.remoteUfrag, p.remotePwd = ufrag, pwd
-	switch {
-	case !p.connecting && p.conn == nil:
-		// initial: one-shot Dial/Accept
+	start := !p.connecting && p.conn == nil
+	if start {
 		p.connecting = true
-		p.mu.Unlock()
-		go b.connect(p)
-	case p.conn != nil && (ufrag != p.setRemoteU || pwd != p.setRemoteP):
-		// peer did an ICE restart (new creds) -> adopt in place, no re-Dial
-		p.setRemoteU, p.setRemoteP = ufrag, pwd
-		ag := p.agent
-		p.mu.Unlock()
-		if err := ag.SetRemoteCredentials(ufrag, pwd); err != nil {
-			b.log.Warn("set remote creds (peer restart)", "peer", shortHex(peerWGPub), "err", err)
-		}
-	default:
-		p.mu.Unlock()
+	}
+	p.mu.Unlock()
+	if start {
+		go b.connect(p) // one-shot Dial/Accept (recovery is via recreatePeer)
 	}
 }
 
@@ -478,7 +483,6 @@ func (b *ICEBind) connect(p *peerICE) {
 	}
 	p.mu.Lock()
 	p.conn = c
-	p.setRemoteU, p.setRemoteP = rufrag, rpwd
 	p.mu.Unlock()
 	b.log.Info("ice connected", "peer", shortHex(p.wgPub), "controlling", ctrl)
 
