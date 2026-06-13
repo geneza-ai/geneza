@@ -119,6 +119,9 @@ func (a *adminAPIService) ApproveNode(ctx context.Context, req *genezav1.Approve
 		return nil, status.Errorf(codes.Internal, "audit append: %v", err)
 	}
 	slog.Info("node approval changed", "node", node.ID, "name", node.Name, "approved", req.GetApprove(), "by", by)
+	// Approval gates Network membership: a newly approved node must appear in
+	// every co-member's peer set (and a de-approved one must vanish from it).
+	s.repushAllNetworks(ws)
 	return &genezav1.Empty{}, nil
 }
 
@@ -166,6 +169,8 @@ func (a *adminAPIService) RemoveNode(ctx context.Context, req *genezav1.RemoveNo
 		return nil, status.Errorf(codes.Internal, "audit append: %v", err)
 	}
 	slog.Info("node removed", "node", node.ID, "name", node.Name, "by", adminActor(ctx))
+	// Symmetric teardown: drop the removed node from every co-member's peer set.
+	s.repushAllNetworks(ws)
 	return &genezav1.Empty{}, nil
 }
 

@@ -346,6 +346,7 @@ func (c *consoleAPI) handleApproveNode(w http.ResponseWriter, r *http.Request, u
 		decision = "revoke_approval"
 	}
 	_ = c.s.audit.Append("node_approval", by, node.ID, "", map[string]string{"decision": decision, "name": node.Name})
+	c.s.repushAllNetworks(u.Workspace) // propagate membership change to co-members
 	writeJSON(w, map[string]any{"ok": true, "approved": body.Approve})
 }
 
@@ -370,6 +371,7 @@ func (c *consoleAPI) handleRemoveNode(w http.ResponseWriter, r *http.Request, u 
 		return
 	}
 	_ = c.s.audit.Append("node_remove", "console:"+u.Name, node.ID, "", map[string]string{"name": node.Name})
+	c.s.repushAllNetworks(u.Workspace) // symmetric teardown across co-members
 	writeJSON(w, map[string]any{"ok": true})
 }
 
