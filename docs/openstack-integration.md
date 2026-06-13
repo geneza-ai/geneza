@@ -1,123 +1,314 @@
-# OpenStack metadata enrollment + boot-time agent (PoC seam)
+# OpenStack → Geneza integration — design spec
 
-This document specifies the integration seam that lets a Geneza agent enroll
-itself **at VM boot** using the cloud's instance identity, with **no join token
-to distribute** — the tokenless path described in ARCHITECTURE.md §5
-("cloud instance identity docs ... one-time tokens otherwise").
+**Status:** design (2026-06-13). Trust model + wire format **empirically validated**
+on the kolla1 lab (Nova 2026.1): live vendordata capture, Keystone token
+validation, and project→domain resolution all confirmed (see "Validated facts").
+Supersedes the earlier seam draft (which wrongly assumed Nova signs metadata —
+**it does not**; see §3).
 
-The seam is already wired in the gateway: `internal/gateway/enroll.go` defines
-an `EnrollmentProvider` interface and registers two providers —
+The integration has two independent planes; build them separately:
 
-- `token` — implemented; single-use, expiring join tokens.
-- `openstack-metadata` — **registered as a stub** that returns
-  `codes.Unimplemented`. This file is the spec for filling it in.
+- **Enrollment plane** (this spec's focus, PoC): a VM **auto-joins Geneza at boot**
+  via the cloud's metadata, no pre-distributed secret. After it joins, it is a
+  normal Geneza node — reachable from `geneza ssh`/`exec` and the overlay.
+- **Access plane** (§10, design): a human, **already authenticated to OpenStack**,
+  drives Geneza (web shell / CLI) by presenting a **Keystone token** that Geneza
+  validates — no separate Geneza login.
 
-Nothing else in the system needs to change to add a provider: the agent already
-sends `provider` + `provider_document` in `EnrollRequest`, and the gateway
-dispatches on `provider`.
+---
 
-## How OpenStack instance identity works
+## 1. Goal & non-goals
 
-An OpenStack instance can prove its identity to an external service without any
-pre-shared secret using the **signed instance identity document** exposed via
-the metadata service / config drive:
+**Goal:** `openstack server create … --property geneza.workspace=…` → the VM boots,
+enrolls into the correct **Geneza workspace** (derived from its OpenStack tenancy,
+not chosen by the courier), and is reachable over the Geneza overlay + in-network
+DNS from co-members (e.g. `geneza-laptop`), with **zero operator action per VM**.
+
+**Non-goals (deferred):** the access-plane web-shell-in-Horizon SSO (§10 is design
+only); forked cloud-init / custom Glance image (stock image suffices, §9);
+multi-cloud providers beyond OpenStack (§11 sketches the generalization).
+
+---
+
+## 2. Trust model (the spine)
+
+OpenStack separates **identity/trust** from **tenancy** at different levels, so
+Geneza must too:
+
+| OpenStack | role | Geneza |
+|---|---|---|
+| **Domain** | identity/trust root (per-domain federation/IdP) | maps to a **realm** + onboarding decision |
+| **Project** | tenancy unit (a VM belongs to one) | maps to a **workspace** (many projects → one workspace allowed) |
+
+Two hard facts force a **domain-keyed, default-deny onboarding registry**:
+
+1. **Keystone trust is per-domain** — different domains may federate different
+   IdPs (or be local SQL). There is no single cloud-wide identity to trust.
+2. **Dynamic vendordata is cloud-wide** — Nova calls the configured endpoint for
+   **every** instance in **every** project/domain. A Nova-authenticated call only
+   proves *"a real instance somewhere in this cloud"* — **not** that Geneza should
+   serve it. **Default = deny**; only onboarded domains are honored.
+
+---
+
+## 3. Reality check: OpenStack does NOT sign metadata
+
+Unlike AWS (signed Instance Identity Document + published region cert) or GCP/Azure
+(signed identity JWT / attested document), **vanilla Nova metadata is unsigned
+plaintext.** There is **no cloud public key**, no offline-verifiable instance
+identity. So the trust anchor is **not a signature** — it is:
+
+- **The authenticated `vendordata` call** (Nova attaches its Keystone service
+  token — Geneza validates it → "Nova called me"), plus
+- **A gateway→Keystone/Nova callback** (resolve/verify the instance's project,
+  optionally confirm it is `ACTIVE`).
+
+This is the courier/callback model, not the SPIFFE/attestation model AWS allows.
+
+---
+
+## 4. Validated facts (live, kolla1 / Nova 2026.1)
+
+**Nova's dynamic-vendordata request** (captured from a real boot):
 
 ```
-GET http://169.254.169.254/openstack/latest/meta_data.json   # claims (uuid, name, project_id, ...)
-GET http://169.254.169.254/openstack/latest/vendor_data2.json # optional vendordata
+POST <target-url>                          # exactly the configured vendordata_dynamic_targets URL
+Host: <host:port>
+User-Agent: openstack-nova-vendordata      # distinctive — secondary "is this Nova?" signal
+Content-Type: application/json
+Accept: application/json
+X-Auth-Token: gAAAAAB…                      # Nova's SERVICE Keystone token (Fernet)
+Content-Length: …
+
+{ "project-id":  "<instance's project UUID>",
+  "instance-id": "<instance UUID>",
+  "image-id":    "<image UUID>",
+  "user-data":   <raw user-data or null>,
+  "hostname":    "<instance hostname>",
+  "metadata":    { <instance key/value metadata> },
+  "boot-roles":  "reader,member,admin,…" }   # COMMA-SEPARATED STRING (not an array)
 ```
 
-Nova can also issue a **signed** document; where the deployment provides one
-(e.g. via a Barbican-backed signing key or the `vendordata` dynamic plugin),
-the agent fetches the signature and the gateway verifies it against the cloud's
-published certificate. Where a deployment does *not* expose a signed document,
-the equivalent trust is obtained by having the gateway **call back to Keystone**
-to validate an instance-scoped token, or by validating the instance UUID +
-project against the Nova API over the management network. Both are supported
-shapes of the same provider.
+Confirmed against Keystone:
+- **`X-Auth-Token` validates** (`GET /v3/auth/tokens` → 200): caller = `nova`,
+  project = `service`, domain = `Default`, roles include `admin`/`reader`, 24h TTL.
+- **The same token can `GET /v3/projects/<id>` → `domain_id`** (200) — so in kolla
+  Geneza needs **no separate Keystone cred**; it reuses the presented token.
 
-## Agent side (already structured for this)
+**Behavioral gotchas that change the design:**
+1. **Nova hits the endpoint ~5× per instance build** (all within milliseconds).
+   The endpoint **MUST be idempotent** — dedupe on `instance-id` and mint **one**
+   token, or you cut 5 join tokens per VM.
+2. **Which Nova service calls it depends on the metadata path:**
+   - **config-drive** → generated by **`nova-compute`** at build (put the config
+     in nova-compute). Required when the network metadata path is unreachable.
+   - **network metadata** (`169.254.169.254`) → served by **`nova-metadata`**
+     (needs DHCP isolated-metadata or a router; absent on a `--no-dhcp` provider
+     net). On the kolla1 all-in-one we used **config-drive + nova-compute**.
+3. **cloud-init nesting trap:** Nova wraps each target's response under the target
+   **name** in `vendor_data2.json`. Stock cloud-init only runs a **top-level**
+   `cloud-init` key — so the Nova target MUST be named `cloud-init`
+   (`vendordata_dynamic_targets = cloud-init@http://…`), making the file
+   `{"cloud-init": "#cloud-config…"}`. Then **no forked cloud-init / custom image**
+   is needed.
 
-`geneza-agent enroll` takes `--provider`. Today it sends `provider=token`. The
-PoC adds `--provider openstack-metadata`, on which the agent:
+---
 
-1. Reads `meta_data.json` (and the signature/vendordata if present) from
-   `169.254.169.254` or the config-drive mount.
-2. Puts the raw document bytes in `EnrollRequest.provider_document` and the
-   instance name in `requested_name`.
-3. Sends the same CSR + Noise static key as the token path.
+## 5. The locked resolution rule (domain for mapping)
 
-Everything after enrollment (cert custody, control channel, session handling)
-is **provider-independent** and already done.
+Use the **instance project's** domain — never the token's user/project domain (the
+caller is always `nova`/`service`):
 
-## Gateway side (to implement)
-
-Replace the stub in `enroll.go`:
-
-```go
-type openstackProvider struct {
-    keystoneURL string
-    novaURL     string
-    trustRoots  *x509.CertPool // cloud's instance-document signing chain
-    httpc       *http.Client
-}
-
-func (p *openstackProvider) Name() string { return "openstack-metadata" }
-
-func (p *openstackProvider) Verify(ctx context.Context, req *genezav1.EnrollRequest) (labels map[string]string, name string, err error) {
-    // 1. Parse req.provider_document as the OpenStack meta_data.json (+ signature).
-    // 2. Verify the signature against p.trustRoots, OR validate the instance
-    //    via Keystone/Nova (uuid + project_id must reference a running instance).
-    // 3. Enforce a binding policy: which projects/images/keypairs/metadata tags
-    //    are allowed to enroll, and with which labels.
-    // 4. Return labels derived from instance metadata (project_id, az, flavor,
-    //    server-group, user metadata `geneza.role=...`) and the instance name.
-    //    Reject (error) on any mismatch — fail closed.
-}
+```
+domain_for_mapping = keystone.GET("/v3/projects/" + body["project-id"]).project.domain_id
+#   NOT token.user.domain  (= nova)
+#   NOT token.project.domain (= the service project, the caller's scope)
 ```
 
-Registration (already present, swap the stub for the real one):
+The token is used ONLY to (a) authenticate the caller as Nova and (b) authorize
+that project lookup; its own domains are discarded.
 
-```go
-gw.enrollers["openstack-metadata"] = &openstackProvider{ ... } // config-driven
-```
+> **Trap (we hit this live):** the token-validation body *does* contain a
+> `project.domain` — but it is the **caller's** (`nova`/`service`), not the
+> instance's. In a single-domain cloud both happen to be `default`, so the token's
+> `project.domain` *coincidentally* matches and looks usable. In a multi-domain
+> cloud (instance in domain `geneza`, Nova's service account in `default`) it is
+> **wrong**. Always resolve the instance's project (`body.project-id`), never read
+> the domain off the courier token.
 
-### Anti-replay
+---
 
-The instance document is long-lived, so the gateway must prevent a captured
-document from enrolling twice: key the dedupe on instance UUID and refuse a
-second enrollment for a UUID that already has a live node, unless the existing
-node's cert has expired (instance was rebuilt). This mirrors the single-use
-semantics of the token provider.
+## 6. Onboarding registry & workspace mapping
 
-## Boot-time install (cloud-init)
-
-`cloud-init/geneza-agent.cloud-config.tmpl` installs the bootstrap at first
-boot and points it at the gateway. With the OpenStack provider, **no token is
-templated in** — the instance authenticates with its own identity:
+**Domain-keyed, default-deny.** Operator config (few entries; projects self-fill):
 
 ```yaml
+openstack:
+  enabled: true
+  keystone_url: http://<internal-vip>:5000/v3
+  # Geneza's own reader cred — FALLBACK for hardened clouds where the Nova token
+  # cannot read projects; in kolla the presented Nova token suffices and this is unused.
+  reader_creds: { username, password, project_name, user_domain_id, project_domain_id }
+  onboarding_domains:
+    <keystone-domain-id>:
+      enabled: true
+      realm: geneza                 # IdP backing this domain (for the access plane)
+      auto_approve: true            # PoC: VM joins without manual admission (prod: false)
+      default_labels: { env: lab, cloud: kolla1 }
+      join_policy: bind-list        # how projects map to workspaces (below)
+```
+
+**Project → workspace** is **authoritative in Geneza, validated, admission-gated**
+(reuse the node-admission pattern — *not* tenant-set tags, which are typo-prone and
+mutable). Two policies:
+
+- `bind-list` (default, safest): a Geneza admin binds projects to a workspace:
+  `geneza admin workspace <ws> bind-project <project-id|name>` → validated against
+  Keystone, recorded, audited. An unbound project's VM lands **PENDING /
+  "unrecognized project"** in the console (surfaced, never silently misrouted).
+- `tag-hint` (optional, automatic-within-a-domain): a project tag
+  `geneza.workspace=<name>` *pre-fills* the binding (admin confirms), or
+  auto-binds only inside a single-trust domain. Namespaced by domain so a project
+  can never name a foreign domain's workspace.
+
+A workspace may bind **many** projects (workspace ↔ list of projects). For the
+laptop (user) and the VM (node) to share workspace **W**, both the user's
+realm/group → W and the project binding → W must resolve to W (anchor both to the
+domain's realm).
+
+---
+
+## 7. Geneza vendordata endpoint (the contract)
+
+A plain-HTTP listener (`gateway.yaml: vendordata_listen: ":7407"`), reachable from
+Nova; PoC uses HTTP (no CA trust needed), productize to mTLS / Nova-source
+allowlist. `POST /openstack/vendordata`:
+
+```
+1. Read X-Auth-Token; validate via Keystone GET /v3/auth/tokens.
+   Require the caller be the Nova service identity (user=nova / project=service);
+   optionally also require User-Agent: openstack-nova-vendordata.   → else 401, log.
+2. Parse body (hyphenated keys). domain := GET /v3/projects/{project-id}.domain_id   (§5).
+3. Registry lookup on domain (DEFAULT-DENY): not enabled → return {} (do not honor).
+4. Resolve project → workspace (§6 join_policy). Unbound + auto_approve=false →
+   surface PENDING, return {}.
+5. IDEMPOTENCY (Nova hits ~5×): dedupe on instance-id. If a token was already
+   minted for this instance-id (and no live node/cert yet), RETURN THE SAME ONE.
+   Single-node-per-UUID anti-replay (refuse a 2nd live node for a UUID unless its
+   cert expired = rebuild).
+6. Mint a bounded join token via the existing tokenProvider: workspace-scoped,
+   short TTL (~1h, covers boot), labels = registry.default_labels (+ optional from
+   instance metadata / boot-roles), auto_approve per registry.
+7. (defense-in-depth, optional) GET /v3/servers/{instance-id} → require ACTIVE in
+   that project before minting.
+8. Return: {"cloud-init": "#cloud-config\n" + render(cloud-init template)}
+   with @PROVIDER@=token, @JOIN_TOKEN@=<minted>, @GATEWAY_HOST@=<public FQDN>,
+   pinned artifact.pub fingerprint.
+```
+
+---
+
+## 8. Geneza OpenStack client (gophercloud)
+
+`internal/gateway/openstack.go`, `go get github.com/gophercloud/gophercloud/v2`:
+- `ValidateNovaToken(ctx, token) → (user, project, ok)` (Keystone token validate).
+- `ResolveProjectDomain(ctx, projectID) → domainID` (identity v3 `projects.Get`),
+  using the **presented Nova token** (kolla) or `reader_creds` (fallback).
+- `GetServerStatus(ctx, instanceID) → status` (optional ACTIVE check).
+
+---
+
+## 9. Agent / cloud-init side
+
+**No forked cloud-init, no custom image for the PoC.** Stock Ubuntu 24.04 cloud
+image. The vendordata endpoint returns a `#cloud-config` (under the `cloud-init`
+target name, §4.3) that installs + enrolls Geneza:
+
+```yaml
+#cloud-config
 runcmd:
-  - geneza-agent enroll --config /etc/geneza/agent.yaml --provider openstack-metadata
+  - curl -fsSL https://<gateway>/install.sh | sh -s -- --token <minted> --provider token
   - systemctl enable --now geneza-bootstrap
 ```
 
-Set the desired Geneza role through standard OpenStack instance metadata, e.g.
-`openstack server create --property geneza.role=web ...`; the gateway maps it to
-node labels, and policy keys off those labels — so a freshly booted VM is
-reachable under the right policy with zero manual steps.
+The bootstrap is root-pinned (TUF-lite) and pulls the signed worker. Set the
+target workspace/role via OpenStack: `--property geneza.workspace=…` (and bind the
+project, §6). **Productization follow-up:** a native `cc_geneza` cloud-init module
+(idempotent, status reporting, no token in plaintext) + a baked Glance image.
 
-## Demo wiring against an existing lab cloud
+Note: the join token in vendordata is a bearer secret in the metadata/config-drive
+— bounded TTL + single-use + admission gate limit blast radius; the productized
+path can switch to the `openstack-metadata` provider where the **agent** sends its
+instance identity and the gateway re-verifies, removing the token from metadata.
 
-The hypervisor already runs OpenStack labs (`kolla1`, `sunbeam1`, `scs1`). A
-full PoC would:
+---
 
-1. Run the Geneza gateway/relay reachable from the OpenStack tenant network
-   (the geneza-core VM, or a floating IP).
-2. Bake `geneza-bootstrap` + the pinned `artifact.pub` into a Glance image (or
-   install via cloud-init `packages`/`runcmd`).
-3. Boot an instance with `--property geneza.role=...`; watch it appear in
-   `geneza ls` within ~1 boot cycle, enrolled with no operator action.
+## 10. Access plane (Keystone-token auth) — design
 
-This file is referenced by the gateway's stub error message so the path from
-"why did enrollment say Unimplemented" to "here's how to finish it" is one hop.
+For humans already authenticated to OpenStack to drive Geneza without a separate
+login: Geneza accepts a **Keystone token** as a bearer credential.
+
+- **Web shell (browser):** the dashboard passes the user's Keystone token to the
+  Geneza API; Geneza validates it (`GET /v3/auth/tokens`), derives user / project /
+  domain / roles → maps to workspace + policy, then brokers the existing
+  `client_path=web` shell (Noise tunnel + PTY over WebSocket). Embed via
+  `CSP: frame-ancestors <dashboard-origin>`.
+  > Unlike enrollment, here the bearer token is the **user's own**, scoped to
+  > *their* project — so `project` + `project.domain` come straight from the
+  > validation body; **no extra `/v3/projects/{id}` call** is needed on this plane.
+- **CLI:** `geneza` uses a Keystone token (`OS_TOKEN`) the same way.
+
+Trust anchor = **Keystone** (per the user's chosen direction), uniform for API +
+CLI. Policy + the agent's independent grant re-verify still bound everything; the
+dashboard/CLI is a presenter, never an authority.
+
+---
+
+## 11. Multi-cloud generalization (forward-looking)
+
+The integration splits into a per-cloud **verifier** + a common pipeline (registry
++ workspace bind + admission + token mint). Geneza's existing `EnrollProvider`
+interface is the seam — one provider per cloud:
+
+- **Class A (signed identity, offline-verifiable):** AWS (Instance Identity
+  Document), GCP (identity JWT), Azure (attested doc) → verify the signature; no
+  callback; Geneza federates the cloud's keys like an IdP. *Easier than OpenStack.*
+- **Class B (no signed identity → callback/courier):** OpenStack, DigitalOcean,
+  Vultr, Hetzner → authenticate the courier + callback the cloud API to verify the
+  instance. *OpenStack is this class — the hardest case, so it de-risks the rest.*
+
+Tenancy maps uniformly: AWS account / GCP project / Azure subscription / OpenStack
+project → workspace, keyed by the identity root (Org / AAD tenant / domain).
+
+---
+
+## 12. Phased PoC plan
+
+- **P0 — wire (done):** reachability verified (geneza-core↔kolla1 Keystone/Nova;
+  kolla1↔geneza-core 7401/7402); vendordata wire format + token validation +
+  project→domain captured live.
+- **P1 — Keystone domain `geneza`** federated to Keycloak realm `geneza` (mirror
+  the existing kolla1 federation); a project under it for the test VM.
+- **P2 — Geneza:** gophercloud client + onboarding registry + vendordata endpoint
+  (§6–§8); `bind-project` admin command.
+- **P3 — Nova:** `vendordata_dynamic_targets = cloud-init@http://<geneza>:7407/…`
+  + `[vendordata_dynamic_auth]` in **nova-compute** (config-drive path);
+  `kolla-ansible reconfigure -t nova`.
+- **P4 — prove:** boot Ubuntu 24.04 `--config-drive true` under the geneza domain's
+  bound project → it enrolls into workspace W → `geneza-laptop` (in W) resolves its
+  name (in-network DNS) and `geneza ssh`/`exec` reaches it over the overlay.
+
+**Success = laptop reaches a freshly-booted OpenStack VM by name, zero operator
+action on the VM.**
+
+---
+
+## 13. Open decisions
+- Endpoint transport for prod: mTLS vs Nova-source-IP allowlist (PoC = plain HTTP).
+- `join_policy` default: `bind-list` (safe) vs `tag-hint` (auto). Recommend
+  `bind-list` for the operational-safety reason (tenant tags fail silently).
+- PoC `auto_approve: true` vs production PENDING + admission gate.
+- Token-in-metadata (`provider=token`, PoC) vs agent-sends-identity
+  (`provider=openstack-metadata`, productized — removes the bearer secret).
+- Reuse the Nova token for project→domain (kolla) vs require Geneza `reader_creds`
+  (hardened clouds where nova has only the `service` role).
