@@ -87,18 +87,23 @@ func (a AgentPolicyConfig) toTypes() types.AgentPolicy {
 // Config is the gateway YAML configuration. See
 // internal/gateway/testdata/gateway.example.yaml for a commented example.
 type Config struct {
-	DataDir              string            `yaml:"data_dir"`
-	GRPCListen           string            `yaml:"grpc_listen"`
-	HTTPListen           string            `yaml:"http_listen"`
-	ClusterName          string            `yaml:"cluster_name"`
-	Advertise            Advertise         `yaml:"advertise"`
-	RelayAddrs           []string          `yaml:"relay_addrs"`
+	DataDir     string    `yaml:"data_dir"`
+	GRPCListen  string    `yaml:"grpc_listen"`
+	HTTPListen  string    `yaml:"http_listen"`
+	ClusterName string    `yaml:"cluster_name"`
+	Advertise   Advertise `yaml:"advertise"`
+	RelayAddrs  []string  `yaml:"relay_addrs"`
 	// RelayDataAddrs is where agents send WireGuard data-plane UDP (the blind
 	// DERP-lite forwarder). Distinct from relay_addrs (TCP rendezvous) because
 	// the data port (7404) may be reached on a different address — e.g. an
 	// internal address for same-site agents vs the public FQDN for rendezvous.
 	// Empty falls back to host(relay_addrs[0]):RelayDataPort.
 	RelayDataAddrs []string `yaml:"relay_data_addrs"`
+	// RelaySharedSecret is the coturn-style REST shared secret the gateway uses to
+	// MINT ephemeral TURN credentials; it MUST match the relay's shared_secret.
+	RelaySharedSecret string `yaml:"relay_shared_secret"`
+	// RelayRealm is the TURN realm (default "geneza"); MUST match the relay.
+	RelayRealm           string            `yaml:"relay_realm"`
 	PolicyFile           string            `yaml:"policy_file"`
 	CertTTL              CertTTLConfig     `yaml:"cert_ttl"`
 	GrantTTL             Duration          `yaml:"grant_ttl"`

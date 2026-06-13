@@ -151,6 +151,6 @@ func DefaultGateway() (string, error) {
 
 // ---- node-side ops: Linux-only, not reachable from a macOS client ----
 
-func EnableForwarding() error                              { return ErrUnsupported }
-func EgressInterface(string) (string, error)               { return "", ErrUnsupported }
+func EnableForwarding() error                               { return ErrUnsupported }
+func EgressInterface(string) (string, error)                { return "", ErrUnsupported }
 func NodeRouteFor(string, string, []string) (func(), error) { return nil, ErrUnsupported }

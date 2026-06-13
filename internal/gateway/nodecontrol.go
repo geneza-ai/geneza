@@ -143,6 +143,8 @@ func (n *nodeControlService) Stream(stream grpc.BidiStreamingServer[genezav1.Age
 			if changed {
 				s.repushAllNetworks(ident.Workspace)
 			}
+		case *genezav1.AgentMsg_Disco:
+			s.handleAgentDisco(ident.Workspace, ident.Name, m.Disco)
 		case *genezav1.AgentMsg_Hello:
 			// One hello per stream; a second is a protocol violation.
 			return status.Error(codes.InvalidArgument, "duplicate hello")

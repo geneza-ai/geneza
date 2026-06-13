@@ -132,18 +132,16 @@ func (s *Server) networkPeers(ws string, net *NetworkRecord, self *NodeRecord) [
 		if ep, ok := s.registry.NodeEndpoint(peer.ID, net.VNI); ok {
 			wp.Endpoint = ep
 		}
-		// Blind-relay floor coordinates (userspace data plane): the rid pair +
-		// flow secret for self↔peer in this Network. Best-effort — on error the
-		// peer is still pushed (the kernel path ignores .relay).
-		if rc, err := s.relayPathFor(ws, net.VNI, self.ID, peer.ID); err == nil {
-			wp.Relay = &genezav1.RelayPath{
-				RelayAddr:  rc.relayAddr,
-				SelfRid:    rc.selfRid,
-				PeerRid:    rc.peerRid,
-				FlowSecret: rc.flowSecret,
+		// Ephemeral TURN credentials (userspace pion data plane): the agent's ICE
+		// agent uses them to allocate a relay candidate on the blind TURN floor.
+		// Best-effort — on error the peer is still pushed (the kernel path ignores
+		// .turn). Derived, not stored; the relay validates against a shared secret.
+		if url, user, pass, realm, controlling, err := s.turnCredsFor(self.ID, peer.ID); err == nil {
+			wp.Turn = &genezav1.TurnCreds{
+				TurnUrl: url, Username: user, Password: pass, Realm: realm, Controlling: controlling,
 			}
 		} else {
-			slog.Debug("relay path unavailable", "ws", ws, "vni", net.VNI, "self", self.ID, "peer", peer.ID, "err", err)
+			slog.Debug("turn creds unavailable", "ws", ws, "vni", net.VNI, "self", self.ID, "peer", peer.ID, "err", err)
 		}
 		peers = append(peers, wp)
 	}

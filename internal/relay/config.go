@@ -24,9 +24,18 @@ import (
 type Config struct {
 	// Listen is the TCP listen address, e.g. ":7403".
 	Listen string
-	// DataListen is the UDP listen address for the blind DERP-lite WireGuard
-	// data forwarder, e.g. ":7404". Empty disables the forwarder.
+	// DataListen is the UDP listen address for the embedded TURN server (the
+	// overlay's blind relay floor), e.g. ":7404". Empty disables it.
 	DataListen string
+	// Realm is the TURN realm (e.g. "geneza").
+	Realm string
+	// SharedSecret is the coturn-style REST shared secret used to validate the
+	// gateway-minted ephemeral TURN credentials. MUST match the gateway's
+	// relay_shared_secret. Empty disables the TURN server (no floor).
+	SharedSecret string
+	// PublicIP is the relay address advertised to TURN clients in allocations
+	// (deployment-specific reachable IP; lab uses the internal vmbr5 IP).
+	PublicIP string
 	// TLS enables TLS on the listener. It must only be false in unit tests:
 	// the hello frame carries the rendezvous token, which must never cross a
 	// real network in cleartext.
@@ -58,6 +67,7 @@ func DefaultConfig() Config {
 	return Config{
 		Listen:       fmt.Sprintf(":%d", defaults.RelayPort),
 		DataListen:   fmt.Sprintf(":%d", defaults.RelayDataPort),
+		Realm:        "geneza",
 		TLS:          true,
 		MatchTTL:     defaults.RelayMatchTTL,
 		IdleTimeout:  defaults.RelayIdleClose,
@@ -73,6 +83,9 @@ func DefaultConfig() Config {
 type fileConfig struct {
 	Listen       string  `yaml:"listen"`
 	DataListen   *string `yaml:"data_listen"`
+	Realm        string  `yaml:"realm"`
+	SharedSecret string  `yaml:"shared_secret"`
+	PublicIP     string  `yaml:"public_ip"`
 	TLS          *bool   `yaml:"tls"`
 	CertFile     string  `yaml:"cert_file"`
 	KeyFile      string  `yaml:"key_file"`
@@ -103,6 +116,11 @@ func Load(path string) (Config, error) {
 	if fc.DataListen != nil {
 		cfg.DataListen = *fc.DataListen // explicit, incl. "" to disable
 	}
+	if fc.Realm != "" {
+		cfg.Realm = fc.Realm
+	}
+	cfg.SharedSecret = fc.SharedSecret
+	cfg.PublicIP = fc.PublicIP
 	if fc.TLS != nil {
 		cfg.TLS = *fc.TLS
 	}

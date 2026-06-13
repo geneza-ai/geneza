@@ -301,6 +301,15 @@ func (r *Registry) SendNetworkConfig(nodeID string, cfg *genezav1.NetworkConfig)
 	return h.send(&genezav1.GatewayMsg{Msg: &genezav1.GatewayMsg_NetworkConfig{NetworkConfig: cfg}})
 }
 
+// SendDisco forwards an ICE signaling message to a node (best-effort).
+func (r *Registry) SendDisco(nodeID string, d *genezav1.DiscoMsg) error {
+	h := r.get(nodeID)
+	if h == nil {
+		return fmt.Errorf("node %s is not connected", nodeID)
+	}
+	return h.send(&genezav1.GatewayMsg{Msg: &genezav1.GatewayMsg_Disco{Disco: d}})
+}
+
 // handle returns the live agentHandle for a node (nil if not connected); used by
 // the network-push path to mint a per-connection monotonic version.
 func (r *Registry) handle(nodeID string) *agentHandle { return r.get(nodeID) }

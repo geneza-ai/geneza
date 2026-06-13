@@ -68,7 +68,42 @@ message AgentMsg {
     SessionOfferAck offer_ack = 4;
     MetricsPush metrics = 5;          // agent module metrics over the control channel
     NetworkEndpoints network_endpoints = 6; // agent's per-Network WG listen ports (for direct-path endpoint discovery)
+    DiscoMsg disco = 7;               // magicsock NAT-traversal signaling (candidate exchange + punch)
   }
+}
+
+// DiscoMsg carries magicsock NAT-traversal coordination over the (dial-out, mTLS,
+// overlay-independent) control stream. Reachability tests (ping/pong) go DIRECT
+// over UDP; only coordination rides this. VNI-scoped so candidates never cross
+// Networks. See docs/magicsock-design.md §5.
+message DiscoMsg {
+  uint32 vni        = 1;            // which Network this concerns
+  bytes  peer_wgpub = 2;            // the OTHER endpoint (gateway fills on relay)
+  oneof body {
+    CallMeMaybe    call_me_maybe = 3; // gw->ep: the peer's ICE candidate string(s)
+    PunchAt        punch_at      = 4; // gw->ep: "re-run ICE now" (agent.Restart) trigger
+    EndpointUpdate endpoints     = 5; // ep->gw: our ICE candidate string(s) for the peer
+    IceCreds       ice_creds     = 6; // both ways: ICE ufrag/pwd for Dial/Accept
+  }
+}
+
+message CallMeMaybe {                // gateway -> endpoint: the peer's ICE candidates
+  repeated string candidates = 1;    // pion ice.Candidate.Marshal() strings
+  uint32 nat_class = 2;              // reserved/unused in the pion path (ICE classifies internally)
+}
+message PunchAt {                    // gateway -> endpoint: re-run ICE (late-upgrade / roam)
+  int64  t0_unix_ms = 1;
+  uint32 attempt    = 2;
+}
+message EndpointUpdate {             // endpoint -> gateway: our ICE candidates for a peer
+  uint32 vni        = 1;
+  repeated string local_addrs = 2;   // pion ice.Candidate.Marshal() strings
+  string  reflexive = 3;            // reserved/unused in the pion path
+  uint32  nat_class = 4;            // reserved/unused in the pion path
+}
+message IceCreds {                   // ICE short-term credentials for Dial/Accept
+  string ufrag = 1;
+  string pwd   = 2;
 }
 
 // NetworkEndpoints reports the kernel-assigned WireGuard listen port for each
@@ -92,6 +127,7 @@ message GatewayMsg {
     SessionRevoke session_revoke = 4; // continuous authz: tear down a live session
     ModuleConfig module_config = 5;   // pluggable per-node agent modules (monitoring, ...)
     NetworkConfig network_config = 6; // per-Network WireGuard data plane (desired set)
+    DiscoMsg disco = 7;               // magicsock/ICE signaling relayed to a co-member
   }
 }
 
@@ -119,19 +155,20 @@ message WGPeer {
   bytes  wg_pubkey = 1;              // peer WireGuard static (Curve25519, 32 bytes)
   string endpoint = 2;              // direct host:port HINT (LAN-only under NAT); may be empty
   repeated string allowed_ips = 3;   // peer overlay /32 (+ subnet-route CIDRs later)
-  RelayPath relay = 5;               // blind DERP-lite relay floor coordinates for this peer
+  TurnCreds turn = 5;                // gateway-minted ephemeral TURN creds (was RelayPath; pion data plane)
 }
 
-// RelayPath carries the blind-relay floor coordinates the gateway mints for an
-// ordered peer pair within a Network: the endpoint registers self_rid and sends
-// this peer's traffic addressed to peer_rid. The relay never sees these as
-// anything but opaque 48-bit ids; flow_secret authenticates the rid claim end to
-// end (the relay can't verify it — it holds no key). See docs/magicsock-design.md.
-message RelayPath {
-  string relay_addr  = 1;            // relay UDP data endpoint, host:port (e.g. geneza-core:7404)
-  uint64 self_rid    = 2;            // 48-bit rid THIS endpoint REGisters + receives DATA on
-  uint64 peer_rid    = 3;            // 48-bit rid to address DATA to (the peer's mailbox)
-  bytes  flow_secret = 4;            // 16-byte per-flow secret (HMAC tail on REG; E2E, relay-opaque)
+// TurnCreds are the gateway-minted, coturn-style ephemeral TURN REST credentials
+// for an endpoint's view of a peer flow: the agent's pion/ice agent uses them to
+// allocate a relay candidate on the blind TURN relay. The relay validates them
+// against a shared secret (no stored per-user state); the username embeds an
+// expiry + an opaque session id (no durable principal). See docs/dataplane-libs-plan.md.
+message TurnCreds {
+  string turn_url    = 1;            // "turn:geneza-core:7404?transport=udp"
+  string username    = 2;            // "<expiry-unix>:<opaque session id>"
+  string password    = 3;            // base64(HMAC-SHA1(shared secret, username))
+  string realm       = 4;            // "geneza"
+  bool   controlling = 5;            // gateway-assigned ICE role (lo of the pair Dials)
 }
 
 // ModuleConfig is the gateway's desired set of agent modules for THIS node,

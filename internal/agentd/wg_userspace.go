@@ -17,31 +17,99 @@ import (
 )
 
 // wg_userspace.go is the userspace-WireGuard data-plane backend: a wireguard-go
-// device per Network bound to a magicsock-lite conn.Bind (internal/vpn). It
+// device per Network bound to a pion-ICE conn.Bind (internal/vpn.ICEBind). It
 // implements the same wgBackend seam as the kernel path, so the reconcile loop
 // (network.go) is unchanged — only the bottom layer (kernel wgctrl -> userspace
-// device + magicsock) swaps. See docs/magicsock-design.md §7.
+// device + pion ICE/TURN/STUN) swaps. See docs/dataplane-libs-plan.md.
 
 type usDevice struct {
 	dev  *device.Device
-	bind *vpn.MagicBind
+	bind *vpn.ICEBind
 	tun  tun.Device
 	vni  uint32
 }
 
 type userspaceWGBackend struct {
-	log *slog.Logger
-	mu  sync.Mutex
-	ifs map[string]*usDevice
+	log       *slog.Logger
+	relayOnly bool // force the TURN floor (P-libs1 proof); false = full ICE (auto direct upgrade)
+	mu        sync.Mutex
+	ifs       map[string]*usDevice
+	sink      vpn.SignalSink // ICE signaling up-channel (set by the worker)
 }
 
-func newUserspaceWGBackend(log *slog.Logger) *userspaceWGBackend {
-	return &userspaceWGBackend{log: log.With("component", "wg-userspace"), ifs: map[string]*usDevice{}}
+func newUserspaceWGBackend(log *slog.Logger, relayOnly bool) *userspaceWGBackend {
+	return &userspaceWGBackend{log: log.With("component", "wg-userspace"), relayOnly: relayOnly, ifs: map[string]*usDevice{}}
 }
 
-var _ wgBackend = (*userspaceWGBackend)(nil)
+var (
+	_ wgBackend    = (*userspaceWGBackend)(nil)
+	_ discoBackend = (*userspaceWGBackend)(nil)
+)
 
-// Create brings up a userspace WG device on a fresh TUN bound to a magicsock.
+// discoBackend is the ICE-signaling control surface the worker drives: it pushes
+// our candidates/creds up (via the sink) and routes the gateway-relayed peer
+// candidates/creds down to the right VNI's bind.
+type discoBackend interface {
+	SetSignalSink(sink vpn.SignalSink)
+	DeliverCandidates(vni uint32, peerWGPub []byte, candidates []string)
+	DeliverICECreds(vni uint32, peerWGPub []byte, ufrag, pwd string)
+	DeliverPunchAt(vni uint32, peerWGPub []byte, t0UnixMs int64, attempt int)
+}
+
+func (u *userspaceWGBackend) SetSignalSink(sink vpn.SignalSink) {
+	u.mu.Lock()
+	u.sink = sink
+	for _, d := range u.ifs {
+		d.bind.SetSink(sink)
+	}
+	u.mu.Unlock()
+}
+
+func (u *userspaceWGBackend) bindForVNI(vni uint32) *vpn.ICEBind {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if d := u.ifs[wgIfaceName(vni)]; d != nil {
+		return d.bind
+	}
+	return nil
+}
+
+func (u *userspaceWGBackend) DeliverCandidates(vni uint32, peerWGPub []byte, candidates []string) {
+	if len(peerWGPub) != 32 {
+		return
+	}
+	if b := u.bindForVNI(vni); b != nil {
+		var k [32]byte
+		copy(k[:], peerWGPub)
+		for _, c := range candidates {
+			b.AddRemoteCandidate(k, c)
+		}
+	}
+}
+
+func (u *userspaceWGBackend) DeliverICECreds(vni uint32, peerWGPub []byte, ufrag, pwd string) {
+	if len(peerWGPub) != 32 {
+		return
+	}
+	if b := u.bindForVNI(vni); b != nil {
+		var k [32]byte
+		copy(k[:], peerWGPub)
+		b.OnICECreds(k, ufrag, pwd)
+	}
+}
+
+func (u *userspaceWGBackend) DeliverPunchAt(vni uint32, peerWGPub []byte, t0UnixMs int64, attempt int) {
+	if len(peerWGPub) != 32 {
+		return
+	}
+	if b := u.bindForVNI(vni); b != nil {
+		var k [32]byte
+		copy(k[:], peerWGPub)
+		b.OnPunchAt(k, t0UnixMs, attempt)
+	}
+}
+
+// Create brings up a userspace WG device on a fresh TUN bound to a pion-ICE bind.
 func (u *userspaceWGBackend) Create(name string) error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -56,7 +124,10 @@ func (u *userspaceWGBackend) Create(name string) error {
 	if err != nil {
 		return fmt.Errorf("create tun %s: %w", name, err)
 	}
-	bind := vpn.NewMagicBind(vni, u.log)
+	bind := vpn.NewICEBind(vni, u.relayOnly, u.log)
+	if u.sink != nil {
+		bind.SetSink(u.sink)
+	}
 	dlog := &device.Logger{
 		Verbosef: func(f string, a ...any) { u.log.Debug("wg-go: " + fmt.Sprintf(f, a...)) },
 		Errorf:   func(f string, a ...any) { u.log.Warn("wg-go: " + fmt.Sprintf(f, a...)) },
@@ -67,7 +138,7 @@ func (u *userspaceWGBackend) Create(name string) error {
 		return fmt.Errorf("device up %s: %w", name, err)
 	}
 	u.ifs[name] = &usDevice{dev: dev, bind: bind, tun: t, vni: vni}
-	u.log.Info("userspace wg device up", "iface", name, "vni", vni)
+	u.log.Info("userspace wg device up", "iface", name, "vni", vni, "relay_only", u.relayOnly)
 	return nil
 }
 
@@ -75,9 +146,9 @@ func (u *userspaceWGBackend) Create(name string) error {
 // backend; the link is a TUN here, not a kernel WG type).
 func (u *userspaceWGBackend) SetAddr(name, cidr string) error { return vpn.WGSetAddr(name, cidr) }
 
-// Configure renders the wireguard-go UAPI from the desired peer set and pushes
-// it via IpcSet, then hands the per-peer relay coordinates to the bind (which
-// REGisters each mailbox so the relay floor is ready before WG sends).
+// Configure renders the wireguard-go UAPI from the desired peer set and pushes it
+// via IpcSet, then hands the per-peer ICE/TURN setups to the bind (which spins an
+// ICE agent per peer using the gateway-minted TURN creds).
 func (u *userspaceWGBackend) Configure(name string, priv wgtypes.Key, _ int, peers []*genezav1.WGPeer) error {
 	u.mu.Lock()
 	d := u.ifs[name]
@@ -85,25 +156,20 @@ func (u *userspaceWGBackend) Configure(name string, priv wgtypes.Key, _ int, pee
 	if d == nil {
 		return fmt.Errorf("configure: unknown interface %s", name)
 	}
+	d.bind.SetSelfPub([32]byte(priv.PublicKey()))
 	if err := d.dev.IpcSet(renderUAPI(priv, peers)); err != nil {
 		return fmt.Errorf("ipc set %s: %w", name, err)
 	}
-	d.bind.SyncPeers(peerRelays(peers))
+	d.bind.SyncPeers(peerSetups(peers))
 	return nil
 }
 
-// ListenPort reports the bind's bound UDP port (the magicsock socket).
-func (u *userspaceWGBackend) ListenPort(name string) (int, error) {
-	u.mu.Lock()
-	d := u.ifs[name]
-	u.mu.Unlock()
-	if d == nil {
-		return 0, fmt.Errorf("listenport: unknown interface %s", name)
-	}
-	return int(d.bind.ListenPort()), nil
-}
+// ListenPort: the ICE bind owns no fixed WG listen port (each ice.Agent manages
+// its own sockets), so report 0 — the gateway's observed-IP+port direct hint is
+// unused on the ICE path (pion gathers host/srflx candidates itself).
+func (u *userspaceWGBackend) ListenPort(string) (int, error) { return 0, nil }
 
-// Delete tears the device down (closes the bind + TUN).
+// Delete tears the device down (closes the bind + ICE agents + TUN).
 func (u *userspaceWGBackend) Delete(name string) error {
 	u.mu.Lock()
 	d := u.ifs[name]
@@ -117,12 +183,9 @@ func (u *userspaceWGBackend) Delete(name string) error {
 }
 
 // renderUAPI builds the wireguard-go UAPI config from the desired peer set.
-//
-// SEV-1 fix (docs/magicsock-design.md): `endpoint=gz:<hex(pubkey)>` is
-// synthesized for EVERY peer regardless of WGPeer.endpoint. wireguard-go refuses
-// to send a handshake ("no known endpoint for peer") when the endpoint is nil,
-// so the relay floor would never come up without this. The bind resolves the
-// gz: token to the live path internally.
+// endpoint=gz:<hex(pubkey)> is synthesized for EVERY peer regardless of
+// WGPeer.endpoint: wireguard-go refuses to send a handshake with a nil endpoint,
+// and the ICE bind resolves the gz: token to the live (relay-or-direct) path.
 func renderUAPI(priv wgtypes.Key, peers []*genezav1.WGPeer) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "private_key=%s\n", hex.EncodeToString(priv[:]))
@@ -143,21 +206,22 @@ func renderUAPI(priv wgtypes.Key, peers []*genezav1.WGPeer) string {
 	return b.String()
 }
 
-// peerRelays extracts the bind's relay coordinates from the desired peers.
-func peerRelays(peers []*genezav1.WGPeer) []vpn.PeerRelay {
-	var out []vpn.PeerRelay
+// peerSetups extracts the bind's per-peer ICE/TURN setup from the desired peers.
+func peerSetups(peers []*genezav1.WGPeer) []vpn.PeerSetup {
+	var out []vpn.PeerSetup
 	for _, p := range peers {
-		if len(p.GetWgPubkey()) != 32 || p.GetRelay() == nil {
+		if len(p.GetWgPubkey()) != 32 || p.GetTurn() == nil {
 			continue
 		}
-		r := p.GetRelay()
-		var pr vpn.PeerRelay
-		copy(pr.WGPub[:], p.GetWgPubkey())
-		pr.RelayAddr = r.GetRelayAddr()
-		pr.SelfRid = r.GetSelfRid()
-		pr.PeerRid = r.GetPeerRid()
-		pr.FlowSecret = r.GetFlowSecret()
-		out = append(out, pr)
+		t := p.GetTurn()
+		var ps vpn.PeerSetup
+		copy(ps.WGPub[:], p.GetWgPubkey())
+		ps.Controlling = t.GetControlling()
+		ps.TurnURL = t.GetTurnUrl()
+		ps.TurnUser = t.GetUsername()
+		ps.TurnPass = t.GetPassword()
+		ps.TurnRealm = t.GetRealm()
+		out = append(out, ps)
 	}
 	return out
 }

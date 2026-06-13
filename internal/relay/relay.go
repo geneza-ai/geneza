@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -46,7 +47,7 @@ type Relay struct {
 	wg     sync.WaitGroup
 	done   chan struct{}
 
-	fwd *udpForwarder // blind UDP WireGuard data forwarder (nil if disabled)
+	turn *turnRelay // embedded pion/turn server: the overlay relay floor (nil if disabled)
 }
 
 // New builds a Relay; cfg must already be validated (Load does this).
@@ -86,19 +87,19 @@ func (r *Relay) ListenAndServe() error {
 	if err != nil {
 		return fmt.Errorf("relay: listen %s: %w", r.cfg.Listen, err)
 	}
-	// Start the blind UDP WireGuard data forwarder alongside the TCP rendezvous
-	// (separate listener; the TCP splice path is untouched).
-	if r.cfg.DataListen != "" {
-		fwd, ferr := newUDPForwarder(r.cfg.DataListen, r.log)
-		if ferr != nil {
+	// Start the embedded pion/turn server (the overlay's blind relay floor)
+	// alongside the TCP rendezvous (separate UDP listener; the TCP splice path is
+	// untouched). turn.Server runs its own read loop on the socket.
+	if r.cfg.DataListen != "" && r.cfg.SharedSecret != "" {
+		tr, terr := newTURNRelay(r.cfg.DataListen, r.cfg.Realm, r.cfg.SharedSecret, r.cfg.PublicIP, os.Stderr)
+		if terr != nil {
 			ln.Close()
-			return fmt.Errorf("relay: udp data listen %s: %w", r.cfg.DataListen, ferr)
+			return fmt.Errorf("relay: turn server on %s: %w", r.cfg.DataListen, terr)
 		}
 		r.mu.Lock()
-		r.fwd = fwd
+		r.turn = tr
 		r.mu.Unlock()
-		r.wg.Add(1)
-		go func() { defer r.wg.Done(); fwd.serve() }()
+		r.log.Info("relay: turn floor listening", "addr", r.cfg.DataListen, "realm", r.cfg.Realm, "advertised", r.cfg.PublicIP)
 	}
 	return r.Serve(ln)
 }
@@ -190,7 +191,7 @@ func (r *Relay) Shutdown(ctx context.Context) error {
 	r.closed = true
 	close(r.done)
 	ln := r.ln
-	fwd := r.fwd
+	tr := r.turn
 	for token, s := range r.pending {
 		delete(r.pending, token)
 		s.timer.Stop()
@@ -200,8 +201,8 @@ func (r *Relay) Shutdown(ctx context.Context) error {
 	if ln != nil {
 		ln.Close()
 	}
-	if fwd != nil {
-		fwd.close() // makes the udp read loop return -> r.wg unblocks
+	if tr != nil {
+		tr.close() // stops the turn server + closes its UDP socket
 	}
 
 	drained := make(chan struct{})

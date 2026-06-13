@@ -79,10 +79,47 @@ type Worker struct {
 	// against the gateway's pushed ModuleConfig and streams their metrics up.
 	modules *moduleManager
 
-	// networks reconciles per-Network kernel-WireGuard interfaces against the
-	// gateway's pushed NetworkConfig (the data plane). nil when the agent has no
-	// WG key (enrolled before the data plane) — dispatch guards on it.
+	// networks reconciles per-Network WireGuard interfaces against the gateway's
+	// pushed NetworkConfig (the data plane). nil when the agent has no WG key.
 	networks *networkManager
+	// disco routes ICE signaling (candidates/creds) to the userspace data-plane
+	// backend; nil on the kernel path.
+	disco discoBackend
+}
+
+// workerSink adapts the data-plane bind's ICE signaling onto the control stream
+// (AgentMsg.disco). The gateway forwards each message to the named peer.
+type workerSink struct{ enqueue func(*genezav1.AgentMsg) }
+
+func (s workerSink) SendLocalCandidate(vni uint32, peerWGPub [32]byte, candidate string) {
+	peer := peerWGPub
+	s.enqueue(&genezav1.AgentMsg{Msg: &genezav1.AgentMsg_Disco{Disco: &genezav1.DiscoMsg{
+		Vni: vni, PeerWgpub: peer[:],
+		Body: &genezav1.DiscoMsg_Endpoints{Endpoints: &genezav1.EndpointUpdate{Vni: vni, LocalAddrs: []string{candidate}}},
+	}}})
+}
+
+func (s workerSink) SendICECreds(vni uint32, peerWGPub [32]byte, ufrag, pwd string) {
+	peer := peerWGPub
+	s.enqueue(&genezav1.AgentMsg{Msg: &genezav1.AgentMsg_Disco{Disco: &genezav1.DiscoMsg{
+		Vni: vni, PeerWgpub: peer[:],
+		Body: &genezav1.DiscoMsg_IceCreds{IceCreds: &genezav1.IceCreds{Ufrag: ufrag, Pwd: pwd}},
+	}}})
+}
+
+// handleDisco routes a gateway-relayed peer's ICE signaling to the bind.
+func (w *Worker) handleDisco(d *genezav1.DiscoMsg) {
+	if w.disco == nil {
+		return
+	}
+	switch b := d.GetBody().(type) {
+	case *genezav1.DiscoMsg_CallMeMaybe:
+		w.disco.DeliverCandidates(d.GetVni(), d.GetPeerWgpub(), b.CallMeMaybe.GetCandidates())
+	case *genezav1.DiscoMsg_IceCreds:
+		w.disco.DeliverICECreds(d.GetVni(), d.GetPeerWgpub(), b.IceCreds.GetUfrag(), b.IceCreds.GetPwd())
+	case *genezav1.DiscoMsg_PunchAt:
+		w.disco.DeliverPunchAt(d.GetVni(), d.GetPeerWgpub(), b.PunchAt.GetT0UnixMs(), int(b.PunchAt.GetAttempt()))
+	}
 }
 
 // advertisedServices converts the configured services into the hello message.
@@ -146,15 +183,18 @@ func NewWorker(log *slog.Logger, cfg *Config, noSpawnSessionHost bool) (*Worker,
 	if st.HasWG {
 		var backend wgBackend
 		if strings.EqualFold(cfg.Dataplane, "userspace") {
-			backend = newUserspaceWGBackend(log)
-			log.Info("data plane: userspace WireGuard (magicsock-lite)")
+			us := newUserspaceWGBackend(log, cfg.DataplaneRelayOnly)
+			us.SetSignalSink(workerSink{enqueue: w.enqueue})
+			w.disco = us
+			backend = us
+			log.Info("data plane: userspace WireGuard over pion ICE/TURN/STUN", "relay_only", cfg.DataplaneRelayOnly)
 		} else {
 			backend = realWGBackend{log: log}
 		}
 		w.networks = newNetworkManager(log, st.WGPriv, backend)
-		// Report each Network's WG listen port up the control stream so the
-		// gateway can derive a direct endpoint (paired with the observed source
-		// IP) and hand it to co-members.
+		// Report each Network's WG listen port up the control stream (kernel path
+		// uses it for the direct hint; the ICE path reports 0 and pion gathers
+		// host/srflx candidates itself).
 		w.networks.report = func(eps []wgEndpoint) {
 			msg := &genezav1.NetworkEndpoints{}
 			for _, e := range eps {
@@ -495,6 +535,8 @@ func (w *Worker) streamOnce(ctx context.Context) error {
 			if w.networks != nil {
 				w.networks.reconcile(m.NetworkConfig)
 			}
+		case *genezav1.GatewayMsg_Disco:
+			w.handleDisco(m.Disco)
 		case *genezav1.GatewayMsg_Ping:
 			// Liveness probe; the next heartbeat answers it implicitly.
 		default:

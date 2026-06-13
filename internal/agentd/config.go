@@ -33,9 +33,13 @@ type Config struct {
 	// gated by name/kind/labels.
 	Services []ServiceDecl `yaml:"services"`
 	// Dataplane selects the per-Network overlay backend: "kernel" (kernel
-	// WireGuard via wgctrl; direct-only) or "userspace" (wireguard-go +
-	// magicsock-lite: relay floor + NAT traversal). Defaults to "kernel".
+	// WireGuard via wgctrl; direct-only) or "userspace" (wireguard-go over pion
+	// ICE/TURN/STUN: relay floor + auto direct upgrade). Defaults to "kernel".
 	Dataplane string `yaml:"dataplane"`
+	// DataplaneRelayOnly forces the userspace path to use ONLY the TURN relay
+	// candidate (no host/srflx), isolating the floor for the P-libs1 proof.
+	// Default false = full ICE (pion auto-selects direct when reachable).
+	DataplaneRelayOnly bool `yaml:"dataplane_relay_only"`
 }
 
 // ServiceDecl declares one exposed service in agent.yaml.
