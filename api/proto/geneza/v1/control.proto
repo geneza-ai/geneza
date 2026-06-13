@@ -67,7 +67,21 @@ message AgentMsg {
     SessionEvent session_event = 3;
     SessionOfferAck offer_ack = 4;
     MetricsPush metrics = 5;          // agent module metrics over the control channel
+    NetworkEndpoints network_endpoints = 6; // agent's per-Network WG listen ports (for direct-path endpoint discovery)
   }
+}
+
+// NetworkEndpoints reports the kernel-assigned WireGuard listen port for each
+// of the agent's live Network interfaces. The gateway pairs each port with the
+// observed source IP of THIS control stream to derive a direct endpoint for the
+// node, then hands it to co-members. Dial-out preserved: the gateway never dials
+// in; it only learns where to TELL peers to send.
+message NetworkEndpoints {
+  repeated NetworkEndpoint endpoints = 1;
+}
+message NetworkEndpoint {
+  uint32 vni = 1;
+  uint32 listen_port = 2;
 }
 
 message GatewayMsg {

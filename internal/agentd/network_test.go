@@ -47,6 +47,14 @@ func (f *fakeWG) Configure(name string, _ wgtypes.Key, _ int, peers []wgtypes.Pe
 	f.peers[name] = len(peers)
 	return nil
 }
+func (f *fakeWG) ListenPort(name string) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.live[name] {
+		return 0, nil
+	}
+	return 51820, nil // deterministic stub port
+}
 func (f *fakeWG) Delete(name string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -133,6 +141,18 @@ func TestNetworkDownAll(t *testing.T) {
 	m.downAll()
 	if fake.isLive("gnzw1") || fake.isLive("gnzw2") {
 		t.Fatalf("downAll left interfaces up: %+v", fake.live)
+	}
+}
+
+func TestNetworkReportsListenPorts(t *testing.T) {
+	m, _ := testNetMgr()
+	var got []wgEndpoint
+	m.report = func(eps []wgEndpoint) { got = eps }
+	m.reconcile(&genezav1.NetworkConfig{Version: 1, Networks: []*genezav1.NetworkSpec{
+		{Vni: 1, OverlayCidr: "100.64.0.2/24"},
+	}})
+	if len(got) != 1 || got[0].vni != 1 || got[0].port != 51820 {
+		t.Fatalf("report = %+v, want vni=1 port=51820", got)
 	}
 }
 

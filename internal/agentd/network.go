@@ -28,6 +28,10 @@ type networkManager struct {
 	log    *slog.Logger
 	wgPriv wgtypes.Key
 	wg     wgBackend // the kernel-WG backend (real on Linux; a fake in tests)
+	// report, when set, is called after each reconcile with the current
+	// per-Network WG listen ports so the worker can forward them to the gateway
+	// for direct-path endpoint discovery.
+	report func([]wgEndpoint)
 
 	mu      sync.Mutex
 	running map[uint32]*wgIface
@@ -40,6 +44,7 @@ type wgBackend interface {
 	Create(name string) error
 	SetAddr(name, cidr string) error
 	Configure(name string, priv wgtypes.Key, listenPort int, peers []wgtypes.PeerConfig) error
+	ListenPort(name string) (int, error)
 	Delete(name string) error
 }
 
@@ -51,7 +56,15 @@ func (realWGBackend) SetAddr(name, cidr string) error { return vpn.WGSetAddr(nam
 func (realWGBackend) Configure(name string, priv wgtypes.Key, port int, peers []wgtypes.PeerConfig) error {
 	return vpn.WGConfigure(name, priv, port, peers)
 }
-func (realWGBackend) Delete(name string) error { return vpn.WGDelete(name) }
+func (realWGBackend) ListenPort(name string) (int, error) { return vpn.WGListenPort(name) }
+func (realWGBackend) Delete(name string) error            { return vpn.WGDelete(name) }
+
+// wgEndpoint is one interface's kernel-assigned WG listen port, reported up the
+// control stream so the gateway can derive a direct endpoint for this node.
+type wgEndpoint struct {
+	vni  uint32
+	port int
+}
 
 // wgIface tracks one live Network interface so reconcile can detect changes.
 type wgIface struct {
@@ -98,6 +111,26 @@ func (m *networkManager) reconcile(cfg *genezav1.NetworkConfig) {
 	// Bring up / sync the desired set.
 	for vni, spec := range desired {
 		m.upOrSyncLocked(vni, spec)
+	}
+	m.reportEndpointsLocked()
+}
+
+// reportEndpointsLocked gathers each live interface's kernel-assigned WG listen
+// port and forwards them via the report callback (best-effort). Called under mu.
+func (m *networkManager) reportEndpointsLocked() {
+	if m.report == nil || len(m.running) == 0 {
+		return
+	}
+	eps := make([]wgEndpoint, 0, len(m.running))
+	for vni, iface := range m.running {
+		port, err := m.wg.ListenPort(iface.name)
+		if err != nil || port == 0 {
+			continue
+		}
+		eps = append(eps, wgEndpoint{vni: vni, port: port})
+	}
+	if len(eps) > 0 {
+		m.report(eps)
 	}
 }
 

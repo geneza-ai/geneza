@@ -3,6 +3,8 @@ package gateway
 import (
 	"context"
 	"fmt"
+	"net"
+	"strconv"
 	"sync"
 	"time"
 
@@ -42,6 +44,52 @@ type agentHandle struct {
 	// NetworkConfig push. Computed (not stored) — Network membership is derived,
 	// so the version need only be monotonic for the life of the connection.
 	netVersion int64
+
+	// Data-plane endpoint discovery: the observed source IP of this control
+	// stream plus the per-Network WG listen ports the agent reported. Combined
+	// they form the direct endpoint co-members are told to send WG packets to.
+	epMu       sync.Mutex
+	observedIP string
+	wgPorts    map[uint32]int
+}
+
+func (h *agentHandle) setObservedIP(ip string) {
+	h.epMu.Lock()
+	h.observedIP = ip
+	h.epMu.Unlock()
+}
+
+// setWGPort records a Network's reported listen port and reports whether it
+// changed. The agent re-reports its ports after every reconcile; repushing only
+// on a real change is what stops an endpoint-report→repush→reconcile→report
+// feedback loop from flooding the control stream.
+func (h *agentHandle) setWGPort(vni uint32, port int) (changed bool) {
+	h.epMu.Lock()
+	defer h.epMu.Unlock()
+	if h.wgPorts == nil {
+		h.wgPorts = map[uint32]int{}
+	}
+	if h.wgPorts[vni] == port {
+		return false
+	}
+	h.wgPorts[vni] = port
+	return true
+}
+
+// endpointFor returns the direct "ip:port" a co-member should send WG packets to
+// for this node's given Network, or ok=false until both the source IP and the
+// Network's listen port are known.
+func (h *agentHandle) endpointFor(vni uint32) (string, bool) {
+	h.epMu.Lock()
+	defer h.epMu.Unlock()
+	if h.observedIP == "" {
+		return "", false
+	}
+	port := h.wgPorts[vni]
+	if port == 0 {
+		return "", false
+	}
+	return net.JoinHostPort(h.observedIP, strconv.Itoa(port)), true
 }
 
 // nextNetVersion returns the next monotonic NetworkConfig version for this
@@ -256,6 +304,16 @@ func (r *Registry) SendNetworkConfig(nodeID string, cfg *genezav1.NetworkConfig)
 // handle returns the live agentHandle for a node (nil if not connected); used by
 // the network-push path to mint a per-connection monotonic version.
 func (r *Registry) handle(nodeID string) *agentHandle { return r.get(nodeID) }
+
+// NodeEndpoint returns the direct WG endpoint ("ip:port") for a node's Network,
+// or ok=false when the node is offline or its endpoint is not yet discovered.
+func (r *Registry) NodeEndpoint(nodeID string, vni uint32) (string, bool) {
+	h := r.get(nodeID)
+	if h == nil {
+		return "", false
+	}
+	return h.endpointFor(vni)
+}
 
 // Broadcast pushes a (signed) cluster config to every connected agent.
 // Best-effort: agents that miss it reconcile on their next hello.

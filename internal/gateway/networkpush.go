@@ -122,10 +122,18 @@ func (s *Server) networkPeers(ws string, net *NetworkRecord, self *NodeRecord) [
 			slog.Debug("peer overlay IP unavailable", "ws", ws, "vni", net.VNI, "peer", peer.ID, "err", err)
 			continue
 		}
-		peers = append(peers, &genezav1.WGPeer{
+		wp := &genezav1.WGPeer{
 			WgPubkey:   peer.WGPub,
 			AllowedIps: []string{ip + "/32"},
-		})
+		}
+		// Direct path: if the peer's endpoint is discovered (observed source IP +
+		// reported WG listen port), hand it over so WG connects directly. Absent
+		// (peer offline / not yet reported), the peer is configured key-only until
+		// its endpoint arrives (a later push fills it; DERP fallback is Phase D+).
+		if ep, ok := s.registry.NodeEndpoint(peer.ID, net.VNI); ok {
+			wp.Endpoint = ep
+		}
+		peers = append(peers, wp)
 	}
 	return peers
 }

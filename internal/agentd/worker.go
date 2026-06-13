@@ -144,6 +144,18 @@ func NewWorker(log *slog.Logger, cfg *Config, noSpawnSessionHost bool) (*Worker,
 	w.modules = newModuleManager(log, w.enqueue)
 	if st.HasWG {
 		w.networks = newNetworkManager(log, st.WGPriv)
+		// Report each Network's WG listen port up the control stream so the
+		// gateway can derive a direct endpoint (paired with the observed source
+		// IP) and hand it to co-members.
+		w.networks.report = func(eps []wgEndpoint) {
+			msg := &genezav1.NetworkEndpoints{}
+			for _, e := range eps {
+				msg.Endpoints = append(msg.Endpoints, &genezav1.NetworkEndpoint{
+					Vni: e.vni, ListenPort: uint32(e.port),
+				})
+			}
+			w.enqueue(&genezav1.AgentMsg{Msg: &genezav1.AgentMsg_NetworkEndpoints{NetworkEndpoints: msg}})
+		}
 	} else {
 		log.Warn("no wireguard key in state dir; per-Network data plane disabled (re-enroll to enable)")
 	}

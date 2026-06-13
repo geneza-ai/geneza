@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -13,6 +14,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
 	"osie.cloud/geneza/internal/ca"
@@ -57,6 +59,14 @@ func (n *nodeControlService) Stream(stream grpc.BidiStreamingServer[genezav1.Age
 	}
 
 	h := s.registry.Register(ident.Name, stream, hello)
+	// Record the observed source IP of this control stream: half of the node's
+	// direct WG endpoint (the agent reports the port). Dial-out preserved — the
+	// gateway only learns where to tell peers to send, it never dials in.
+	if p, ok := peer.FromContext(stream.Context()); ok && p.Addr != nil {
+		if host, _, err := net.SplitHostPort(p.Addr.String()); err == nil {
+			h.setObservedIP(host)
+		}
+	}
 	defer func() {
 		s.registry.Unregister(h)
 		if err := s.audit.Append("node_disconnected", "", ident.Name, "", nil); err != nil {
@@ -119,6 +129,20 @@ func (n *nodeControlService) Stream(stream grpc.BidiStreamingServer[genezav1.Age
 			}
 		case *genezav1.AgentMsg_Metrics:
 			n.s.ingestNodeMetrics(ident.Name, nodeName, m.Metrics)
+		case *genezav1.AgentMsg_NetworkEndpoints:
+			changed := false
+			for _, e := range m.NetworkEndpoints.GetEndpoints() {
+				if h.setWGPort(e.GetVni(), int(e.GetListenPort())) {
+					changed = true
+				}
+			}
+			// Only when an endpoint actually changed do we re-derive co-members'
+			// configs (so they learn the direct path). The agent re-reports after
+			// every reconcile; gating on change avoids a report→repush→reconcile
+			// feedback loop that would flood the control stream.
+			if changed {
+				s.repushAllNetworks(ident.Workspace)
+			}
 		case *genezav1.AgentMsg_Hello:
 			// One hello per stream; a second is a protocol violation.
 			return status.Error(codes.InvalidArgument, "duplicate hello")
