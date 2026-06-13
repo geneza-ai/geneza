@@ -13,6 +13,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -148,6 +149,78 @@ type Config struct {
 	// Console optionally enables the web control panel (plain-HTTP listener,
 	// TLS terminated by a front proxy). Empty Listen = disabled.
 	Console ConsoleConfig `yaml:"console"`
+	// Clouds is the OpenStack (and future cloud) registry: each entry is one
+	// Keystone Geneza validates tokens against, keyed by a STABLE operator slug
+	// (the service-uid — NOT the Keystone FQDN, which is mutable and lives in
+	// KeystoneURL). The slug rides the vendordata path suffix as a routing key
+	// and qualifies every binding (openstack:project:<service-uid>:<uuid>). See
+	// docs/openstack-integration.md §7.
+	Clouds map[string]CloudConfig `yaml:"clouds,omitempty"`
+}
+
+// CloudConfig is one entry in the clouds registry (§7): a Keystone trust anchor
+// plus the policy for VMs that enroll through it. The map key (service-uid) is
+// the stable identity; this struct carries the mutable details.
+type CloudConfig struct {
+	Kind        string `yaml:"kind"`         // "openstack" (only kind supported today)
+	KeystoneURL string `yaml:"keystone_url"` // identity v3 base, e.g. https://kc:5000/v3
+	// EndpointInterface selects which catalog endpoint (public|internal|admin)
+	// Geneza uses for the Nova callback; defaults to "public".
+	EndpointInterface string `yaml:"endpoint_interface,omitempty"`
+	// ServiceProject is the Keystone project name a Nova service token is scoped
+	// to (default "service"); the enrollment guard requires the presented token
+	// be scoped to it (security #4).
+	ServiceProject string `yaml:"service_project,omitempty"`
+	// RequireNovaServiceToken is FORCED true for kind:openstack (security #4):
+	// the enrollment plane accepts only a Nova service-scoped token, never an
+	// arbitrary tenant token. Explicitly setting it false is a load error.
+	RequireNovaServiceToken bool `yaml:"require_nova_service_token,omitempty"`
+	// AutoProvision: an unbound but token-valid project gets its OWN isolated
+	// workspace (§6). Default false (operator pre-binds); the lab sets true.
+	AutoProvision bool `yaml:"auto_provision,omitempty"`
+	// AutoApprove skips the human admission gate for VMs enrolled via this cloud
+	// (PoC convenience; per-project isolation bounds the blast radius). Default
+	// false (PENDING until approved).
+	AutoApprove bool `yaml:"auto_approve,omitempty"`
+	// DefaultLabels are stamped on every node enrolled through this cloud.
+	DefaultLabels map[string]string `yaml:"default_labels,omitempty"`
+	// RoleMap translates Keystone roles to Geneza policy roles on the ACCESS
+	// plane (§8/§13, design-only today). Unused by the enrollment plane.
+	RoleMap map[string]string `yaml:"role_map,omitempty"`
+	// CAFile is a PEM bundle Geneza trusts for the Keystone/Nova TLS connection.
+	CAFile string `yaml:"ca_file,omitempty"`
+	// InsecureSkipVerify disables TLS verification of Keystone/Nova — LAB ONLY.
+	InsecureSkipVerify bool `yaml:"insecure_skip_verify,omitempty"`
+	// JoinTokenTTL bounds the minted join token (default 1h, covers boot).
+	JoinTokenTTL Duration `yaml:"join_token_ttl,omitempty"`
+	// GatewayURL is the base HTTPS URL an enrolling VM uses to reach Geneza
+	// (install.sh, stage-1 binaries, ca-roots, updates). Falls back to the
+	// vendordata request's own Host when empty.
+	GatewayURL string `yaml:"gateway_url,omitempty"`
+	// GatewayGRPC is the host:port the agent dials for the enroll RPC; falls back
+	// to host(GatewayURL):7401.
+	GatewayGRPC string `yaml:"gateway_grpc,omitempty"`
+}
+
+func (c CloudConfig) endpointInterface() string {
+	if c.EndpointInterface == "" {
+		return "public"
+	}
+	return c.EndpointInterface
+}
+
+func (c CloudConfig) serviceProject() string {
+	if c.ServiceProject == "" {
+		return "service"
+	}
+	return c.ServiceProject
+}
+
+func (c CloudConfig) joinTokenTTL() time.Duration {
+	if c.JoinTokenTTL == 0 {
+		return time.Hour
+	}
+	return c.JoinTokenTTL.D()
 }
 
 // WorkspaceConfig declares one tenant. A user is a MEMBER of the workspace iff
@@ -161,6 +234,12 @@ type WorkspaceConfig struct {
 	OverlayCIDR  string   `yaml:"overlay_cidr,omitempty"`  // defaults to 100.64.0.0/24
 	Members      []string `yaml:"members,omitempty"`       // usernames
 	MemberGroups []string `yaml:"member_groups,omitempty"` // IdP groups
+	// Bindings are cloud-qualified SOURCE bindings (§6) that resolve to this
+	// workspace, e.g. "openstack:project:kolla1:<project-uuid>". Declaring them
+	// here is the config-driven equivalent of an operator pre-binding a project:
+	// a VM in that project enrolls into THIS workspace, and (cross-source) so do
+	// this workspace's member users — one binding serves both planes.
+	Bindings []string `yaml:"bindings,omitempty"`
 }
 
 // open reports whether the workspace admits any authenticated user (no explicit
@@ -261,6 +340,16 @@ func (c *Config) applyDefaults() {
 			c.Workspaces[i].OverlayCIDR = defaultOverlayCIDR
 		}
 	}
+	// Clouds registry (§7). require_nova_service_token is NON-OVERRIDABLE for
+	// kind:openstack (security #4): the enrollment plane must only ever accept a
+	// Nova service-scoped token, so we force it true here regardless of the file.
+	for uid, cl := range c.Clouds {
+		if cl.Kind == "" {
+			cl.Kind = "openstack"
+		}
+		cl.RequireNovaServiceToken = true
+		c.Clouds[uid] = cl
+	}
 }
 
 func (c *Config) validate() error {
@@ -304,6 +393,32 @@ func (c *Config) validate() error {
 	}
 	if !hasDefault {
 		return fmt.Errorf("workspaces: a %q workspace is required (legacy certs + break-glass resolve to it)", defaultWorkspace)
+	}
+	// Clouds registry (§7). Reject configurations that would break the trust
+	// model: an unknown kind, a missing Keystone, or — critically — two service
+	// uids sharing one Keystone (security #18: that collapses the routing≠auth
+	// guarantee and lets a token-holder choose which namespace to bind into).
+	keystoneSeen := map[string]string{}
+	for uid, cl := range c.Clouds {
+		if uid == "" {
+			return fmt.Errorf("clouds: empty service-uid key")
+		}
+		if cl.Kind != "openstack" {
+			return fmt.Errorf("clouds[%q]: unsupported kind %q (only \"openstack\")", uid, cl.Kind)
+		}
+		if cl.KeystoneURL == "" {
+			return fmt.Errorf("clouds[%q]: keystone_url is required", uid)
+		}
+		ks := strings.TrimRight(cl.KeystoneURL, "/")
+		if other, dup := keystoneSeen[ks]; dup {
+			return fmt.Errorf("clouds[%q] and clouds[%q] share keystone_url %q: forbidden — a shared Keystone breaks routing≠auth (security #18); give each its own Keystone or merge them", uid, other, cl.KeystoneURL)
+		}
+		keystoneSeen[ks] = uid
+		switch cl.endpointInterface() {
+		case "public", "internal", "admin":
+		default:
+			return fmt.Errorf("clouds[%q]: endpoint_interface must be public|internal|admin", uid)
+		}
 	}
 	return nil
 }

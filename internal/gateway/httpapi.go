@@ -202,6 +202,12 @@ func (s *Server) httpHandler() http.Handler {
 	// curl|bash installer (install.sh, root-pubkey, stage-1 binaries).
 	s.registerInstallerRoutes(mux)
 
+	// OpenStack vendordata endpoint (§10). Unlike the routes above it is NOT
+	// public: it validates Nova's Keystone token before doing anything, and runs
+	// on this TLS listener so the token + returned cloud-init never cross the wire
+	// in cleartext (security #3).
+	s.registerVendordataRoutes(mux)
+
 	return mux
 }
 

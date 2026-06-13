@@ -46,9 +46,13 @@ type Server struct {
 
 	enrollProviders map[string]EnrollProvider
 
+	// clouds holds one verifier per clouds-registry entry (service-uid), used by
+	// the OpenStack vendordata endpoint to validate tokens + read Nova.
+	clouds map[string]cloudVerifier
+
 	policyMu      sync.RWMutex
 	policyEngines map[string]policy.Engine // per-workspace
-	members       []WorkspaceConfig        // membership (from config)
+	members       []WorkspaceConfig        // membership (from config + auto-provisioned)
 
 	ccMu      sync.RWMutex
 	ccVersion int64
@@ -141,6 +145,18 @@ func New(cfg *Config) (*Server, error) {
 		"token":              &tokenProvider{store: store},
 		"openstack-metadata": &openstackMetadataProvider{},
 	}
+	// OpenStack clouds registry: one verifier per service-uid (§7). The vendordata
+	// endpoint mints join tokens that enroll through the existing "token" provider.
+	s.clouds = make(map[string]cloudVerifier, len(cfg.Clouds))
+	for uid, cl := range cfg.Clouds {
+		oc, err := newOpenstackClient(uid, cl)
+		if err != nil {
+			store.Close()
+			audit.Close()
+			return nil, fmt.Errorf("init cloud %q: %w", uid, err)
+		}
+		s.clouds[uid] = oc
+	}
 	// Ensure each configured workspace exists in the store (record + one default
 	// Network + Subnet); idempotent. The default workspace is always present.
 	for _, w := range cfg.Workspaces {
@@ -152,6 +168,23 @@ func New(cfg *Config) (*Server, error) {
 			s.Close()
 			return nil, fmt.Errorf("bootstrap workspace %q: %w", w.ID, err)
 		}
+		// Config-driven source bindings (§6): a project (or IdP group) bound here
+		// resolves to this workspace. Idempotent; overwrites stale targets so the
+		// config is authoritative for bindings it declares.
+		for _, key := range w.Bindings {
+			if err := s.store.PutSourceBinding(&SourceBinding{
+				Key: key, WorkspaceID: w.ID, CreatedUnix: time.Now().Unix(), CreatedBy: "config",
+			}); err != nil {
+				s.Close()
+				return nil, fmt.Errorf("workspace %q binding %q: %w", w.ID, key, err)
+			}
+		}
+	}
+	// Auto-provisioned workspaces persist across restarts: load a policy engine
+	// for any store workspace not already covered by config (default policy).
+	if err := s.loadStoreWorkspaceEngines(); err != nil {
+		s.Close()
+		return nil, err
 	}
 	s.broker = NewBroker(store, audit, s.registry, s.policyFor, s.overlayFor,
 		grantKey, grantKeyID, cfg.RelayAddrs, cfg.GrantTTL.D(), cfg.DefaultMaxSessionTTL.D())
@@ -206,6 +239,8 @@ func (s *Server) policyFor(ws string) policy.Engine {
 func (s *Server) policy() policy.Engine { return s.policyFor(defaultWorkspace) }
 
 // reloadPolicies re-loads every workspace's policy file (admin ReloadPolicy).
+// Auto-provisioned (store-only) workspaces are preserved with the default policy
+// so a reload never silently turns them deny-all.
 func (s *Server) reloadPolicies() error {
 	engines := make(map[string]policy.Engine, len(s.cfg.Workspaces))
 	for _, w := range s.cfg.Workspaces {
@@ -215,10 +250,67 @@ func (s *Server) reloadPolicies() error {
 		}
 		engines[w.ID] = eng
 	}
+	wss, err := s.store.ListWorkspaces()
+	if err != nil {
+		return fmt.Errorf("list store workspaces: %w", err)
+	}
+	for _, w := range wss {
+		if engines[w.ID] != nil {
+			continue
+		}
+		eng, err := policy.Load(s.cfg.PolicyFile)
+		if err != nil {
+			return fmt.Errorf("default policy for workspace %q: %w", w.ID, err)
+		}
+		engines[w.ID] = eng
+	}
 	s.policyMu.Lock()
 	s.policyEngines = engines
 	s.policyMu.Unlock()
 	return nil
+}
+
+// loadStoreWorkspaceEngines creates a default-policy engine for every workspace
+// present in the store but not declared in config (i.e. auto-provisioned), so
+// they survive a restart with a real (non-deny-all) policy. Config workspaces
+// already have their engines from New().
+func (s *Server) loadStoreWorkspaceEngines() error {
+	wss, err := s.store.ListWorkspaces()
+	if err != nil {
+		return fmt.Errorf("list store workspaces: %w", err)
+	}
+	s.policyMu.Lock()
+	defer s.policyMu.Unlock()
+	for _, w := range wss {
+		if s.policyEngines[w.ID] != nil {
+			continue
+		}
+		eng, err := policy.Load(s.cfg.PolicyFile)
+		if err != nil {
+			return fmt.Errorf("load default policy for workspace %q: %w", w.ID, err)
+		}
+		s.policyEngines[w.ID] = eng
+	}
+	return nil
+}
+
+// registerDynamicWorkspace gives a freshly auto-provisioned workspace a policy
+// engine at runtime (default policy) so the broker does not fail-closed on it
+// before the next restart. Membership is intentionally NOT auto-opened: an
+// auto-provisioned workspace is isolated to its project until an operator binds
+// a human source onto it (§6).
+func (s *Server) registerDynamicWorkspace(ws string) {
+	s.policyMu.Lock()
+	defer s.policyMu.Unlock()
+	if s.policyEngines[ws] != nil {
+		return
+	}
+	eng, err := policy.Load(s.cfg.PolicyFile)
+	if err != nil {
+		slog.Error("auto-provision: load default policy failed; workspace is deny-all until restart", "workspace", ws, "err", err)
+		return
+	}
+	s.policyEngines[ws] = eng
 }
 
 // workspacesForUser returns the workspaces a principal may log into: those whose
@@ -228,6 +320,8 @@ func (s *Server) workspacesForUser(user string, groups []string) []string {
 	for _, g := range groups {
 		gset[g] = true
 	}
+	s.policyMu.RLock()
+	defer s.policyMu.RUnlock()
 	var out []string
 	for _, w := range s.members {
 		member := w.open()

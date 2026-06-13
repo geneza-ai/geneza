@@ -12,17 +12,19 @@ set -eu
 
 GATEWAY_HTTP="__GATEWAY_HTTP__"
 GATEWAY_GRPC=""
-TOKEN=""; ROOT_FP=""; NAME=""; LABELS=""
+TOKEN=""; ROOT_FP=""; NAME=""; LABELS=""; BOOTSTRAP_SHA=""; AGENT_SHA=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --token)        TOKEN="${2:-}"; shift 2 ;;
-    --root-fp)      ROOT_FP="${2:-}"; shift 2 ;;
-    --name)         NAME="${2:-}"; shift 2 ;;
-    --labels)       LABELS="${2:-}"; shift 2 ;;
-    --gateway-http) GATEWAY_HTTP="${2:-}"; shift 2 ;;
-    --gateway-grpc) GATEWAY_GRPC="${2:-}"; shift 2 ;;
-    -h|--help) echo "usage: install.sh --token T --root-fp sha256:... [--name N] [--labels k=v,...] [--gateway-grpc host:7401]"; exit 0 ;;
+    --token)           TOKEN="${2:-}"; shift 2 ;;
+    --root-fp)         ROOT_FP="${2:-}"; shift 2 ;;
+    --name)            NAME="${2:-}"; shift 2 ;;
+    --labels)          LABELS="${2:-}"; shift 2 ;;
+    --bootstrap-sha256) BOOTSTRAP_SHA="${2:-}"; shift 2 ;;
+    --agent-sha256)    AGENT_SHA="${2:-}"; shift 2 ;;
+    --gateway-http)    GATEWAY_HTTP="${2:-}"; shift 2 ;;
+    --gateway-grpc)    GATEWAY_GRPC="${2:-}"; shift 2 ;;
+    -h|--help) echo "usage: install.sh --token T --root-fp sha256:... [--bootstrap-sha256 sha256:...] [--agent-sha256 sha256:...] [--name N] [--labels k=v,...] [--gateway-grpc host:7401]"; exit 0 ;;
     *) echo "geneza-install: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -66,6 +68,22 @@ curl -fsSL "$GATEWAY_HTTP/v1/ca-roots" -o "$TMP/ca-roots.pem" || die "fetch ca-r
 echo "==> fetching stage-1 binaries ($OS/$ARCH)"
 curl -fsSL "$GATEWAY_HTTP/v1/install/bin/geneza-bootstrap-$OS-$ARCH" -o "$TMP/geneza-bootstrap" || die "fetch bootstrap failed"
 curl -fsSL "$GATEWAY_HTTP/v1/install/bin/geneza-agent-$OS-$ARCH" -o "$TMP/geneza-agent" || die "fetch agent failed"
+
+# Verify stage-1 binaries against caller-pinned hashes BEFORE making them
+# executable (security #2). The hashes arrive over the same trusted channel the
+# root-fp anchors / TLS protects; a tampered binary is refused, not run.
+verify_sha() { # <file> <expected "sha256:hex">
+  [ -n "$2" ] || return 0
+  got="sha256:$(sha256_of "$1")"
+  [ "$got" = "$2" ] || die "STAGE-1 BINARY HASH MISMATCH for $1
+  expected: $2
+  got:      $got
+refusing to install — the binary may be tampered."
+}
+verify_sha "$TMP/geneza-bootstrap" "$BOOTSTRAP_SHA"
+verify_sha "$TMP/geneza-agent" "$AGENT_SHA"
+[ -n "$BOOTSTRAP_SHA" ] && echo "    geneza-bootstrap verified ($BOOTSTRAP_SHA)"
+[ -n "$AGENT_SHA" ] && echo "    geneza-agent verified ($AGENT_SHA)"
 chmod +x "$TMP/geneza-bootstrap" "$TMP/geneza-agent"
 
 echo "==> installing files"

@@ -43,6 +43,24 @@ func (s *Server) rootFingerprint() string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
+// stage1SHA256 returns "sha256:<hex>" of a served stage-1 binary (e.g.
+// "geneza-bootstrap-linux-amd64"), or "" if InstallDir is unset / the file is
+// missing. The OpenStack vendordata path pins these into the cloud-init so
+// install.sh verifies the binaries before exec (security #2). Because that
+// cloud-init travels over the gateway's TLS listener, the pin arrives
+// authenticated rather than over an unsigned channel.
+func (s *Server) stage1SHA256(name string) string {
+	if s.cfg.InstallDir == "" || !installBinRe.MatchString(name) {
+		return ""
+	}
+	b, err := os.ReadFile(filepath.Join(s.cfg.InstallDir, name))
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(b)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
 // registerInstallerRoutes wires the installer endpoints onto the public HTTP mux
 // (same listener as artifacts/desired — everything here is public material whose
 // trust derives from the fingerprint + token + signed update chain, not the

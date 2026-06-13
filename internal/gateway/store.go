@@ -33,6 +33,17 @@ var (
 	bucketTokens     = []byte("tokens")     // global: token -> TokenRecord (carries WorkspaceID)
 	bucketSettings   = []byte("settings")   // global: rollout + cluster config
 	bucketArtifact   = []byte("artifacts")  // global: signed manifests
+	// bucketSrcBindings maps a cloud-qualified SOURCE binding (e.g.
+	// "openstack:project:<service-uid>:<project-uuid>", "idp:group:<realm>:<g>")
+	// to a workspace id (§6: the workspace is the hub, sources bind onto it).
+	// Global because a binding is the routing key from an external identity to a
+	// tenant; it carries its own workspace, like tokens.
+	bucketSrcBindings = []byte("src_bindings")
+	// bucketOSEnroll dedupes OpenStack vendordata enrollments by
+	// "<service-uid>#<instance-uuid>" (§10 step 5 / security #15,#22): Nova hits
+	// the endpoint ~5x per boot, so the minted join token is recorded here and
+	// re-served atomically rather than minting a fresh token per hit.
+	bucketOSEnroll = []byte("os_enroll")
 )
 
 // Per-workspace child sub-bucket names (under ws/<wsID>/).
@@ -216,7 +227,7 @@ func OpenStore(path string) (*Store, error) {
 		return nil, fmt.Errorf("open state db %s: %w", path, err)
 	}
 	err = db.Update(func(tx *bbolt.Tx) error {
-		for _, b := range [][]byte{bucketWS, bucketWorkspaces, bucketNodeWS, bucketTokens, bucketSettings, bucketArtifact} {
+		for _, b := range [][]byte{bucketWS, bucketWorkspaces, bucketNodeWS, bucketTokens, bucketSettings, bucketArtifact, bucketSrcBindings, bucketOSEnroll} {
 			if _, err := tx.CreateBucketIfNotExists(b); err != nil {
 				return err
 			}
@@ -702,6 +713,108 @@ func (s *Store) UseToken(token string, now time.Time) (*TokenRecord, error) {
 		return nil, err
 	}
 	return &rec, nil
+}
+
+// --- cloud-qualified source bindings (§6: workspace is the hub) ---
+
+// SourceBinding maps an external identity source onto a workspace. Key is the
+// cloud-qualified binding string (openstack:project:<svc>:<uuid>, idp:group:...,
+// invite:...). One binding serves both enrollment (a VM's project) and access (a
+// user's project) — they resolve to the same workspace by construction.
+type SourceBinding struct {
+	Key             string `json:"key"`
+	WorkspaceID     string `json:"workspace_id"`
+	CreatedUnix     int64  `json:"created_unix"`
+	CreatedBy       string `json:"created_by,omitempty"`       // admin name, or "auto:openstack"
+	AutoProvisioned bool   `json:"auto_provisioned,omitempty"` // workspace was created for this binding
+}
+
+func (s *Store) PutSourceBinding(rec *SourceBinding) error {
+	return s.db.Update(func(tx *bbolt.Tx) error { return putJSON(tx, bucketSrcBindings, rec.Key, rec) })
+}
+
+func (s *Store) GetSourceBinding(key string) (*SourceBinding, error) {
+	var rec SourceBinding
+	err := s.db.View(func(tx *bbolt.Tx) error { return getJSON(tx, bucketSrcBindings, key, &rec) })
+	if err != nil {
+		return nil, err
+	}
+	return &rec, nil
+}
+
+func (s *Store) ListSourceBindings() ([]*SourceBinding, error) {
+	var out []*SourceBinding
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		return tx.Bucket(bucketSrcBindings).ForEach(func(_, v []byte) error {
+			var rec SourceBinding
+			if err := json.Unmarshal(v, &rec); err != nil {
+				return err
+			}
+			out = append(out, &rec)
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (s *Store) DeleteSourceBinding(key string) error {
+	return s.db.Update(func(tx *bbolt.Tx) error { return tx.Bucket(bucketSrcBindings).Delete([]byte(key)) })
+}
+
+// --- OpenStack enrollment idempotency (§10 step 5 / security #15,#22) ---
+
+// OSEnrollRecord remembers the join token minted for one (service-uid,instance)
+// so Nova's ~5 near-simultaneous vendordata hits per boot all get the SAME
+// token instead of cutting five.
+type OSEnrollRecord struct {
+	Key         string `json:"key"` // "<service-uid>#<instance-uuid>"
+	Token       string `json:"token"`
+	WorkspaceID string `json:"workspace_id"`
+	ProjectID   string `json:"project_id"`
+	CreatedUnix int64  `json:"created_unix"`
+}
+
+// OSMintOnce atomically returns the join token for key, minting one only if none
+// exists yet (or the prior one has aged past dedupeTTL). The token record and the
+// dedupe entry are written in a SINGLE write transaction, so concurrent Nova
+// hits cannot race to mint multiple tokens. tok is the TokenRecord to store for
+// a freshly minted token; newToken generates the random token string. Returns
+// the token and whether it was reused.
+func (s *Store) OSMintOnce(key string, now time.Time, dedupeTTL time.Duration, tok *TokenRecord, newToken func() (string, error)) (token string, reused bool, err error) {
+	err = s.db.Update(func(tx *bbolt.Tx) error {
+		var prev OSEnrollRecord
+		if e := getJSON(tx, bucketOSEnroll, key, &prev); e == nil {
+			fresh := now.Sub(time.Unix(prev.CreatedUnix, 0)) < dedupeTTL
+			// Only reuse if the token still exists and has unspent uses (a node
+			// already enrolled with it ⇒ mint a new one for an honest re-serve only
+			// while unredeemed; a redeemed token must not be handed out again).
+			var tr TokenRecord
+			tokenLive := getJSON(tx, bucketTokens, prev.Token, &tr) == nil && tr.Uses < tr.MaxUses && now.Unix() <= tr.ExpiresUnix
+			if fresh && tokenLive {
+				token, reused = prev.Token, true
+				return nil
+			}
+		} else if !errors.Is(e, ErrNotFound) {
+			return e
+		}
+		t, e := newToken()
+		if e != nil {
+			return e
+		}
+		if e := putJSON(tx, bucketTokens, t, tok); e != nil {
+			return e
+		}
+		rec := OSEnrollRecord{Key: key, Token: t, WorkspaceID: tok.WorkspaceID, ProjectID: tok.Labels["os:project"], CreatedUnix: now.Unix()}
+		if e := putJSON(tx, bucketOSEnroll, key, &rec); e != nil {
+			return e
+		}
+		token = t
+		return nil
+	})
+	return token, reused, err
 }
 
 // --- sessions (per-workspace) ---
