@@ -69,9 +69,6 @@ func (n *nodeControlService) Stream(stream grpc.BidiStreamingServer[genezav1.Age
 	}
 	defer func() {
 		s.registry.Unregister(h)
-		// The departing worker's ICE creds/candidates are now dead; drop them so a
-		// peer never gets a stale replay before this node's new worker reconnects.
-		s.clearDiscoCache(ident.Name)
 		if err := s.audit.Append("node_disconnected", "", ident.Name, "", nil); err != nil {
 			slog.Error("audit append failed", "type", "node_disconnected", "err", err)
 		}
@@ -101,10 +98,6 @@ func (n *nodeControlService) Stream(stream grpc.BidiStreamingServer[genezav1.Age
 		nodeName = nr.Name
 	}
 	s.pushNodeModules(ident.Workspace, ident.Name)
-	// A reconnecting node starts a FRESH ICE agent (new ufrag/pwd + TURN
-	// allocation); drop its previous incarnation's cached ICE signaling so the
-	// disco replay never feeds a peer stale creds.
-	s.clearDiscoCache(ident.Name)
 	// Push the node's desired per-Network WireGuard set so a reconnecting agent
 	// re-derives the same overlay interfaces it had before.
 	s.pushNodeNetworks(ident.Workspace, ident.Name)

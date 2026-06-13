@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/pion/ice/v4"
 	"github.com/pion/stun/v3"
@@ -72,6 +73,7 @@ type peerICE struct {
 	remoteUfrag string
 	remotePwd   string
 	connecting  bool
+	localCands  []string // our gathered candidates, cached for periodic re-announce
 }
 
 type recvMsg struct {
@@ -280,13 +282,18 @@ func (b *ICEBind) ensurePeer(s PeerSetup) {
 	b.peers[s.WGPub] = p
 	b.mu.Unlock()
 
-	// Trickle LOCAL candidates up the control stream (gateway forwards to the peer).
+	// Trickle LOCAL candidates up the control stream (gateway forwards to the
+	// peer) and cache them for periodic re-announce.
 	_ = a.OnCandidate(func(c ice.Candidate) {
 		if c == nil { // nil == gathering complete
 			return
 		}
+		m := c.Marshal()
+		p.mu.Lock()
+		p.localCands = append(p.localCands, m)
+		p.mu.Unlock()
 		if sink != nil {
-			sink.SendLocalCandidate(b.vni, s.WGPub, c.Marshal())
+			sink.SendLocalCandidate(b.vni, s.WGPub, m)
 		}
 	})
 	_ = a.OnConnectionStateChange(func(st ice.ConnectionState) {
@@ -301,12 +308,42 @@ func (b *ICEBind) ensurePeer(s PeerSetup) {
 			"local", local.Type().String(), "remote", remote.Type().String())
 	})
 
-	// Ship OUR ufrag/pwd up so the peer can Dial/Accept us.
-	if ufrag, pwd, cerr := a.GetLocalUserCredentials(); cerr == nil && sink != nil {
+	// Ship OUR ufrag/pwd up so the peer can Dial/Accept us, and re-announce
+	// creds+candidates periodically until connected. Re-announce (not a gateway
+	// cache) is what makes convergence robust to ordering / restart: whenever the
+	// peer's agent comes up, our next re-announce reaches it, and vice versa — no
+	// stale signaling state anywhere.
+	ufrag, pwd, _ := a.GetLocalUserCredentials()
+	if sink != nil {
 		sink.SendICECreds(b.vni, s.WGPub, ufrag, pwd)
 	}
 	if err := a.GatherCandidates(); err != nil {
 		b.log.Warn("ice gather failed", "peer", shortHex(s.WGPub), "err", err)
+	}
+	go b.reannounce(p, sink, ufrag, pwd)
+}
+
+// reannounce re-sends our ICE creds + gathered candidates every 2s until the
+// peer connects (capped ~40s), so a peer whose agent appeared after our first
+// announce still receives them. Idempotent at the receiver (AddRemoteCandidate
+// dedups; the one-shot connect ignores repeat creds).
+func (b *ICEBind) reannounce(p *peerICE, sink SignalSink, ufrag, pwd string) {
+	if sink == nil {
+		return
+	}
+	for i := 0; i < 20; i++ {
+		time.Sleep(2 * time.Second)
+		p.mu.Lock()
+		connected := p.conn != nil
+		cands := append([]string(nil), p.localCands...)
+		p.mu.Unlock()
+		if connected {
+			return
+		}
+		sink.SendICECreds(b.vni, p.wgPub, ufrag, pwd)
+		for _, c := range cands {
+			sink.SendLocalCandidate(b.vni, p.wgPub, c)
+		}
 	}
 }
 
