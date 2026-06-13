@@ -1,8 +1,18 @@
 # Geneza magicsock-lite: userspace-WireGuard data plane + blind DERP-lite relay + gateway-coordinated NAT traversal
 
-Status: design (task #37), critique-reviewed. Supersedes the kernel-WG-only spine shipped in
-task #36 (`docs/wg-dataplane-plan.md`). This document is the authoritative reference for the
-Tailscale-style userspace data plane and drives the implementation.
+Status: design (task #37), critique-reviewed; **P0+P1 implemented and VM-proven**. Supersedes
+the kernel-WG-only spine shipped in task #36 (`docs/wg-dataplane-plan.md`). This document is the
+authoritative reference for the Tailscale-style userspace data plane and drives the
+implementation.
+
+> **P1 PROVEN (lab geneza1, 2026-06-13):** both nodes on `dataplane: userspace` bring up a
+> wireguard-go device (`gnzw1`, a TUN, `link/none`) behind a magicsock-lite `conn.Bind`, and the
+> overlay ping `100.64.0.2 ↔ 100.64.0.3` flows **through the blind relay floor** — 0% loss,
+> ~1.09 ms (vs 0.45 ms direct: the relay hop). `tcpdump` on the relay `:7404` shows the
+> forward pattern (node→relay→peer) with opaque `0x91`-framed datagrams (no plaintext). Kill the
+> relay → ping stops (the path *is* the relay, no direct path in P1); restart → nodes re-REG
+> within the 15 s keepalive and ping recovers (0.92 ms). Next: P2 (STUN-via-relay + direct
+> upgrade), P3 (hole-punch), P4 (NAT'd-laptop on `vmbr6`), P5 (VPN client `WatchNetworks`).
 
 > **Critique fixes (apply during implementation — verdict: core sound + buildable):**
 > 1. **(P1 blocker) Synthesize the peer endpoint unconditionally.** `toPeerConfigs` only sets

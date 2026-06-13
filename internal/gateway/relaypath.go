@@ -73,9 +73,12 @@ func (s *Server) relayPathFor(ws string, vni uint32, selfID, peerID string) (rel
 	return c, nil
 }
 
-// relayDataAddr derives the relay's UDP data endpoint (host of the first
-// configured relay rendezvous addr + RelayDataPort). Agents dial out to it.
+// relayDataAddr returns the relay's UDP data endpoint agents dial out to:
+// relay_data_addrs[0] if set, else host(relay_addrs[0]):RelayDataPort.
 func (s *Server) relayDataAddr() string {
+	if len(s.cfg.RelayDataAddrs) > 0 && s.cfg.RelayDataAddrs[0] != "" {
+		return s.cfg.RelayDataAddrs[0]
+	}
 	if len(s.cfg.RelayAddrs) == 0 {
 		return ""
 	}

@@ -93,6 +93,12 @@ type Config struct {
 	ClusterName          string            `yaml:"cluster_name"`
 	Advertise            Advertise         `yaml:"advertise"`
 	RelayAddrs           []string          `yaml:"relay_addrs"`
+	// RelayDataAddrs is where agents send WireGuard data-plane UDP (the blind
+	// DERP-lite forwarder). Distinct from relay_addrs (TCP rendezvous) because
+	// the data port (7404) may be reached on a different address — e.g. an
+	// internal address for same-site agents vs the public FQDN for rendezvous.
+	// Empty falls back to host(relay_addrs[0]):RelayDataPort.
+	RelayDataAddrs []string `yaml:"relay_data_addrs"`
 	PolicyFile           string            `yaml:"policy_file"`
 	CertTTL              CertTTLConfig     `yaml:"cert_ttl"`
 	GrantTTL             Duration          `yaml:"grant_ttl"`
