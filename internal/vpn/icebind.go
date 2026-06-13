@@ -71,7 +71,10 @@ type peerICE struct {
 	cancel      context.CancelFunc
 	remoteUfrag string
 	remotePwd   string
+	usedUfrag   string // remote creds the in-flight Dial/Accept is using
+	usedPwd     string
 	connecting  bool
+	gen         int // bumped each (re)connect; stale connect goroutines self-cancel
 }
 
 type recvMsg struct {
@@ -328,8 +331,12 @@ func (b *ICEBind) AddRemoteCandidate(peerWGPub [32]byte, candidate string) {
 	}
 }
 
-// OnICECreds records the peer's ufrag/pwd and starts the ICE connection once both
-// sides' creds are known (exactly one side Dials, the other Accepts).
+// OnICECreds records the peer's ufrag/pwd and (re)starts the ICE connection.
+// Exactly one side Dials, the other Accepts. If the peer announces DIFFERENT
+// creds while we're still dialing (a restart, or a superseded stale-replay), we
+// cancel the in-flight attempt and redial with the new creds — so the two sides
+// converge on the latest creds rather than deadlocking on a stale pair. A
+// generation counter makes the superseded connect goroutine self-cancel.
 func (b *ICEBind) OnICECreds(peerWGPub [32]byte, ufrag, pwd string) {
 	b.mu.Lock()
 	p := b.peers[peerWGPub]
@@ -339,25 +346,44 @@ func (b *ICEBind) OnICECreds(peerWGPub [32]byte, ufrag, pwd string) {
 	}
 	p.mu.Lock()
 	p.remoteUfrag, p.remotePwd = ufrag, pwd
-	start := !p.connecting && p.conn == nil
-	if start {
-		p.connecting = true
+	if p.conn != nil {
+		p.mu.Unlock()
+		return // already connected; new creds are for the next restart, ignore now
 	}
+	switch {
+	case !p.connecting:
+		// fresh: start dialing
+	case ufrag != p.usedUfrag || pwd != p.usedPwd:
+		// peer's creds changed while we were dialing stale ones -> supersede
+		if p.cancel != nil {
+			p.cancel()
+		}
+	default:
+		p.mu.Unlock()
+		return // already dialing with exactly these creds
+	}
+	p.connecting = true
+	p.usedUfrag, p.usedPwd = ufrag, pwd
+	p.gen++
+	gen := p.gen
 	p.mu.Unlock()
-	if start {
-		go b.connect(p)
-	}
+	go b.connect(p, gen, ufrag, pwd)
 }
 
 // OnPunchAt is the gateway's "re-run ICE now" trigger (late-upgrade / roam). In
 // P-libs1 (relay-only) it is a no-op; ICE restart lands with the direct phase.
 func (b *ICEBind) OnPunchAt(peerWGPub [32]byte, t0UnixMs int64, attempt int) {}
 
-func (b *ICEBind) connect(p *peerICE) {
+func (b *ICEBind) connect(p *peerICE, gen int, rufrag, rpwd string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	p.mu.Lock()
+	if p.gen != gen { // already superseded
+		p.mu.Unlock()
+		cancel()
+		return
+	}
 	p.cancel = cancel
-	rufrag, rpwd, ctrl := p.remoteUfrag, p.remotePwd, p.controlling
+	ctrl := p.controlling
 	p.mu.Unlock()
 
 	var c *ice.Conn
@@ -368,13 +394,20 @@ func (b *ICEBind) connect(p *peerICE) {
 		c, err = p.agent.Accept(ctx, rufrag, rpwd)
 	}
 	if err != nil {
-		b.log.Warn("ice connect failed", "peer", shortHex(p.wgPub), "err", err)
 		p.mu.Lock()
-		p.connecting = false
+		if p.gen == gen {
+			p.connecting = false
+		}
 		p.mu.Unlock()
+		b.log.Warn("ice connect failed", "peer", shortHex(p.wgPub), "err", err)
 		return
 	}
 	p.mu.Lock()
+	if p.gen != gen { // a newer connect superseded us; drop this conn
+		p.mu.Unlock()
+		_ = c.Close()
+		return
+	}
 	p.conn = c
 	p.mu.Unlock()
 	b.log.Info("ice connected", "peer", shortHex(p.wgPub), "controlling", ctrl)
