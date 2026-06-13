@@ -37,8 +37,8 @@ func moduleConfigProto(rec *NodeModulesRecord) *genezav1.ModuleConfig {
 
 // pushNodeModules sends a node its current desired module set (best-effort: if
 // the node is offline it reconciles on reconnect, which re-pushes).
-func (s *Server) pushNodeModules(nodeID string) {
-	rec, err := s.store.GetNodeModules(nodeID)
+func (s *Server) pushNodeModules(ws, nodeID string) {
+	rec, err := s.store.GetNodeModules(ws, nodeID)
 	if err != nil {
 		slog.Warn("load node modules", "node", nodeID, "err", err)
 		return

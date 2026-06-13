@@ -18,6 +18,9 @@ const (
 	overlayClientLast   = 254
 	overlayMachineFirst = 2
 	overlayMachineLast  = 126
+	// defaultOverlayCIDR is the per-workspace overlay space (each tenant gets its
+	// own; the .1/.53/.2-126/.128-254 split applies within each /24).
+	defaultOverlayCIDR = "100.64.0.0/24"
 )
 
 // overlayAllocator hands out per-SESSION client overlay IPs for VPN (subnet-route

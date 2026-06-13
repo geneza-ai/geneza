@@ -22,9 +22,16 @@ import (
 // alongside join tokens. autoApprove is true only when the evidence is strong
 // enough to skip the human admission gate (a token minted --auto-approve, or a
 // cryptographic instance-identity document) — a bearer token defaults to false.
+type enrollResult struct {
+	Labels        map[string]string
+	SuggestedName string
+	Workspace     string // tenant the node enrolls into (token-bound, or instance->ws)
+	AutoApprove   bool
+}
+
 type EnrollProvider interface {
 	Name() string
-	Verify(ctx context.Context, req *genezav1.EnrollRequest) (labels map[string]string, suggestedName string, autoApprove bool, err error)
+	Verify(ctx context.Context, req *genezav1.EnrollRequest) (enrollResult, error)
 }
 
 // tokenProvider: single-use-counted, expiring join tokens from the store.
@@ -34,17 +41,21 @@ type tokenProvider struct {
 
 func (p *tokenProvider) Name() string { return "token" }
 
-func (p *tokenProvider) Verify(_ context.Context, req *genezav1.EnrollRequest) (map[string]string, string, bool, error) {
+func (p *tokenProvider) Verify(_ context.Context, req *genezav1.EnrollRequest) (enrollResult, error) {
 	if req.GetToken() == "" {
-		return nil, "", false, status.Error(codes.InvalidArgument, "missing join token")
+		return enrollResult{}, status.Error(codes.InvalidArgument, "missing join token")
 	}
 	rec, err := p.store.UseToken(req.GetToken(), time.Now())
 	if err != nil {
 		// Log the specific failure; never tell the caller which check failed.
 		slog.Warn("join token rejected", "err", err)
-		return nil, "", false, status.Error(codes.PermissionDenied, "invalid join token")
+		return enrollResult{}, status.Error(codes.PermissionDenied, "invalid join token")
 	}
-	return rec.Labels, "", rec.AutoApprove, nil
+	ws := rec.WorkspaceID
+	if ws == "" {
+		ws = defaultWorkspace
+	}
+	return enrollResult{Labels: rec.Labels, Workspace: ws, AutoApprove: rec.AutoApprove}, nil
 }
 
 // openstackMetadataProvider is the reserved seam for the OpenStack PoC:
@@ -54,11 +65,12 @@ type openstackMetadataProvider struct{}
 
 func (p *openstackMetadataProvider) Name() string { return "openstack-metadata" }
 
-func (p *openstackMetadataProvider) Verify(context.Context, *genezav1.EnrollRequest) (map[string]string, string, bool, error) {
-	// When implemented this returns autoApprove=true: a vendordata-signed instance
-	// identity document is cryptographic evidence of "I am instance X in project
-	// Y" — no shared secret to leak — so an admission rule can trust it directly.
-	return nil, "", false, status.Error(codes.Unimplemented,
+func (p *openstackMetadataProvider) Verify(context.Context, *genezav1.EnrollRequest) (enrollResult, error) {
+	// When implemented this returns AutoApprove=true and maps the instance's
+	// project to a Workspace: a vendordata-signed instance identity document is
+	// cryptographic evidence of "I am instance X in project Y" — no shared secret
+	// to leak — so an admission rule can trust it directly.
+	return enrollResult{}, status.Error(codes.Unimplemented,
 		"openstack-metadata enrollment: reserved for the OpenStack PoC — see docs/openstack-integration.md")
 }
 
@@ -90,9 +102,14 @@ func (e *enrollmentService) Enroll(ctx context.Context, req *genezav1.EnrollRequ
 		return nil, err
 	}
 
-	provLabels, suggestedName, autoApprove, err := provider.Verify(ctx, req)
+	res, err := provider.Verify(ctx, req)
 	if err != nil {
 		return deny(fmt.Sprintf("provider %s: %v", provider.Name(), err), err)
+	}
+	provLabels, suggestedName, autoApprove := res.Labels, res.SuggestedName, res.AutoApprove
+	ws := res.Workspace
+	if ws == "" {
+		ws = defaultWorkspace
 	}
 	if len(req.GetNoiseStaticPub()) != 32 {
 		return deny("bad noise static key length",
@@ -127,9 +144,10 @@ func (e *enrollmentService) Enroll(ctx context.Context, req *genezav1.EnrollRequ
 	}
 
 	certPEM, err := s.ca.IssueFromCSR(req.GetCsrPem(), ca.Profile{
-		Kind: ca.KindNode,
-		Name: nodeID,
-		TTL:  s.cfg.CertTTL.Node.D(),
+		Kind:      ca.KindNode,
+		Workspace: ws,
+		Name:      nodeID,
+		TTL:       s.cfg.CertTTL.Node.D(),
 	})
 	if err != nil {
 		return deny("bad CSR", status.Errorf(codes.InvalidArgument, "issue node cert: %v", err))
@@ -157,7 +175,7 @@ func (e *enrollmentService) Enroll(ctx context.Context, req *genezav1.EnrollRequ
 		rec.ApprovedBy = "auto:" + provider.Name()
 		rec.ApprovedAtUnix = now.Unix()
 	}
-	if err := s.store.PutNode(rec); err != nil {
+	if err := s.store.PutNode(ws, rec); err != nil {
 		return nil, status.Errorf(codes.Internal, "store node: %v", err)
 	}
 	if err := s.audit.Append("enroll", provider.Name(), nodeID, "", map[string]string{

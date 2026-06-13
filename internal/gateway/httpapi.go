@@ -138,12 +138,16 @@ func (s *Server) httpHandler() http.Handler {
 		// linux/amd64 — otherwise self-update silently breaks for macOS and
 		// linux/arm64 nodes (their reconcile loop 404s forever).
 		os, arch := "linux", "amd64"
-		if rec, err := s.store.GetNode(nodeID); err == nil {
-			if rec.Platform.OS != "" {
-				os = rec.Platform.OS
-			}
-			if rec.Platform.Arch != "" {
-				arch = rec.Platform.Arch
+		// Unauthenticated path: no caller identity, so resolve the node's workspace
+		// via the global index, then read its record from that workspace.
+		if ws, werr := s.store.WorkspaceForNode(nodeID); werr == nil {
+			if rec, err := s.store.GetNode(ws, nodeID); err == nil {
+				if rec.Platform.OS != "" {
+					os = rec.Platform.OS
+				}
+				if rec.Platform.Arch != "" {
+					arch = rec.Platform.Arch
+				}
 			}
 		}
 		manifestBytes, err := s.store.GetManifest(ManifestKey("geneza-agent", os, arch, desired))

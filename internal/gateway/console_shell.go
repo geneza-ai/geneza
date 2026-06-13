@@ -52,7 +52,7 @@ func (c *consoleAPI) handleShell(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	node, err := c.s.store.FindNode(r.PathValue("id"))
+	node, err := c.s.store.FindNode(u.Workspace, r.PathValue("id"))
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "node not found")
 		return
@@ -98,7 +98,7 @@ func (c *consoleAPI) runWebShell(ctx context.Context, conn *websocket.Conn, u *c
 		wsClose(conn, "key generation failed")
 		return
 	}
-	ident := &ca.Identity{Kind: ca.KindUser, Name: u.Name, Roles: u.Roles}
+	ident := &ca.Identity{Kind: ca.KindUser, Workspace: u.Workspace, Name: u.Name, Roles: u.Roles}
 	resp, err := c.s.broker.CreateSessionWeb(ctx, ident, &genezav1.CreateSessionRequest{
 		Node:           node.ID,
 		Action:         types.ActionShell,

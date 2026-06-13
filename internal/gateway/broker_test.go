@@ -88,14 +88,17 @@ func testBroker(t *testing.T) (*Broker, *fakeAgents, *Store, ed25519.PublicKey) 
 		t.Fatal(err)
 	}
 	agents := &fakeAgents{online: map[string]bool{"n-aaaaaaaaaaaa": true}, accepted: true}
-	b := NewBroker(store, audit, agents, func() policy.Engine { return engine }, newOverlayAllocator(),
+	ov := newOverlayAllocator()
+	b := NewBroker(store, audit, agents,
+		func(string) policy.Engine { return engine },
+		func(string) *overlayAllocator { return ov },
 		priv, keyID, []string{"10.70.70.10:7403"}, 2*time.Minute, 12*time.Hour)
 
 	noise := make([]byte, 32)
 	for i := range noise {
 		noise[i] = 0xA0
 	}
-	if err := store.PutNode(&NodeRecord{
+	if err := store.PutNode(defaultWorkspace, &NodeRecord{
 		ID: "n-aaaaaaaaaaaa", Name: "web1",
 		Labels:   map[string]string{"env": "prod"},
 		NoisePub: noise,
@@ -117,10 +120,10 @@ func clientNoise() []byte {
 func TestBrokerPendingNodeDenied(t *testing.T) {
 	b, _, store, _ := testBroker(t)
 	// Quarantine the node (simulate a freshly-enrolled, not-yet-approved machine).
-	if _, err := store.SetNodeApproval("n-aaaaaaaaaaaa", false, "", time.Now()); err != nil {
+	if _, err := store.SetNodeApproval(defaultWorkspace, "n-aaaaaaaaaaaa", false, "", time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	ident := &ca.Identity{Kind: ca.KindUser, Name: "alice", Roles: []string{"ops"}}
+	ident := &ca.Identity{Kind: ca.KindUser, Workspace: defaultWorkspace, Name: "alice", Roles: []string{"ops"}}
 	req := &genezav1.CreateSessionRequest{
 		Node: "web1", Action: "shell", WantPty: true,
 		ClientNoisePub: clientNoise(), ClientPath: "native",
@@ -133,7 +136,7 @@ func TestBrokerPendingNodeDenied(t *testing.T) {
 		t.Fatalf("code = %v, want FailedPrecondition", got)
 	}
 	// After approval the same request succeeds.
-	if _, err := store.SetNodeApproval("n-aaaaaaaaaaaa", true, "admin", time.Now()); err != nil {
+	if _, err := store.SetNodeApproval(defaultWorkspace, "n-aaaaaaaaaaaa", true, "admin", time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := b.CreateSession(context.Background(), ident, req); err != nil {
@@ -143,7 +146,7 @@ func TestBrokerPendingNodeDenied(t *testing.T) {
 
 func TestBrokerGrantConstruction(t *testing.T) {
 	b, agents, store, pub := testBroker(t)
-	ident := &ca.Identity{Kind: ca.KindUser, Name: "alice", Roles: []string{"ops"}}
+	ident := &ca.Identity{Kind: ca.KindUser, Workspace: defaultWorkspace, Name: "alice", Roles: []string{"ops"}}
 	resp, err := b.CreateSession(context.Background(), ident, &genezav1.CreateSessionRequest{
 		Node:           "web1",
 		Action:         "shell",
@@ -189,7 +192,7 @@ func TestBrokerGrantConstruction(t *testing.T) {
 		t.Fatalf("agent-side validate: %v", err)
 	}
 	// Session record persisted as pending.
-	rec, err := store.GetSession(resp.SessionId)
+	rec, err := store.GetSession(defaultWorkspace, resp.SessionId)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +209,7 @@ func TestBrokerVPNGrant(t *testing.T) {
 			{Name: "exit", Kind: types.KindExitNode, NodeID: "n-aaaaaaaaaaaa"},
 		},
 	}
-	ident := &ca.Identity{Kind: ca.KindUser, Name: "alice", Roles: []string{"ops"}}
+	ident := &ca.Identity{Kind: ca.KindUser, Workspace: defaultWorkspace, Name: "alice", Roles: []string{"ops"}}
 
 	// Subnet route: action derived to vpn, route = service addr, overlay ip set.
 	resp, err := b.CreateSession(context.Background(), ident, &genezav1.CreateSessionRequest{
@@ -241,7 +244,7 @@ func TestBrokerVPNGrant(t *testing.T) {
 	if err := grant.Validate("n-aaaaaaaaaaaa", grant.AgentNoisePub, time.Now()); err != nil {
 		t.Fatalf("agent-side validate: %v", err)
 	}
-	rec, err := store.GetSession(resp.SessionId)
+	rec, err := store.GetSession(defaultWorkspace, resp.SessionId)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +281,7 @@ func TestBrokerVPNServiceDenied(t *testing.T) {
 	agents.services = map[string][]types.Service{
 		"n-aaaaaaaaaaaa": {{Name: "lan", Kind: types.KindSubnet, NodeID: "n-aaaaaaaaaaaa", Addr: "192.168.99.0/24"}},
 	}
-	ident := &ca.Identity{Kind: ca.KindUser, Name: "walter", Roles: []string{"watcher"}}
+	ident := &ca.Identity{Kind: ca.KindUser, Workspace: defaultWorkspace, Name: "walter", Roles: []string{"watcher"}}
 	_, err := b.CreateSession(context.Background(), ident, &genezav1.CreateSessionRequest{
 		Node:           "web1",
 		Action:         types.ActionVPN,
@@ -292,7 +295,7 @@ func TestBrokerVPNServiceDenied(t *testing.T) {
 
 func TestBrokerWebPathPolicyGate(t *testing.T) {
 	b, _, _, _ := testBroker(t)
-	ident := &ca.Identity{Kind: ca.KindUser, Name: "nina", Roles: []string{"natonly"}}
+	ident := &ca.Identity{Kind: ca.KindUser, Workspace: defaultWorkspace, Name: "nina", Roles: []string{"natonly"}}
 	req := &genezav1.CreateSessionRequest{Node: "web1", Action: "shell", ClientNoisePub: clientNoise()}
 
 	// Native client path is allowed by the require_native rule.
@@ -309,7 +312,7 @@ func TestBrokerWebPathPolicyGate(t *testing.T) {
 func TestBrokerPolicyDeny(t *testing.T) {
 	b, _, _, _ := testBroker(t)
 	// bob has no bindings at all.
-	ident := &ca.Identity{Kind: ca.KindUser, Name: "bob", Roles: []string{"nobody"}}
+	ident := &ca.Identity{Kind: ca.KindUser, Workspace: defaultWorkspace, Name: "bob", Roles: []string{"nobody"}}
 	_, err := b.CreateSession(context.Background(), ident, &genezav1.CreateSessionRequest{
 		Node:           "web1",
 		Action:         "shell",
@@ -323,7 +326,7 @@ func TestBrokerPolicyDeny(t *testing.T) {
 func TestBrokerDetachDeniedStrict(t *testing.T) {
 	b, _, _, _ := testBroker(t)
 	// walter's only rule sets allow_detach: false.
-	ident := &ca.Identity{Kind: ca.KindUser, Name: "walter", Roles: []string{"watcher"}}
+	ident := &ca.Identity{Kind: ca.KindUser, Workspace: defaultWorkspace, Name: "walter", Roles: []string{"watcher"}}
 	_, err := b.CreateSession(context.Background(), ident, &genezav1.CreateSessionRequest{
 		Node:           "web1",
 		Action:         "shell",
@@ -337,7 +340,7 @@ func TestBrokerDetachDeniedStrict(t *testing.T) {
 
 func TestBrokerActionValidation(t *testing.T) {
 	b, _, _, _ := testBroker(t)
-	ident := &ca.Identity{Kind: ca.KindUser, Name: "alice", Roles: []string{"ops"}}
+	ident := &ca.Identity{Kind: ca.KindUser, Workspace: defaultWorkspace, Name: "alice", Roles: []string{"ops"}}
 	cases := []*genezav1.CreateSessionRequest{
 		{Node: "web1", Action: "exec", ClientNoisePub: clientNoise()},                           // exec without command
 		{Node: "web1", Action: "forward", ClientNoisePub: clientNoise()},                        // forward without target
@@ -357,7 +360,7 @@ func TestBrokerAgentRejection(t *testing.T) {
 	b, agents, store, _ := testBroker(t)
 	agents.accepted = false
 	agents.reason = "session limit reached"
-	ident := &ca.Identity{Kind: ca.KindUser, Name: "alice", Roles: []string{"ops"}}
+	ident := &ca.Identity{Kind: ca.KindUser, Workspace: defaultWorkspace, Name: "alice", Roles: []string{"ops"}}
 	_, err := b.CreateSession(context.Background(), ident, &genezav1.CreateSessionRequest{
 		Node:           "web1",
 		Action:         "shell",
@@ -367,7 +370,7 @@ func TestBrokerAgentRejection(t *testing.T) {
 		t.Fatalf("want Unavailable, got %v", err)
 	}
 	// The pending record must be closed out.
-	sessions, err := store.ListSessions()
+	sessions, err := store.ListSessions(defaultWorkspace)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -378,9 +381,9 @@ func TestBrokerAgentRejection(t *testing.T) {
 
 func TestBrokerAttachFlow(t *testing.T) {
 	b, _, store, _ := testBroker(t)
-	ident := &ca.Identity{Kind: ca.KindUser, Name: "alice", Roles: []string{"ops"}}
+	ident := &ca.Identity{Kind: ca.KindUser, Workspace: defaultWorkspace, Name: "alice", Roles: []string{"ops"}}
 	// A detached prior session owned by alice with a known host session.
-	if err := store.PutSession(&SessionRecord{
+	if err := store.PutSession(defaultWorkspace, &SessionRecord{
 		ID: "s-111111111111", User: "alice", NodeID: "n-aaaaaaaaaaaa", NodeName: "web1",
 		Action: "shell", State: SessionDetached, HostSessionID: "h-42", Detachable: true,
 	}); err != nil {
@@ -404,7 +407,7 @@ func TestBrokerAttachFlow(t *testing.T) {
 	}
 
 	// Someone else's session: opaque denial.
-	if err := store.PutSession(&SessionRecord{
+	if err := store.PutSession(defaultWorkspace, &SessionRecord{
 		ID: "s-222222222222", User: "mallory", NodeID: "n-aaaaaaaaaaaa",
 		Action: "shell", State: SessionDetached, HostSessionID: "h-43",
 	}); err != nil {
@@ -420,7 +423,7 @@ func TestBrokerAttachFlow(t *testing.T) {
 	}
 
 	// Ended sessions cannot be reattached.
-	if err := store.UpdateSession("s-111111111111", func(r *SessionRecord) { r.State = SessionEnded }); err != nil {
+	if err := store.UpdateSession(defaultWorkspace, "s-111111111111", func(r *SessionRecord) { r.State = SessionEnded }); err != nil {
 		t.Fatal(err)
 	}
 	_, err = b.CreateSession(context.Background(), ident, &genezav1.CreateSessionRequest{

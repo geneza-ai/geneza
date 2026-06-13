@@ -2,10 +2,10 @@
 // (kept aside, "offline" in spirit) plus an issuing CA used online by the
 // gateway. Leaf identities are encoded as URIs:
 //
-//	geneza://node/<node-id>     agent (client cert on the control channel)
-//	geneza://user/<username>    operator (client cert on the user/admin API)
-//	geneza://gateway/<name>     gateway TLS server cert
-//	geneza://relay/<name>       relay TLS server cert
+//	geneza://node/<workspace>/<node-id>   agent (client cert on the control channel)
+//	geneza://user/<workspace>/<username>  operator (client cert on the user/admin API)
+//	geneza://gateway/<name>               gateway TLS server cert (no workspace)
+//	geneza://relay/<name>                 relay TLS server cert (no workspace)
 //
 // User roles/provider ride in a custom extension (OIDRolesExt, JSON).
 // The issuing key is held behind crypto.Signer so an HSM/KMS can replace the

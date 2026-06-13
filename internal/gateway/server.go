@@ -54,12 +54,20 @@ type Server struct {
 	ccVersion int64
 	ccSigned  []byte
 
-	overlay  *overlayAllocator
 	metrics  *metricsStore
 	resolver *genezadns.Resolver // policy-aware DNS for the tenant zone
 
-	overlayMu sync.Mutex // serializes stable per-machine overlay-IP assignment
+	// overlays holds one allocator per workspace (per-tenant overlay namespace:
+	// each tenant draws from its own 100.64/24, so two tenants never collide on a
+	// wire). overlayMu guards both the map (get-or-create) and stable per-machine
+	// overlay-IP assignment.
+	overlayMu sync.Mutex
+	overlays  map[string]*overlayAllocator
 }
+
+// defaultWorkspace is the tenant that single-tenant deployments and legacy
+// 2-segment certs resolve to (see ca.PeerIdentity).
+const defaultWorkspace = "default"
 
 func New(cfg *Config) (*Server, error) {
 	if err := cfg.validateForServe(); err != nil {
@@ -121,14 +129,20 @@ func New(cfg *Config) (*Server, error) {
 		artifactPub:  artifactPub,
 		tlsCert:      tlsCert,
 		policyEngine: engine,
-		overlay:      newOverlayAllocator(),
+		overlays:     map[string]*overlayAllocator{},
 		resolver:     genezadns.NewResolver(cfg.dnsZone()),
 	}
 	s.enrollProviders = map[string]EnrollProvider{
 		"token":              &tokenProvider{store: store},
 		"openstack-metadata": &openstackMetadataProvider{},
 	}
-	s.broker = NewBroker(store, audit, s.registry, s.policy, s.overlay,
+	// Ensure the default workspace exists (with one default Network + Subnet) so a
+	// single-tenant deployment is a one-workspace tenant; idempotent.
+	if err := s.ensureWorkspace(defaultWorkspace, "Default", defaultOverlayCIDR); err != nil {
+		s.Close()
+		return nil, fmt.Errorf("bootstrap default workspace: %w", err)
+	}
+	s.broker = NewBroker(store, audit, s.registry, s.policyFor, s.overlayFor,
 		grantKey, grantKeyID, cfg.RelayAddrs, cfg.GrantTTL.D(), cfg.DefaultMaxSessionTTL.D())
 
 	retention := cfg.MetricsRetention.D()
@@ -175,6 +189,69 @@ func (s *Server) setPolicy(e policy.Engine) {
 	s.policyMu.Lock()
 	s.policyEngine = e
 	s.policyMu.Unlock()
+}
+
+// policyFor returns the policy engine for a workspace. Phase 1 runs one engine
+// for all workspaces (per-workspace policy files are a later refinement); the
+// per-workspace accessor is the seam that makes that drop-in.
+func (s *Server) policyFor(ws string) policy.Engine { return s.policy() }
+
+// overlayFor returns the per-workspace overlay allocator, creating it on first
+// use. Each workspace gets its own 100.64/24 namespace so two tenants never
+// collide on a wire.
+func (s *Server) overlayFor(ws string) *overlayAllocator {
+	s.overlayMu.Lock()
+	defer s.overlayMu.Unlock()
+	a := s.overlays[ws]
+	if a == nil {
+		a = newOverlayAllocator()
+		s.overlays[ws] = a
+	}
+	return a
+}
+
+// ensureWorkspace creates the workspace registry record plus one default Network
+// (a ws-derived VNI) and a default Subnet covering its overlay CIDR, if absent.
+// Idempotent.
+func (s *Server) ensureWorkspace(id, name, overlayCIDR string) error {
+	if _, err := s.store.GetWorkspace(id); err == nil {
+		return nil // already exists
+	} else if !errors.Is(err, ErrNotFound) {
+		return err
+	}
+	now := time.Now().Unix()
+	if err := s.store.PutWorkspace(&WorkspaceRecord{ID: id, Name: name, OverlayCIDR: overlayCIDR, CreatedUnix: now}); err != nil {
+		return err
+	}
+	netID := id + "-net0"
+	if err := s.store.PutNetwork(&NetworkRecord{
+		WorkspaceID: id, ID: netID, VNI: vniForWorkspace(id), Name: "default",
+		// nil selector = open: every node/user in the workspace is a member.
+	}); err != nil {
+		return err
+	}
+	return s.store.PutSubnet(&SubnetRecord{
+		WorkspaceID: id, NetworkID: netID, ID: netID + "-sub0", CIDR: overlayCIDR,
+	})
+}
+
+// vniForWorkspace derives a stable 24-bit VNI from a workspace id ("default" is
+// pinned to 1). Deterministic so it needs no counter; the data plane uses it
+// later as the segment demux key.
+func vniForWorkspace(id string) uint32 {
+	if id == defaultWorkspace {
+		return 1
+	}
+	var h uint32 = 2166136261
+	for i := 0; i < len(id); i++ { // FNV-1a, truncated to 24 bits
+		h ^= uint32(id[i])
+		h *= 16777619
+	}
+	v := h & 0x00FFFFFF
+	if v == 0 || v == 1 {
+		v += 2
+	}
+	return v
 }
 
 // --- cluster config lifecycle ---
@@ -273,8 +350,8 @@ func (s *Server) signedClusterConfig() []byte {
 
 // --- shared views ---
 
-func (s *Server) nodeSummaries() ([]*genezav1.NodeSummary, error) {
-	nodes, err := s.store.ListNodes()
+func (s *Server) nodeSummaries(ws string) ([]*genezav1.NodeSummary, error) {
+	nodes, err := s.store.ListNodes(ws)
 	if err != nil {
 		return nil, err
 	}

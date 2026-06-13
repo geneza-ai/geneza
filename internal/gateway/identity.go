@@ -131,7 +131,14 @@ func (s *Server) handleLogin(ctx context.Context, req *genezav1.LoginRequest) (*
 		}
 		return nil, status.Errorf(codes.Unauthenticated, "login failed: %v", err)
 	}
-	roles := s.policy().RolesFor(user, groups)
+	// Resolve the workspace to mint a cert for. Phase 1: honor the requested
+	// workspace (default if unset); roles come from that workspace's policy.
+	// Phase 2 adds membership validation (deny a workspace the user isn't in).
+	ws := req.GetWorkspace()
+	if ws == "" {
+		ws = defaultWorkspace
+	}
+	roles := s.policyFor(ws).RolesFor(user, groups)
 	if len(roles) == 0 {
 		if aerr := s.audit.Append("login_denied", user, "", "", map[string]string{
 			"provider": provider, "reason": "no roles bound to user/groups",
@@ -145,10 +152,11 @@ func (s *Server) handleLogin(ctx context.Context, req *genezav1.LoginRequest) (*
 		return nil, status.Error(codes.InvalidArgument, "csr_pem is required")
 	}
 	certPEM, err := s.ca.IssueFromCSR(req.GetCsrPem(), ca.Profile{
-		Kind:   ca.KindUser,
-		Name:   user,
-		TTL:    s.cfg.CertTTL.User.D(),
-		Claims: &ca.IdentityClaims{Roles: roles, Provider: provider},
+		Kind:      ca.KindUser,
+		Workspace: ws,
+		Name:      user,
+		TTL:       s.cfg.CertTTL.User.D(),
+		Claims:    &ca.IdentityClaims{Roles: roles, Provider: provider},
 	})
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "issue user cert: %v", err)
@@ -168,6 +176,7 @@ func (s *Server) handleLogin(ctx context.Context, req *genezav1.LoginRequest) (*
 		User:        user,
 		Roles:       roles,
 		ExpiresUnix: expires,
+		Workspace:   ws,
 	}, nil
 }
 

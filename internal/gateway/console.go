@@ -53,6 +53,7 @@ func (s *Server) newConsoleAPI() (*consoleAPI, error) {
 
 type consoleUser struct {
 	Name        string
+	Workspace   string // tenant scope for all console reads/mutations
 	Groups      []string
 	Roles       []string
 	Admin       bool
@@ -120,7 +121,7 @@ func (c *consoleAPI) authenticateToken(ctx context.Context, tok string) (*consol
 	groups := claimStrings(claims[c.s.cfg.OIDC.GroupsClaim])
 	roles := c.s.policy().RolesFor(user, groups)
 	exp, _ := claims["exp"].(float64)
-	return &consoleUser{Name: user, Groups: groups, Roles: roles, Admin: contains(roles, "admin"), ExpiresUnix: int64(exp)}, nil
+	return &consoleUser{Name: user, Workspace: defaultWorkspace, Groups: groups, Roles: roles, Admin: contains(roles, "admin"), ExpiresUnix: int64(exp)}, nil
 }
 
 func (c *consoleAPI) auth(fn func(http.ResponseWriter, *http.Request, *consoleUser)) http.Handler {
@@ -164,13 +165,13 @@ func (c *consoleAPI) handleConfig(w http.ResponseWriter, r *http.Request) {
 
 func (c *consoleAPI) handleMe(w http.ResponseWriter, r *http.Request, u *consoleUser) {
 	writeJSON(w, map[string]any{
-		"user": u.Name, "roles": orEmpty(u.Roles), "groups": orEmpty(u.Groups),
+		"user": u.Name, "workspace": u.Workspace, "roles": orEmpty(u.Roles), "groups": orEmpty(u.Groups),
 		"admin": u.Admin, "expiresUnix": u.ExpiresUnix,
 	})
 }
 
-func (c *consoleAPI) nodeJSON() []map[string]any {
-	sums, err := c.s.nodeSummaries()
+func (c *consoleAPI) nodeJSON(ws string) []map[string]any {
+	sums, err := c.s.nodeSummaries(ws)
 	if err != nil {
 		return nil
 	}
@@ -187,12 +188,12 @@ func (c *consoleAPI) nodeJSON() []map[string]any {
 	return out
 }
 
-func (c *consoleAPI) handleNodes(w http.ResponseWriter, r *http.Request, _ *consoleUser) {
-	writeJSON(w, map[string]any{"nodes": c.nodeJSON()})
+func (c *consoleAPI) handleNodes(w http.ResponseWriter, r *http.Request, u *consoleUser) {
+	writeJSON(w, map[string]any{"nodes": c.nodeJSON(u.Workspace)})
 }
 
-func (c *consoleAPI) handleSessions(w http.ResponseWriter, r *http.Request, _ *consoleUser) {
-	all, err := c.s.store.ListSessions()
+func (c *consoleAPI) handleSessions(w http.ResponseWriter, r *http.Request, u *consoleUser) {
+	all, err := c.s.store.ListSessions(u.Workspace)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "list sessions")
 		return
@@ -215,8 +216,8 @@ func (c *consoleAPI) handleFleet(w http.ResponseWriter, r *http.Request, _ *cons
 	writeJSON(w, map[string]any{"stable": stable, "canary": canary, "canaryNodes": orEmpty(cn)})
 }
 
-func (c *consoleAPI) handleOverview(w http.ResponseWriter, r *http.Request, _ *consoleUser) {
-	nodes := c.nodeJSON()
+func (c *consoleAPI) handleOverview(w http.ResponseWriter, r *http.Request, u *consoleUser) {
+	nodes := c.nodeJSON(u.Workspace)
 	online := 0
 	var active, detached uint32
 	for _, n := range nodes {
@@ -226,7 +227,7 @@ func (c *consoleAPI) handleOverview(w http.ResponseWriter, r *http.Request, _ *c
 		active += n["activeSessions"].(uint32)
 		detached += n["detachedSessions"].(uint32)
 	}
-	sessions, _ := c.s.store.ListSessions()
+	sessions, _ := c.s.store.ListSessions(u.Workspace)
 	stable, _ := c.s.store.StableVersion()
 	canary, _ := c.s.store.CanaryVersion()
 	count, chainOK := 0, true
@@ -315,7 +316,7 @@ func (c *consoleAPI) handleRevokeSession(w http.ResponseWriter, r *http.Request,
 		writeErr(w, http.StatusBadRequest, "session id required")
 		return
 	}
-	if err := c.s.revokeByID(id, "console "+u.Name+": revoked by admin"); err != nil {
+	if err := c.s.revokeByID(u.Workspace, id, "console "+u.Name+": revoked by admin"); err != nil {
 		writeErr(w, http.StatusNotFound, "revoke: "+err.Error())
 		return
 	}
@@ -326,7 +327,7 @@ func (c *consoleAPI) handleRevokeSession(w http.ResponseWriter, r *http.Request,
 // Body: {"approve": true|false}.
 func (c *consoleAPI) handleApproveNode(w http.ResponseWriter, r *http.Request, u *consoleUser) {
 	id := r.PathValue("id")
-	node, err := c.s.store.FindNode(id)
+	node, err := c.s.store.FindNode(u.Workspace, id)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "node not found")
 		return
@@ -336,7 +337,7 @@ func (c *consoleAPI) handleApproveNode(w http.ResponseWriter, r *http.Request, u
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	by := "console:" + u.Name
-	if _, err := c.s.store.SetNodeApproval(node.ID, body.Approve, by, time.Now()); err != nil {
+	if _, err := c.s.store.SetNodeApproval(u.Workspace, node.ID, body.Approve, by, time.Now()); err != nil {
 		writeErr(w, http.StatusInternalServerError, "set approval")
 		return
 	}
@@ -352,19 +353,19 @@ func (c *consoleAPI) handleApproveNode(w http.ResponseWriter, r *http.Request, u
 // live sessions, then delete the record.
 func (c *consoleAPI) handleRemoveNode(w http.ResponseWriter, r *http.Request, u *consoleUser) {
 	id := r.PathValue("id")
-	node, err := c.s.store.FindNode(id)
+	node, err := c.s.store.FindNode(u.Workspace, id)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "node not found")
 		return
 	}
-	if sessions, err := c.s.store.ListSessions(); err == nil {
+	if sessions, err := c.s.store.ListSessions(u.Workspace); err == nil {
 		for _, rec := range sessions {
 			if rec.NodeID == node.ID && (rec.State == SessionActive || rec.State == SessionDetached) {
 				_ = c.s.revokeSession(rec, "node removed")
 			}
 		}
 	}
-	if err := c.s.store.DeleteNode(node.ID); err != nil {
+	if err := c.s.store.DeleteNode(u.Workspace, node.ID); err != nil {
 		writeErr(w, http.StatusInternalServerError, "delete node")
 		return
 	}

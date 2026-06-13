@@ -73,14 +73,14 @@ func TestTokenExpiry(t *testing.T) {
 func TestFindNodeAmbiguity(t *testing.T) {
 	s := testStore(t)
 	for _, id := range []string{"n-000000000001", "n-000000000002"} {
-		if err := s.PutNode(&NodeRecord{ID: id, Name: "dup"}); err != nil {
+		if err := s.PutNode(defaultWorkspace, &NodeRecord{ID: id, Name: "dup"}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := s.FindNode("n-000000000001"); err != nil {
+	if _, err := s.FindNode(defaultWorkspace, "n-000000000001"); err != nil {
 		t.Fatalf("by id: %v", err)
 	}
-	if _, err := s.FindNode("dup"); err == nil {
+	if _, err := s.FindNode(defaultWorkspace, "dup"); err == nil {
 		t.Fatal("ambiguous name must fail closed")
 	}
 }

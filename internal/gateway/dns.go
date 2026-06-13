@@ -20,13 +20,14 @@ func (s *Server) ensureNodeOverlayIP(node *NodeRecord) (string, error) {
 	}
 	s.overlayMu.Lock()
 	defer s.overlayMu.Unlock()
-	// Re-read under the lock and collect addresses already in use fleet-wide.
-	fresh, err := s.store.GetNode(node.ID)
+	// Re-read under the lock and collect addresses already in use WITHIN this
+	// workspace (overlay IPs are per-tenant, so the uniqueness scan is ws-local).
+	fresh, err := s.store.GetNode(node.WorkspaceID, node.ID)
 	if err == nil && fresh.OverlayIP != "" {
 		return fresh.OverlayIP, nil
 	}
 	used := map[string]bool{}
-	if all, err := s.store.ListNodes(); err == nil {
+	if all, err := s.store.ListNodes(node.WorkspaceID); err == nil {
 		for _, n := range all {
 			if n.OverlayIP != "" {
 				used[n.OverlayIP] = true
@@ -42,7 +43,7 @@ func (s *Server) ensureNodeOverlayIP(node *NodeRecord) (string, error) {
 		updated = fresh
 	}
 	updated.OverlayIP = ip
-	if err := s.store.PutNode(updated); err != nil {
+	if err := s.store.PutNode(updated.WorkspaceID, updated); err != nil {
 		return "", err
 	}
 	node.OverlayIP = ip
@@ -54,7 +55,7 @@ func (s *Server) ensureNodeOverlayIP(node *NodeRecord) (string, error) {
 // projection of policy — the names you can resolve are exactly the ones you can
 // reach. Denied -> the resolver returns NXDOMAIN (no enumeration oracle).
 func (s *Server) dnsCanReach(ident *ca.Identity, node *NodeRecord) bool {
-	eng := s.policy()
+	eng := s.policyFor(ident.Workspace)
 	for _, action := range []string{"shell", "exec", "vpn"} {
 		d := eng.Evaluate(policy.Input{
 			User:       ident.Name,
@@ -78,7 +79,7 @@ func (s *Server) dnsCanReach(ident *ca.Identity, node *NodeRecord) bool {
 // the caller may reach it. Anything else -> ok=false (NXDOMAIN).
 func (s *Server) dnsLookupA(ident *ca.Identity) func(string) (string, uint32, bool) {
 	return func(label string) (string, uint32, bool) {
-		node, err := s.store.FindNode(strings.ToLower(label))
+		node, err := s.store.FindNode(ident.Workspace, strings.ToLower(label))
 		if err != nil || node == nil {
 			return "", 0, false
 		}

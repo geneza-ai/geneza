@@ -1533,6 +1533,7 @@ type LoginRequest struct {
 	Username      string                 `protobuf:"bytes,3,opt,name=username,proto3" json:"username,omitempty"`                            // provider=local
 	Password      string                 `protobuf:"bytes,4,opt,name=password,proto3" json:"password,omitempty"`
 	CsrPem        []byte                 `protobuf:"bytes,5,opt,name=csr_pem,json=csrPem,proto3" json:"csr_pem,omitempty"` // PKCS10 CSR for the client-held key
+	Workspace     string                 `protobuf:"bytes,6,opt,name=workspace,proto3" json:"workspace,omitempty"`         // which workspace to mint a cert for (validated vs membership)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1602,15 +1603,24 @@ func (x *LoginRequest) GetCsrPem() []byte {
 	return nil
 }
 
+func (x *LoginRequest) GetWorkspace() string {
+	if x != nil {
+		return x.Workspace
+	}
+	return ""
+}
+
 type LoginResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	UserCertPem   []byte                 `protobuf:"bytes,1,opt,name=user_cert_pem,json=userCertPem,proto3" json:"user_cert_pem,omitempty"`
-	CaRootsPem    []byte                 `protobuf:"bytes,2,opt,name=ca_roots_pem,json=caRootsPem,proto3" json:"ca_roots_pem,omitempty"`
-	User          string                 `protobuf:"bytes,3,opt,name=user,proto3" json:"user,omitempty"`
-	Roles         []string               `protobuf:"bytes,4,rep,name=roles,proto3" json:"roles,omitempty"`
-	ExpiresUnix   int64                  `protobuf:"varint,5,opt,name=expires_unix,json=expiresUnix,proto3" json:"expires_unix,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state               protoimpl.MessageState `protogen:"open.v1"`
+	UserCertPem         []byte                 `protobuf:"bytes,1,opt,name=user_cert_pem,json=userCertPem,proto3" json:"user_cert_pem,omitempty"`
+	CaRootsPem          []byte                 `protobuf:"bytes,2,opt,name=ca_roots_pem,json=caRootsPem,proto3" json:"ca_roots_pem,omitempty"`
+	User                string                 `protobuf:"bytes,3,opt,name=user,proto3" json:"user,omitempty"`
+	Roles               []string               `protobuf:"bytes,4,rep,name=roles,proto3" json:"roles,omitempty"`
+	ExpiresUnix         int64                  `protobuf:"varint,5,opt,name=expires_unix,json=expiresUnix,proto3" json:"expires_unix,omitempty"`
+	Workspace           string                 `protobuf:"bytes,6,opt,name=workspace,proto3" json:"workspace,omitempty"`                                                // the workspace the issued cert is scoped to
+	AvailableWorkspaces []string               `protobuf:"bytes,7,rep,name=available_workspaces,json=availableWorkspaces,proto3" json:"available_workspaces,omitempty"` // when ambiguous: candidates to pick from
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *LoginResponse) Reset() {
@@ -1676,6 +1686,20 @@ func (x *LoginResponse) GetExpiresUnix() int64 {
 		return x.ExpiresUnix
 	}
 	return 0
+}
+
+func (x *LoginResponse) GetWorkspace() string {
+	if x != nil {
+		return x.Workspace
+	}
+	return ""
+}
+
+func (x *LoginResponse) GetAvailableWorkspaces() []string {
+	if x != nil {
+		return x.AvailableWorkspaces
+	}
+	return nil
 }
 
 type NodeSummary struct {
@@ -2471,6 +2495,7 @@ type WhoAmIResponse struct {
 	User            string                 `protobuf:"bytes,1,opt,name=user,proto3" json:"user,omitempty"`
 	Roles           []string               `protobuf:"bytes,2,rep,name=roles,proto3" json:"roles,omitempty"`
 	CertExpiresUnix int64                  `protobuf:"varint,3,opt,name=cert_expires_unix,json=certExpiresUnix,proto3" json:"cert_expires_unix,omitempty"`
+	Workspace       string                 `protobuf:"bytes,4,opt,name=workspace,proto3" json:"workspace,omitempty"` // the tenant this cert is scoped to
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -2524,6 +2549,13 @@ func (x *WhoAmIResponse) GetCertExpiresUnix() int64 {
 		return x.CertExpiresUnix
 	}
 	return 0
+}
+
+func (x *WhoAmIResponse) GetWorkspace() string {
+	if x != nil {
+		return x.Workspace
+	}
+	return ""
 }
 
 type SetNodeModulesRequest struct {
@@ -3605,20 +3637,23 @@ const file_geneza_v1_control_proto_rawDesc = "" +
 	"\bDNSQuery\x12\x14\n" +
 	"\x05query\x18\x01 \x01(\fR\x05query\")\n" +
 	"\vDNSResponse\x12\x1a\n" +
-	"\bresponse\x18\x01 \x01(\fR\bresponse\"\x9f\x01\n" +
+	"\bresponse\x18\x01 \x01(\fR\bresponse\"\xbd\x01\n" +
 	"\fLoginRequest\x12\x1a\n" +
 	"\bprovider\x18\x01 \x01(\tR\bprovider\x12\"\n" +
 	"\roidc_id_token\x18\x02 \x01(\tR\voidcIdToken\x12\x1a\n" +
 	"\busername\x18\x03 \x01(\tR\busername\x12\x1a\n" +
 	"\bpassword\x18\x04 \x01(\tR\bpassword\x12\x17\n" +
-	"\acsr_pem\x18\x05 \x01(\fR\x06csrPem\"\xa2\x01\n" +
+	"\acsr_pem\x18\x05 \x01(\fR\x06csrPem\x12\x1c\n" +
+	"\tworkspace\x18\x06 \x01(\tR\tworkspace\"\xf3\x01\n" +
 	"\rLoginResponse\x12\"\n" +
 	"\ruser_cert_pem\x18\x01 \x01(\fR\vuserCertPem\x12 \n" +
 	"\fca_roots_pem\x18\x02 \x01(\fR\n" +
 	"caRootsPem\x12\x12\n" +
 	"\x04user\x18\x03 \x01(\tR\x04user\x12\x14\n" +
 	"\x05roles\x18\x04 \x03(\tR\x05roles\x12!\n" +
-	"\fexpires_unix\x18\x05 \x01(\x03R\vexpiresUnix\"\xbe\x03\n" +
+	"\fexpires_unix\x18\x05 \x01(\x03R\vexpiresUnix\x12\x1c\n" +
+	"\tworkspace\x18\x06 \x01(\tR\tworkspace\x121\n" +
+	"\x14available_workspaces\x18\a \x03(\tR\x13availableWorkspaces\"\xbe\x03\n" +
 	"\vNodeSummary\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12:\n" +
@@ -3695,11 +3730,12 @@ const file_geneza_v1_control_proto_rawDesc = "" +
 	"\x13ListSessionsRequest\x12\x1b\n" +
 	"\tmine_only\x18\x01 \x01(\bR\bmineOnly\"J\n" +
 	"\x14ListSessionsResponse\x122\n" +
-	"\bsessions\x18\x01 \x03(\v2\x16.geneza.v1.SessionInfoR\bsessions\"f\n" +
+	"\bsessions\x18\x01 \x03(\v2\x16.geneza.v1.SessionInfoR\bsessions\"\x84\x01\n" +
 	"\x0eWhoAmIResponse\x12\x12\n" +
 	"\x04user\x18\x01 \x01(\tR\x04user\x12\x14\n" +
 	"\x05roles\x18\x02 \x03(\tR\x05roles\x12*\n" +
-	"\x11cert_expires_unix\x18\x03 \x01(\x03R\x0fcertExpiresUnix\"\\\n" +
+	"\x11cert_expires_unix\x18\x03 \x01(\x03R\x0fcertExpiresUnix\x12\x1c\n" +
+	"\tworkspace\x18\x04 \x01(\tR\tworkspace\"\\\n" +
 	"\x15SetNodeModulesRequest\x12\x12\n" +
 	"\x04node\x18\x01 \x01(\tR\x04node\x12/\n" +
 	"\amodules\x18\x02 \x03(\v2\x15.geneza.v1.ModuleSpecR\amodules\"+\n" +

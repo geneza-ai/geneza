@@ -32,6 +32,8 @@ type SessionGrant struct {
 	ID             string        `json:"id"`
 	User           string        `json:"user"`
 	Roles          []string      `json:"roles,omitempty"`
+	WorkspaceID    string        `json:"workspace_id,omitempty"` // tenant; agent asserts == its own
+	NetworkVNI     uint32        `json:"network_vni,omitempty"`  // tenant Network segment id (data-plane demux)
 	NodeID         string        `json:"node_id"`
 	Action         string        `json:"action"`
 	Command        string        `json:"command,omitempty"`

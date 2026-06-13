@@ -91,13 +91,13 @@ func (c *consoleAPI) handleMetricsQueryRange(w http.ResponseWriter, r *http.Requ
 }
 
 // handleGetNodeModules returns a node's desired agent-module set.
-func (c *consoleAPI) handleGetNodeModules(w http.ResponseWriter, r *http.Request, _ *consoleUser) {
-	node, err := c.s.store.FindNode(r.PathValue("id"))
+func (c *consoleAPI) handleGetNodeModules(w http.ResponseWriter, r *http.Request, u *consoleUser) {
+	node, err := c.s.store.FindNode(u.Workspace, r.PathValue("id"))
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "node not found")
 		return
 	}
-	rec, err := c.s.store.GetNodeModules(node.ID)
+	rec, err := c.s.store.GetNodeModules(u.Workspace, node.ID)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "load modules: "+err.Error())
 		return
@@ -107,7 +107,7 @@ func (c *consoleAPI) handleGetNodeModules(w http.ResponseWriter, r *http.Request
 
 // handleSetNodeModules (admin) replaces a node's module set and pushes it live.
 func (c *consoleAPI) handleSetNodeModules(w http.ResponseWriter, r *http.Request, u *consoleUser) {
-	node, err := c.s.store.FindNode(r.PathValue("id"))
+	node, err := c.s.store.FindNode(u.Workspace, r.PathValue("id"))
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "node not found")
 		return
@@ -125,12 +125,12 @@ func (c *consoleAPI) handleSetNodeModules(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
-	rec, err := c.s.store.SetNodeModules(node.ID, body.Modules)
+	rec, err := c.s.store.SetNodeModules(u.Workspace, node.ID, body.Modules)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "store modules: "+err.Error())
 		return
 	}
-	c.s.pushNodeModules(node.ID)
+	c.s.pushNodeModules(u.Workspace, node.ID)
 	if err := c.s.audit.Append("node_modules_set", u.Name, node.ID, "", map[string]string{
 		"modules": strconv.Itoa(len(body.Modules)),
 	}); err != nil {

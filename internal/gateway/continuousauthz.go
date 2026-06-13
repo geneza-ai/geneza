@@ -38,7 +38,7 @@ func (s *Server) runContinuousAuthz(ctx context.Context, interval time.Duration)
 
 // reauthSweep re-evaluates active/detached sessions and revokes the denied ones.
 func (s *Server) reauthSweep() {
-	sessions, err := s.store.ListSessions()
+	sessions, err := s.store.ListAllSessions()
 	if err != nil {
 		slog.Warn("reauth sweep: list sessions", "err", err)
 		return
@@ -59,7 +59,7 @@ func (s *Server) reauthSweep() {
 // current policy. Returns false + a reason when access is no longer allowed.
 func (s *Server) reauthorize(rec *SessionRecord) (bool, string) {
 	var labels map[string]string
-	if node, err := s.store.GetNode(rec.NodeID); err == nil {
+	if node, err := s.store.GetNode(rec.WorkspaceID, rec.NodeID); err == nil {
 		// Admission gate is continuous too: if the node's approval was revoked
 		// (quarantined), tear down its live sessions on the next sweep.
 		if !node.Approved {
@@ -67,7 +67,7 @@ func (s *Server) reauthorize(rec *SessionRecord) (bool, string) {
 		}
 		labels = node.Labels
 	}
-	d := s.policy().Evaluate(policy.Input{
+	d := s.policyFor(rec.WorkspaceID).Evaluate(policy.Input{
 		User:          rec.User,
 		Roles:         rec.Roles,
 		NodeID:        rec.NodeID,
@@ -96,10 +96,10 @@ func (s *Server) revokeSession(rec *SessionRecord, reason string) error {
 	if s.registry.Online(rec.NodeID) {
 		_ = s.registry.SendRevoke(rec.NodeID, rec.ID, reason)
 	}
-	_ = s.store.UpdateSession(rec.ID, func(r *SessionRecord) {
+	_ = s.store.UpdateSession(rec.WorkspaceID, rec.ID, func(r *SessionRecord) {
 		r.State = SessionRevoked
 		r.EndedUnix = time.Now().Unix()
-		s.overlay.release(r.OverlayIP)
+		s.overlayFor(rec.WorkspaceID).release(r.OverlayIP)
 	})
 	if err := s.audit.Append("session_revoked", "", rec.NodeID, rec.ID, map[string]string{
 		"user":   rec.User,
@@ -112,8 +112,8 @@ func (s *Server) revokeSession(rec *SessionRecord, reason string) error {
 }
 
 // revokeByID revokes a single session by id (admin "kick").
-func (s *Server) revokeByID(sessionID, reason string) error {
-	rec, err := s.store.GetSession(sessionID)
+func (s *Server) revokeByID(ws, sessionID, reason string) error {
+	rec, err := s.store.GetSession(ws, sessionID)
 	if err != nil {
 		return err
 	}
@@ -123,7 +123,7 @@ func (s *Server) revokeByID(sessionID, reason string) error {
 // revokeUser revokes every active/detached session belonging to a user and
 // returns how many were revoked.
 func (s *Server) revokeUser(user, reason string) (int, error) {
-	sessions, err := s.store.ListSessions()
+	sessions, err := s.store.ListAllSessions()
 	if err != nil {
 		return 0, err
 	}

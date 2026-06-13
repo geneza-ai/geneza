@@ -14,17 +14,36 @@ import (
 // Store is the gateway's persistent state in bbolt. Single-writer semantics
 // from bbolt are sufficient: the gateway is a single node today, and the
 // store interface is small enough to re-back with Postgres/etcd for HA later.
+//
+// Multi-tenancy layout: per-workspace records live in nested sub-buckets under
+// `ws/<workspaceID>/<child>` so a read is STRUCTURALLY scoped to one workspace
+// (cross-tenant access is NotFound, not a filter that can be forgotten).
+// Cross-cutting records stay global: the workspace registry, a node->workspace
+// index (for the unauthenticated update path), join tokens (each carries its
+// workspace), settings (rollout/cluster-config) and artifacts (signed, identical
+// for all tenants).
 type Store struct {
 	db *bbolt.DB
 }
 
 var (
-	bucketNodes    = []byte("nodes")
-	bucketTokens   = []byte("tokens")
-	bucketSessions = []byte("sessions")
-	bucketSettings = []byte("settings")
-	bucketArtifact = []byte("artifacts")
-	bucketModules  = []byte("node_modules")
+	bucketWS         = []byte("ws")         // parent of per-workspace sub-buckets
+	bucketWorkspaces = []byte("workspaces") // global: wsID -> WorkspaceRecord
+	bucketNodeWS     = []byte("node_ws")    // global index: nodeID -> wsID
+	bucketTokens     = []byte("tokens")     // global: token -> TokenRecord (carries WorkspaceID)
+	bucketSettings   = []byte("settings")   // global: rollout + cluster config
+	bucketArtifact   = []byte("artifacts")  // global: signed manifests
+)
+
+// Per-workspace child sub-bucket names (under ws/<wsID>/).
+const (
+	childNodes    = "nodes"
+	childSessions = "sessions"
+	childModules  = "node_modules"
+	childNetworks = "networks"
+	childSubnets  = "subnets"
+	childRoutes   = "routes"
+	childBindings = "bindings"
 )
 
 var ErrNotFound = errors.New("not found")
@@ -46,6 +65,59 @@ const (
 	settingSignedClusterConfig  = "signed_cluster_config"
 )
 
+// --- tenancy records (workspace -> network(VNI) -> subnet -> route) ---
+
+// WorkspaceRecord is a tenant: the isolation boundary owning machines, sessions,
+// networks, an overlay address space, and a policy.
+type WorkspaceRecord struct {
+	ID          string `json:"id"`
+	Name        string `json:"name,omitempty"`
+	OverlayCIDR string `json:"overlay_cidr"` // per-tenant overlay space, e.g. 100.64.0.0/24
+	CreatedUnix int64  `json:"created_unix"`
+}
+
+// NetworkRecord is one tenant Network: a VXLAN-width (24-bit) VNI naming a
+// routing/broadcast scope that carries N subnets. Membership is TAG-GATED:
+// a node/user is in this Network iff policy.LabelsMatch(Selector, its labels)
+// (empty Selector = all = default-open). L2 is reserved for the future L2 mode.
+type NetworkRecord struct {
+	WorkspaceID string            `json:"workspace_id"`
+	ID          string            `json:"id"`
+	VNI         uint32            `json:"vni"` // 24-bit
+	Name        string            `json:"name,omitempty"`
+	Selector    map[string]string `json:"selector,omitempty"` // tag selector; empty = all
+	L2          bool              `json:"l2,omitempty"`       // RESERVED; always false in Phase 1
+}
+
+// SubnetRecord is an address range inside a Network. Overlapping CIDRs across
+// Networks/Workspaces are first-class (they are VNI-qualified, never share a wire).
+type SubnetRecord struct {
+	WorkspaceID string `json:"workspace_id"`
+	NetworkID   string `json:"network_id"`
+	ID          string `json:"id"`
+	CIDR        string `json:"cidr"`
+}
+
+// RouteRecord is a RIB entry compiled into signed grants later (server-derived,
+// never client-chosen). Defined now so the future routing data plane is drop-in.
+type RouteRecord struct {
+	WorkspaceID string `json:"workspace_id"`
+	NetworkID   string `json:"network_id"`
+	ID          string `json:"id"`
+	Dest        string `json:"dest"` // CIDR
+	ViaNodeID   string `json:"via_node_id,omitempty"`
+}
+
+// BindingRecord is the future FIB (VNI,node->overlay IP). Type defined for
+// forward-compat; NOT written in Phase 1.
+type BindingRecord struct {
+	WorkspaceID string `json:"workspace_id"`
+	NetworkID   string `json:"network_id"`
+	VNI         uint32 `json:"vni"`
+	NodeID      string `json:"node_id"`
+	OverlayIP   string `json:"overlay_ip"`
+}
+
 // PlatformRecord is the enrolled node's reported platform.
 type PlatformRecord struct {
 	OS           string `json:"os,omitempty"`
@@ -55,6 +127,7 @@ type PlatformRecord struct {
 }
 
 type NodeRecord struct {
+	WorkspaceID string            `json:"workspace_id"`
 	ID          string            `json:"id"`
 	Name        string            `json:"name"`
 	Labels      map[string]string `json:"labels,omitempty"`
@@ -68,13 +141,13 @@ type NodeRecord struct {
 	Approved       bool   `json:"approved,omitempty"`
 	ApprovedBy     string `json:"approved_by,omitempty"` // admin name, or "auto:<provider>"
 	ApprovedAtUnix int64  `json:"approved_at_unix,omitempty"`
-	// OverlayIP is the machine's STABLE overlay address (100.64.0.x in the node
-	// sub-range), assigned at approval. DNS resolves <machine> -> this. Distinct
-	// from the per-session client IPs the overlayAllocator hands out.
+	// OverlayIP is the machine's STABLE overlay address within its workspace's
+	// overlay space, assigned at approval. DNS resolves <machine> -> this.
 	OverlayIP string `json:"overlay_ip,omitempty"`
 }
 
 type TokenRecord struct {
+	WorkspaceID string            `json:"workspace_id"` // the tenant this token enrolls into
 	Labels      map[string]string `json:"labels,omitempty"`
 	ExpiresUnix int64             `json:"expires_unix"`
 	MaxUses     int32             `json:"max_uses"`
@@ -95,6 +168,7 @@ const (
 )
 
 type SessionRecord struct {
+	WorkspaceID   string `json:"workspace_id"`
 	ID            string `json:"id"`
 	User          string `json:"user"`
 	NodeID        string `json:"node_id"`
@@ -116,13 +190,28 @@ type SessionRecord struct {
 	OverlayIP     string            `json:"overlay_ip,omitempty"`
 }
 
+// NodeModule is one enabled/disabled agent module for a node (monitoring, future
+// exporters). Persisted per node and pushed to the agent in realtime.
+type NodeModule struct {
+	Name     string            `json:"name"`
+	Enabled  bool              `json:"enabled"`
+	Settings map[string]string `json:"settings,omitempty"`
+}
+
+// NodeModulesRecord is the desired module set for a node plus a monotonic
+// version so the agent ignores stale pushes.
+type NodeModulesRecord struct {
+	Version int64        `json:"version"`
+	Modules []NodeModule `json:"modules"`
+}
+
 func OpenStore(path string) (*Store, error) {
 	db, err := bbolt.Open(path, 0o600, &bbolt.Options{Timeout: 2 * time.Second})
 	if err != nil {
 		return nil, fmt.Errorf("open state db %s: %w", path, err)
 	}
 	err = db.Update(func(tx *bbolt.Tx) error {
-		for _, b := range [][]byte{bucketNodes, bucketTokens, bucketSessions, bucketSettings, bucketArtifact, bucketModules} {
+		for _, b := range [][]byte{bucketWS, bucketWorkspaces, bucketNodeWS, bucketTokens, bucketSettings, bucketArtifact} {
 			if _, err := tx.CreateBucketIfNotExists(b); err != nil {
 				return err
 			}
@@ -137,6 +226,28 @@ func OpenStore(path string) (*Store, error) {
 }
 
 func (s *Store) Close() error { return s.db.Close() }
+
+// --- bucket + json helpers ---
+
+// wsChildW returns (creating if needed) the per-workspace child sub-bucket
+// ws/<wsID>/<child> for writes.
+func wsChildW(tx *bbolt.Tx, wsID, child string) (*bbolt.Bucket, error) {
+	wsb, err := tx.Bucket(bucketWS).CreateBucketIfNotExists([]byte(wsID))
+	if err != nil {
+		return nil, err
+	}
+	return wsb.CreateBucketIfNotExists([]byte(child))
+}
+
+// wsChildR returns the per-workspace child sub-bucket for reads, or nil if the
+// workspace or child does not exist yet (treated as empty).
+func wsChildR(tx *bbolt.Tx, wsID, child string) *bbolt.Bucket {
+	wsb := tx.Bucket(bucketWS).Bucket([]byte(wsID))
+	if wsb == nil {
+		return nil
+	}
+	return wsb.Bucket([]byte(child))
+}
 
 func putJSON(tx *bbolt.Tx, bucket []byte, key string, v any) error {
 	b, err := json.Marshal(v)
@@ -154,31 +265,189 @@ func getJSON(tx *bbolt.Tx, bucket []byte, key string, out any) error {
 	return json.Unmarshal(raw, out)
 }
 
-// --- nodes ---
-
-func (s *Store) PutNode(n *NodeRecord) error {
-	return s.db.Update(func(tx *bbolt.Tx) error { return putJSON(tx, bucketNodes, n.ID, n) })
+func putJSONB(b *bbolt.Bucket, key string, v any) error {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	return b.Put([]byte(key), raw)
 }
 
-// NodeModule is one enabled/disabled agent module for a node (monitoring, future
-// exporters). Persisted per node and pushed to the agent in realtime.
-type NodeModule struct {
-	Name     string            `json:"name"`
-	Enabled  bool              `json:"enabled"`
-	Settings map[string]string `json:"settings,omitempty"`
+func getJSONB(b *bbolt.Bucket, key string, out any) error {
+	if b == nil {
+		return ErrNotFound
+	}
+	raw := b.Get([]byte(key))
+	if raw == nil {
+		return ErrNotFound
+	}
+	return json.Unmarshal(raw, out)
 }
 
-// NodeModulesRecord is the desired module set for a node plus a monotonic
-// version so the agent ignores stale pushes.
-type NodeModulesRecord struct {
-	Version int64        `json:"version"`
-	Modules []NodeModule `json:"modules"`
+// forEachWS iterates every workspace sub-bucket, calling fn with its child
+// sub-bucket (which may be nil if that workspace has no records of that kind).
+func forEachWS(tx *bbolt.Tx, child string, fn func(wsID string, b *bbolt.Bucket) error) error {
+	parent := tx.Bucket(bucketWS)
+	return parent.ForEach(func(name, v []byte) error {
+		if v != nil { // a key, not a sub-bucket
+			return nil
+		}
+		wsb := parent.Bucket(name)
+		if wsb == nil {
+			return nil
+		}
+		return fn(string(name), wsb.Bucket([]byte(child)))
+	})
+}
+
+// --- workspaces (global registry) ---
+
+func (s *Store) PutWorkspace(rec *WorkspaceRecord) error {
+	return s.db.Update(func(tx *bbolt.Tx) error { return putJSON(tx, bucketWorkspaces, rec.ID, rec) })
+}
+
+func (s *Store) GetWorkspace(id string) (*WorkspaceRecord, error) {
+	var rec WorkspaceRecord
+	err := s.db.View(func(tx *bbolt.Tx) error { return getJSON(tx, bucketWorkspaces, id, &rec) })
+	if err != nil {
+		return nil, err
+	}
+	return &rec, nil
+}
+
+func (s *Store) ListWorkspaces() ([]*WorkspaceRecord, error) {
+	var out []*WorkspaceRecord
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		return tx.Bucket(bucketWorkspaces).ForEach(func(_, v []byte) error {
+			var w WorkspaceRecord
+			if err := json.Unmarshal(v, &w); err != nil {
+				return err
+			}
+			out = append(out, &w)
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
+// --- networks / subnets / routes (per-workspace) ---
+
+func (s *Store) PutNetwork(rec *NetworkRecord) error {
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		b, err := wsChildW(tx, rec.WorkspaceID, childNetworks)
+		if err != nil {
+			return err
+		}
+		return putJSONB(b, rec.ID, rec)
+	})
+}
+
+func (s *Store) ListNetworks(ws string) ([]*NetworkRecord, error) {
+	var out []*NetworkRecord
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		b := wsChildR(tx, ws, childNetworks)
+		if b == nil {
+			return nil
+		}
+		return b.ForEach(func(_, v []byte) error {
+			var n NetworkRecord
+			if err := json.Unmarshal(v, &n); err != nil {
+				return err
+			}
+			out = append(out, &n)
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
+func (s *Store) PutSubnet(rec *SubnetRecord) error {
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		b, err := wsChildW(tx, rec.WorkspaceID, childSubnets)
+		if err != nil {
+			return err
+		}
+		return putJSONB(b, rec.ID, rec)
+	})
+}
+
+func (s *Store) ListSubnets(ws string) ([]*SubnetRecord, error) {
+	var out []*SubnetRecord
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		b := wsChildR(tx, ws, childSubnets)
+		if b == nil {
+			return nil
+		}
+		return b.ForEach(func(_, v []byte) error {
+			var sn SubnetRecord
+			if err := json.Unmarshal(v, &sn); err != nil {
+				return err
+			}
+			out = append(out, &sn)
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// --- nodes (per-workspace) ---
+
+func (s *Store) PutNode(ws string, n *NodeRecord) error {
+	n.WorkspaceID = ws
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		b, err := wsChildW(tx, ws, childNodes)
+		if err != nil {
+			return err
+		}
+		if err := putJSONB(b, n.ID, n); err != nil {
+			return err
+		}
+		// Maintain the global node->workspace index in the same txn so it cannot
+		// drift from the record.
+		return tx.Bucket(bucketNodeWS).Put([]byte(n.ID), []byte(ws))
+	})
+}
+
+func (s *Store) GetNode(ws, id string) (*NodeRecord, error) {
+	var n NodeRecord
+	err := s.db.View(func(tx *bbolt.Tx) error { return getJSONB(wsChildR(tx, ws, childNodes), id, &n) })
+	if err != nil {
+		return nil, err
+	}
+	return &n, nil
+}
+
+// WorkspaceForNode resolves a node's workspace via the global index. Used by the
+// UNAUTHENTICATED desired-version path, which has no caller identity to derive
+// the workspace from. Returns ErrNotFound for an unknown node.
+func (s *Store) WorkspaceForNode(id string) (string, error) {
+	var ws string
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		v := tx.Bucket(bucketNodeWS).Get([]byte(id))
+		if v == nil {
+			return ErrNotFound
+		}
+		ws = string(v)
+		return nil
+	})
+	return ws, err
 }
 
 // GetNodeModules returns the node's desired module set (empty record if none).
-func (s *Store) GetNodeModules(nodeID string) (*NodeModulesRecord, error) {
+func (s *Store) GetNodeModules(ws, nodeID string) (*NodeModulesRecord, error) {
 	var rec NodeModulesRecord
-	err := s.db.View(func(tx *bbolt.Tx) error { return getJSON(tx, bucketModules, nodeID, &rec) })
+	err := s.db.View(func(tx *bbolt.Tx) error { return getJSONB(wsChildR(tx, ws, childModules), nodeID, &rec) })
 	if errors.Is(err, ErrNotFound) {
 		return &NodeModulesRecord{}, nil
 	}
@@ -190,13 +459,17 @@ func (s *Store) GetNodeModules(nodeID string) (*NodeModulesRecord, error) {
 
 // SetNodeModules replaces a node's desired module set, bumping the version, and
 // returns the stored record.
-func (s *Store) SetNodeModules(nodeID string, modules []NodeModule) (*NodeModulesRecord, error) {
+func (s *Store) SetNodeModules(ws, nodeID string, modules []NodeModule) (*NodeModulesRecord, error) {
 	var rec NodeModulesRecord
 	err := s.db.Update(func(tx *bbolt.Tx) error {
-		_ = getJSON(tx, bucketModules, nodeID, &rec) // ignore ErrNotFound: start at 0
+		b, err := wsChildW(tx, ws, childModules)
+		if err != nil {
+			return err
+		}
+		_ = getJSONB(b, nodeID, &rec) // ignore ErrNotFound: start at 0
 		rec.Version++
 		rec.Modules = modules
-		return putJSON(tx, bucketModules, nodeID, &rec)
+		return putJSONB(b, nodeID, &rec)
 	})
 	if err != nil {
 		return nil, err
@@ -204,35 +477,34 @@ func (s *Store) SetNodeModules(nodeID string, modules []NodeModule) (*NodeModule
 	return &rec, nil
 }
 
-func (s *Store) GetNode(id string) (*NodeRecord, error) {
-	var n NodeRecord
-	err := s.db.View(func(tx *bbolt.Tx) error { return getJSON(tx, bucketNodes, id, &n) })
-	if err != nil {
-		return nil, err
-	}
-	return &n, nil
-}
-
-// DeleteNode removes a node record (decommission). Also drops its module set.
-// Sessions are left as historical records. Returns ErrNotFound if absent.
-func (s *Store) DeleteNode(id string) error {
+// DeleteNode removes a node record (decommission). Also drops its module set and
+// the index entry. Sessions are left as historical records. ErrNotFound if absent.
+func (s *Store) DeleteNode(ws, id string) error {
 	return s.db.Update(func(tx *bbolt.Tx) error {
-		if tx.Bucket(bucketNodes).Get([]byte(id)) == nil {
+		b := wsChildR(tx, ws, childNodes)
+		if b == nil || b.Get([]byte(id)) == nil {
 			return ErrNotFound
 		}
-		if err := tx.Bucket(bucketNodes).Delete([]byte(id)); err != nil {
+		if err := b.Delete([]byte(id)); err != nil {
 			return err
 		}
-		return tx.Bucket(bucketModules).Delete([]byte(id))
+		if mb := wsChildR(tx, ws, childModules); mb != nil {
+			_ = mb.Delete([]byte(id))
+		}
+		return tx.Bucket(bucketNodeWS).Delete([]byte(id))
 	})
 }
 
 // SetNodeApproval flips a node's admission gate transactionally and returns the
 // updated record. by is the admin name (or "auto:<provider>") recorded for audit.
-func (s *Store) SetNodeApproval(id string, approve bool, by string, now time.Time) (*NodeRecord, error) {
+func (s *Store) SetNodeApproval(ws, id string, approve bool, by string, now time.Time) (*NodeRecord, error) {
 	var n NodeRecord
 	err := s.db.Update(func(tx *bbolt.Tx) error {
-		if err := getJSON(tx, bucketNodes, id, &n); err != nil {
+		b, err := wsChildW(tx, ws, childNodes)
+		if err != nil {
+			return err
+		}
+		if err := getJSONB(b, id, &n); err != nil {
 			return err
 		}
 		n.Approved = approve
@@ -243,7 +515,7 @@ func (s *Store) SetNodeApproval(id string, approve bool, by string, now time.Tim
 			n.ApprovedBy = ""
 			n.ApprovedAtUnix = 0
 		}
-		return putJSON(tx, bucketNodes, id, &n)
+		return putJSONB(b, id, &n)
 	})
 	if err != nil {
 		return nil, err
@@ -251,17 +523,21 @@ func (s *Store) SetNodeApproval(id string, approve bool, by string, now time.Tim
 	return &n, nil
 }
 
-// FindNode resolves a node by id first, then by unique name. Ambiguous names
-// fail closed rather than picking one.
-func (s *Store) FindNode(idOrName string) (*NodeRecord, error) {
-	if n, err := s.GetNode(idOrName); err == nil {
+// FindNode resolves a node by id first, then by unique name, WITHIN a workspace.
+// Ambiguous names fail closed. A node in another workspace is not found.
+func (s *Store) FindNode(ws, idOrName string) (*NodeRecord, error) {
+	if n, err := s.GetNode(ws, idOrName); err == nil {
 		return n, nil
 	} else if !errors.Is(err, ErrNotFound) {
 		return nil, err
 	}
 	var matches []*NodeRecord
 	err := s.db.View(func(tx *bbolt.Tx) error {
-		return tx.Bucket(bucketNodes).ForEach(func(_, v []byte) error {
+		b := wsChildR(tx, ws, childNodes)
+		if b == nil {
+			return nil
+		}
+		return b.ForEach(func(_, v []byte) error {
 			var n NodeRecord
 			if err := json.Unmarshal(v, &n); err != nil {
 				return err
@@ -285,10 +561,14 @@ func (s *Store) FindNode(idOrName string) (*NodeRecord, error) {
 	}
 }
 
-func (s *Store) ListNodes() ([]*NodeRecord, error) {
+func (s *Store) ListNodes(ws string) ([]*NodeRecord, error) {
 	var out []*NodeRecord
 	err := s.db.View(func(tx *bbolt.Tx) error {
-		return tx.Bucket(bucketNodes).ForEach(func(_, v []byte) error {
+		b := wsChildR(tx, ws, childNodes)
+		if b == nil {
+			return nil
+		}
+		return b.ForEach(func(_, v []byte) error {
 			var n NodeRecord
 			if err := json.Unmarshal(v, &n); err != nil {
 				return err
@@ -304,7 +584,33 @@ func (s *Store) ListNodes() ([]*NodeRecord, error) {
 	return out, nil
 }
 
-// --- join tokens ---
+// ListAllNodes returns nodes across ALL workspaces (operator/global views only —
+// e.g. the desired-version reconcile loop is per-node by id, not this).
+func (s *Store) ListAllNodes() ([]*NodeRecord, error) {
+	var out []*NodeRecord
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		return forEachWS(tx, childNodes, func(_ string, b *bbolt.Bucket) error {
+			if b == nil {
+				return nil
+			}
+			return b.ForEach(func(_, v []byte) error {
+				var n NodeRecord
+				if err := json.Unmarshal(v, &n); err != nil {
+					return err
+				}
+				out = append(out, &n)
+				return nil
+			})
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
+// --- join tokens (global; each carries its workspace) ---
 
 func (s *Store) PutToken(token string, rec *TokenRecord) error {
 	return s.db.Update(func(tx *bbolt.Tx) error { return putJSON(tx, bucketTokens, token, rec) })
@@ -337,15 +643,22 @@ func (s *Store) UseToken(token string, now time.Time) (*TokenRecord, error) {
 	return &rec, nil
 }
 
-// --- sessions ---
+// --- sessions (per-workspace) ---
 
-func (s *Store) PutSession(rec *SessionRecord) error {
-	return s.db.Update(func(tx *bbolt.Tx) error { return putJSON(tx, bucketSessions, rec.ID, rec) })
+func (s *Store) PutSession(ws string, rec *SessionRecord) error {
+	rec.WorkspaceID = ws
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		b, err := wsChildW(tx, ws, childSessions)
+		if err != nil {
+			return err
+		}
+		return putJSONB(b, rec.ID, rec)
+	})
 }
 
-func (s *Store) GetSession(id string) (*SessionRecord, error) {
+func (s *Store) GetSession(ws, id string) (*SessionRecord, error) {
 	var rec SessionRecord
-	err := s.db.View(func(tx *bbolt.Tx) error { return getJSON(tx, bucketSessions, id, &rec) })
+	err := s.db.View(func(tx *bbolt.Tx) error { return getJSONB(wsChildR(tx, ws, childSessions), id, &rec) })
 	if err != nil {
 		return nil, err
 	}
@@ -353,21 +666,29 @@ func (s *Store) GetSession(id string) (*SessionRecord, error) {
 }
 
 // UpdateSession applies fn to the stored record inside one transaction.
-func (s *Store) UpdateSession(id string, fn func(*SessionRecord)) error {
+func (s *Store) UpdateSession(ws, id string, fn func(*SessionRecord)) error {
 	return s.db.Update(func(tx *bbolt.Tx) error {
+		b, err := wsChildW(tx, ws, childSessions)
+		if err != nil {
+			return err
+		}
 		var rec SessionRecord
-		if err := getJSON(tx, bucketSessions, id, &rec); err != nil {
+		if err := getJSONB(b, id, &rec); err != nil {
 			return err
 		}
 		fn(&rec)
-		return putJSON(tx, bucketSessions, id, &rec)
+		return putJSONB(b, id, &rec)
 	})
 }
 
-func (s *Store) ListSessions() ([]*SessionRecord, error) {
+func (s *Store) ListSessions(ws string) ([]*SessionRecord, error) {
 	var out []*SessionRecord
 	err := s.db.View(func(tx *bbolt.Tx) error {
-		return tx.Bucket(bucketSessions).ForEach(func(_, v []byte) error {
+		b := wsChildR(tx, ws, childSessions)
+		if b == nil {
+			return nil
+		}
+		return b.ForEach(func(_, v []byte) error {
 			var rec SessionRecord
 			if err := json.Unmarshal(v, &rec); err != nil {
 				return err
@@ -383,7 +704,33 @@ func (s *Store) ListSessions() ([]*SessionRecord, error) {
 	return out, nil
 }
 
-// --- settings ---
+// ListAllSessions returns sessions across ALL workspaces (the continuous-authz
+// sweep, which re-evaluates each against its own workspace's policy).
+func (s *Store) ListAllSessions() ([]*SessionRecord, error) {
+	var out []*SessionRecord
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		return forEachWS(tx, childSessions, func(_ string, b *bbolt.Bucket) error {
+			if b == nil {
+				return nil
+			}
+			return b.ForEach(func(_, v []byte) error {
+				var rec SessionRecord
+				if err := json.Unmarshal(v, &rec); err != nil {
+					return err
+				}
+				out = append(out, &rec)
+				return nil
+			})
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].StartedUnix < out[j].StartedUnix })
+	return out, nil
+}
+
+// --- settings (global) ---
 
 func (s *Store) SetSetting(key string, val []byte) error {
 	return s.db.Update(func(tx *bbolt.Tx) error {
@@ -464,7 +811,7 @@ func (s *Store) SignedClusterConfig() ([]byte, error) {
 	return s.GetSetting(settingSignedClusterConfig)
 }
 
-// --- artifact manifests ---
+// --- artifact manifests (global) ---
 
 // ManifestKey builds the artifacts bucket key.
 func ManifestKey(product, osName, arch, version string) string {

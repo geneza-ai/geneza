@@ -61,8 +61,8 @@ type Broker struct {
 	store         *Store
 	audit         *Audit
 	agents        AgentDirectory
-	engine        func() policy.Engine
-	overlay       *overlayAllocator
+	policyFor     func(ws string) policy.Engine
+	overlayFor    func(ws string) *overlayAllocator
 	grantKey      ed25519.PrivateKey
 	grantKeyID    string
 	relayAddrs    []string
@@ -71,11 +71,11 @@ type Broker struct {
 	now           func() time.Time
 }
 
-func NewBroker(store *Store, audit *Audit, agents AgentDirectory, engine func() policy.Engine, overlay *overlayAllocator,
+func NewBroker(store *Store, audit *Audit, agents AgentDirectory, policyFor func(ws string) policy.Engine, overlayFor func(ws string) *overlayAllocator,
 	grantKey ed25519.PrivateKey, grantKeyID string, relayAddrs []string,
 	grantTTL, defaultMaxTTL time.Duration) *Broker {
 	return &Broker{
-		store: store, audit: audit, agents: agents, engine: engine, overlay: overlay,
+		store: store, audit: audit, agents: agents, policyFor: policyFor, overlayFor: overlayFor,
 		grantKey: grantKey, grantKeyID: grantKeyID, relayAddrs: relayAddrs,
 		grantTTL: grantTTL, defaultMaxTTL: defaultMaxTTL, now: time.Now,
 	}
@@ -131,7 +131,7 @@ func (b *Broker) createSession(ctx context.Context, ident *ca.Identity, req *gen
 	// arbitrary forward target — it names an authorized service). Policy then
 	// gates by service name/kind/labels.
 	if req.GetService() != "" || action == "connect" || action == types.ActionVPN {
-		node, err = b.store.FindNode(req.GetNode())
+		node, err = b.store.FindNode(ident.Workspace, req.GetNode())
 		if err != nil {
 			if errors.Is(err, ErrNotFound) {
 				return nil, status.Errorf(codes.NotFound, "node %q not found", req.GetNode())
@@ -186,13 +186,13 @@ func (b *Broker) createSession(ctx context.Context, ident *ca.Identity, req *gen
 	// authoritative (and all its failure modes collapse to one opaque denial
 	// so session ids cannot be probed).
 	if action == types.ActionAttach {
-		attachRec, node, err = b.resolveAttach(ident.Name, req)
+		attachRec, node, err = b.resolveAttach(ident.Workspace, ident.Name, req)
 		if err != nil {
 			return nil, b.deny(ident.Name, req, "", err.Error(),
 				status.Error(codes.PermissionDenied, "attach denied"))
 		}
 	} else if !preResolved {
-		node, err = b.store.FindNode(req.GetNode())
+		node, err = b.store.FindNode(ident.Workspace, req.GetNode())
 		if err != nil {
 			if errors.Is(err, ErrNotFound) {
 				return nil, status.Errorf(codes.NotFound, "node %q not found", req.GetNode())
@@ -216,7 +216,7 @@ func (b *Broker) createSession(ctx context.Context, ident *ca.Identity, req *gen
 	// native for the direct user-cert API; CreateSessionWeb -> web for the
 	// in-process proxy), NEVER from the client-supplied req.client_path — a
 	// client could otherwise assert "native" to defeat a require_native policy.
-	decision := b.engine().Evaluate(policy.Input{
+	decision := b.policyFor(ident.Workspace).Evaluate(policy.Input{
 		User:          ident.Name,
 		Roles:         ident.Roles,
 		NodeID:        node.ID,
@@ -261,8 +261,8 @@ func (b *Broker) createSession(ctx context.Context, ident *ca.Identity, req *gen
 				return nil, status.Errorf(codes.InvalidArgument, "service route %q is not a valid CIDR", c)
 			}
 		}
-		if b.overlay != nil {
-			overlayIP, err = b.overlay.alloc()
+		if a := b.overlayFor(ident.Workspace); a != nil {
+			overlayIP, err = a.alloc()
 			if err != nil {
 				return nil, status.Errorf(codes.ResourceExhausted, "overlay address: %v", err)
 			}
@@ -274,6 +274,8 @@ func (b *Broker) createSession(ctx context.Context, ident *ca.Identity, req *gen
 		ID:             sessionID,
 		User:           ident.Name,
 		Roles:          ident.Roles,
+		WorkspaceID:    ident.Workspace,
+		NetworkVNI:     vniForWorkspace(ident.Workspace),
 		NodeID:         node.ID,
 		Action:         action,
 		Command:        req.GetCommand(),
@@ -325,7 +327,7 @@ func (b *Broker) createSession(ctx context.Context, ident *ca.Identity, req *gen
 		ServiceLabels: svcLabels,
 		OverlayIP:     overlayIP,
 	}
-	if err := b.store.PutSession(sessRec); err != nil {
+	if err := b.store.PutSession(ident.Workspace, sessRec); err != nil {
 		return nil, status.Errorf(codes.Internal, "store session: %v", err)
 	}
 
@@ -334,7 +336,7 @@ func (b *Broker) createSession(ctx context.Context, ident *ca.Identity, req *gen
 		if reason == "" && offerErr != nil {
 			reason = offerErr.Error()
 		}
-		_ = b.store.UpdateSession(sessionID, func(r *SessionRecord) {
+		_ = b.store.UpdateSession(ident.Workspace, sessionID, func(r *SessionRecord) {
 			r.State = SessionEnded
 			r.EndedUnix = b.now().Unix()
 		})
@@ -362,8 +364,8 @@ func (b *Broker) createSession(ctx context.Context, ident *ca.Identity, req *gen
 // resolveAttach validates reattachment against the original session record:
 // same user, a known host session, and a live-or-detached state. Reattach is
 // re-authorized from scratch by the policy evaluation in CreateSession.
-func (b *Broker) resolveAttach(user string, req *genezav1.CreateSessionRequest) (*SessionRecord, *NodeRecord, error) {
-	rec, err := b.store.GetSession(req.GetAttachSessionId())
+func (b *Broker) resolveAttach(ws, user string, req *genezav1.CreateSessionRequest) (*SessionRecord, *NodeRecord, error) {
+	rec, err := b.store.GetSession(ws, req.GetAttachSessionId())
 	if err != nil {
 		return nil, nil, fmt.Errorf("attach: session %q: %w", req.GetAttachSessionId(), err)
 	}
@@ -376,13 +378,13 @@ func (b *Broker) resolveAttach(user string, req *genezav1.CreateSessionRequest) 
 	if rec.State != SessionActive && rec.State != SessionDetached {
 		return nil, nil, fmt.Errorf("attach: session %s is %s", rec.ID, rec.State)
 	}
-	node, err := b.store.GetNode(rec.NodeID)
+	node, err := b.store.GetNode(ws, rec.NodeID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("attach: node %s: %w", rec.NodeID, err)
 	}
 	// If the client also named a node it must be the session's node.
 	if req.GetNode() != "" {
-		named, err := b.store.FindNode(req.GetNode())
+		named, err := b.store.FindNode(ws, req.GetNode())
 		if err != nil || named.ID != node.ID {
 			return nil, nil, fmt.Errorf("attach: requested node %q does not match session node %s", req.GetNode(), node.ID)
 		}

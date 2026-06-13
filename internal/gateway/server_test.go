@@ -3,9 +3,11 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 	"google.golang.org/grpc/codes"
@@ -108,7 +110,7 @@ func TestServerLoginEnrollAndConfigReconcile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("enroll: %v", err)
 	}
-	node, err := srv.store.GetNode(enResp.NodeId)
+	node, err := srv.store.GetNode(defaultWorkspace, enResp.NodeId)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +231,7 @@ func TestEnrollApprovalGate(t *testing.T) {
 		if err != nil {
 			t.Fatalf("enroll(auto=%v): %v", autoApprove, err)
 		}
-		n, err := srv.store.GetNode(resp.NodeId)
+		n, err := srv.store.GetNode(defaultWorkspace, resp.NodeId)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -245,7 +247,7 @@ func TestEnrollApprovalGate(t *testing.T) {
 	if _, err := admin.ApproveNode(context.Background(), &genezav1.ApproveNodeRequest{Node: pending.ID, Approve: true}); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
-	got, _ := srv.store.GetNode(pending.ID)
+	got, _ := srv.store.GetNode(defaultWorkspace, pending.ID)
 	// ApprovedBy comes from the admin cert identity (empty in this unit ctx); the
 	// real provenance is asserted via the auto-approve path below.
 	if !got.Approved || got.ApprovedAtUnix == 0 {
@@ -255,7 +257,7 @@ func TestEnrollApprovalGate(t *testing.T) {
 	if _, err := admin.ApproveNode(context.Background(), &genezav1.ApproveNodeRequest{Node: pending.ID, Approve: false}); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ = srv.store.GetNode(pending.ID); got.Approved {
+	if got, _ = srv.store.GetNode(defaultWorkspace, pending.ID); got.Approved {
 		t.Fatal("deny should clear Approved")
 	}
 
@@ -268,6 +270,82 @@ func TestEnrollApprovalGate(t *testing.T) {
 	// Unknown node id -> NotFound.
 	if _, err := admin.ApproveNode(context.Background(), &genezav1.ApproveNodeRequest{Node: "n-doesnotexist", Approve: true}); status.Code(err) != codes.NotFound {
 		t.Fatalf("approve unknown: want NotFound, got %v", err)
+	}
+}
+
+// TestCrossWorkspaceIsolation is the flagship multi-tenancy property: a node in
+// workspace B is structurally invisible to a workspace-A-scoped caller (NotFound,
+// not "denied"), the broker refuses to reach it, and the node->workspace index
+// (the unauthenticated update path) resolves correctly.
+func TestCrossWorkspaceIsolation(t *testing.T) {
+	cfg := testServerConfig(t)
+	if err := InitDataDir(cfg); err != nil {
+		t.Fatal(err)
+	}
+	srv, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	if err := srv.ensureWorkspace("wsb", "B", defaultOverlayCIDR); err != nil {
+		t.Fatal(err)
+	}
+	enroll := &enrollmentService{s: srv}
+	enrollInto := func(ws, name string) *NodeRecord {
+		t.Helper()
+		tok, _ := types.NewToken()
+		if err := srv.store.PutToken(tok, &TokenRecord{
+			WorkspaceID: ws, ExpiresUnix: time.Now().Add(time.Hour).Unix(), MaxUses: 1, AutoApprove: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		key, _ := ca.GenerateKey()
+		csr, _ := ca.MakeCSR(key, "node")
+		resp, err := enroll.Enroll(context.Background(), &genezav1.EnrollRequest{
+			Provider: "token", Token: tok, CsrPem: csr, NoiseStaticPub: make([]byte, 32),
+			Platform: &genezav1.PlatformInfo{Hostname: name},
+		})
+		if err != nil {
+			t.Fatalf("enroll %s/%s: %v", ws, name, err)
+		}
+		n, _ := srv.store.GetNode(ws, resp.NodeId)
+		return n
+	}
+
+	nA := enrollInto(defaultWorkspace, "alpha")
+	nB := enrollInto("wsb", "bravo")
+
+	// INV-CP2: a wsB node is invisible to a wsA-scoped read, and vice versa.
+	if _, err := srv.store.GetNode(defaultWorkspace, nB.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("wsA GetNode(nB) = %v, want ErrNotFound", err)
+	}
+	if _, err := srv.store.FindNode(defaultWorkspace, "bravo"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("wsA FindNode(bravo) = %v, want ErrNotFound", err)
+	}
+	if got, _ := srv.store.ListNodes(defaultWorkspace); len(got) != 1 || got[0].ID != nA.ID {
+		t.Fatalf("wsA ListNodes = %v, want only nA", got)
+	}
+	if got, _ := srv.store.ListNodes("wsb"); len(got) != 1 || got[0].ID != nB.ID {
+		t.Fatalf("wsB ListNodes = %v, want only nB", got)
+	}
+
+	// INV-CP1 (unauth update path): the index resolves each node's workspace.
+	if ws, _ := srv.store.WorkspaceForNode(nB.ID); ws != "wsb" {
+		t.Fatalf("WorkspaceForNode(nB) = %q, want wsb", ws)
+	}
+
+	// INV-CP3: a wsA user cannot broker to nB (NotFound, structurally).
+	identA := &ca.Identity{Kind: ca.KindUser, Workspace: defaultWorkspace, Name: "alice", Roles: []string{"ops"}}
+	_, berr := srv.broker.CreateSession(context.Background(), identA, &genezav1.CreateSessionRequest{
+		Node: nB.ID, Action: "shell", WantPty: true, ClientNoisePub: make([]byte, 32), ClientPath: "native",
+	})
+	if status.Code(berr) != codes.NotFound {
+		t.Fatalf("wsA broker to nB = %v, want NotFound", berr)
+	}
+
+	// INV-CP3 (DNS): bravo does not resolve for a wsA caller.
+	if _, _, ok := srv.dnsLookupA(identA)("bravo"); ok {
+		t.Fatal("wsA resolved bravo (a wsB machine) — cross-tenant DNS leak")
 	}
 }
 

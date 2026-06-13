@@ -19,7 +19,11 @@ func (u *userAPIService) Login(ctx context.Context, req *genezav1.LoginRequest) 
 }
 
 func (u *userAPIService) ListNodes(ctx context.Context, _ *genezav1.ListNodesRequest) (*genezav1.ListNodesResponse, error) {
-	nodes, err := u.s.nodeSummaries()
+	ident, _, ok := identityFrom(ctx)
+	if !ok {
+		return nil, status.Error(codes.Unauthenticated, "no verified identity")
+	}
+	nodes, err := u.s.nodeSummaries(ident.Workspace)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "list nodes: %v", err)
 	}
@@ -29,15 +33,19 @@ func (u *userAPIService) ListNodes(ctx context.Context, _ *genezav1.ListNodesReq
 // ListServices returns the services exposed across the fleet (implicit host
 // services + agent-advertised), optionally filtered to one node.
 func (u *userAPIService) ListServices(ctx context.Context, req *genezav1.ListServicesRequest) (*genezav1.ListServicesResponse, error) {
+	ident, _, ok := identityFrom(ctx)
+	if !ok {
+		return nil, status.Error(codes.Unauthenticated, "no verified identity")
+	}
 	var nodes []*NodeRecord
 	if filter := req.GetNode(); filter != "" {
-		n, err := u.s.store.FindNode(filter)
+		n, err := u.s.store.FindNode(ident.Workspace, filter)
 		if err != nil {
 			return nil, status.Errorf(codes.NotFound, "node %q not found", filter)
 		}
 		nodes = []*NodeRecord{n}
 	} else {
-		all, err := u.s.store.ListNodes()
+		all, err := u.s.store.ListNodes(ident.Workspace)
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "list nodes: %v", err)
 		}
@@ -87,7 +95,7 @@ func (u *userAPIService) ListSessions(ctx context.Context, req *genezav1.ListSes
 	if !ok {
 		return nil, status.Error(codes.Unauthenticated, "no verified identity")
 	}
-	all, err := u.s.store.ListSessions()
+	all, err := u.s.store.ListSessions(ident.Workspace)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "list sessions: %v", err)
 	}
@@ -119,6 +127,7 @@ func (u *userAPIService) WhoAmI(ctx context.Context, _ *genezav1.Empty) (*geneza
 	}
 	return &genezav1.WhoAmIResponse{
 		User:            ident.Name,
+		Workspace:       ident.Workspace,
 		Roles:           ident.Roles,
 		CertExpiresUnix: leaf.NotAfter.Unix(),
 	}, nil

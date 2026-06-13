@@ -42,6 +42,16 @@ func adminActor(ctx context.Context) string {
 	return ""
 }
 
+// actorWorkspace is the workspace of the authenticated caller, derived solely
+// from its verified cert. Falls back to the default workspace when there is no
+// identity (unit tests / break-glass), so single-tenant behavior is unchanged.
+func actorWorkspace(ctx context.Context) string {
+	if ident, _, ok := identityFrom(ctx); ok && ident.Workspace != "" {
+		return ident.Workspace
+	}
+	return defaultWorkspace
+}
+
 func (a *adminAPIService) CreateJoinToken(ctx context.Context, req *genezav1.CreateJoinTokenRequest) (*genezav1.CreateJoinTokenResponse, error) {
 	s := a.s
 	ttl := time.Duration(req.GetTtlSeconds()) * time.Second
@@ -58,6 +68,7 @@ func (a *adminAPIService) CreateJoinToken(ctx context.Context, req *genezav1.Cre
 	}
 	expires := time.Now().Add(ttl).Unix()
 	if err := s.store.PutToken(token, &TokenRecord{
+		WorkspaceID: actorWorkspace(ctx),
 		Labels:      req.GetLabels(),
 		ExpiresUnix: expires,
 		MaxUses:     maxUses,
@@ -87,7 +98,8 @@ func (a *adminAPIService) CreateJoinToken(ctx context.Context, req *genezav1.Cre
 // re-checked there — see continuousauthz.go).
 func (a *adminAPIService) ApproveNode(ctx context.Context, req *genezav1.ApproveNodeRequest) (*genezav1.Empty, error) {
 	s := a.s
-	node, err := s.store.FindNode(req.GetNode())
+	ws := actorWorkspace(ctx)
+	node, err := s.store.FindNode(ws, req.GetNode())
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return nil, status.Errorf(codes.NotFound, "node %q not found", req.GetNode())
@@ -95,7 +107,7 @@ func (a *adminAPIService) ApproveNode(ctx context.Context, req *genezav1.Approve
 		return nil, status.Errorf(codes.Internal, "resolve node: %v", err)
 	}
 	by := adminActor(ctx)
-	if _, err := s.store.SetNodeApproval(node.ID, req.GetApprove(), by, time.Now()); err != nil {
+	if _, err := s.store.SetNodeApproval(ws, node.ID, req.GetApprove(), by, time.Now()); err != nil {
 		return nil, status.Errorf(codes.Internal, "set approval: %v", err)
 	}
 	decision := "approve"
@@ -117,7 +129,8 @@ func (a *adminAPIService) ApproveNode(ctx context.Context, req *genezav1.Approve
 // no record the broker denies every session to it.
 func (a *adminAPIService) RemoveNode(ctx context.Context, req *genezav1.RemoveNodeRequest) (*genezav1.Empty, error) {
 	s := a.s
-	node, err := s.store.FindNode(req.GetNode())
+	ws := actorWorkspace(ctx)
+	node, err := s.store.FindNode(ws, req.GetNode())
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return nil, status.Errorf(codes.NotFound, "node %q not found", req.GetNode())
@@ -125,14 +138,14 @@ func (a *adminAPIService) RemoveNode(ctx context.Context, req *genezav1.RemoveNo
 		return nil, status.Errorf(codes.Internal, "resolve node: %v", err)
 	}
 	// Tear down any live sessions first so we don't orphan tunnels.
-	if sessions, err := s.store.ListSessions(); err == nil {
+	if sessions, err := s.store.ListSessions(ws); err == nil {
 		for _, rec := range sessions {
 			if rec.NodeID == node.ID && (rec.State == SessionActive || rec.State == SessionDetached) {
 				_ = s.revokeSession(rec, "node removed")
 			}
 		}
 	}
-	if err := s.store.DeleteNode(node.ID); err != nil {
+	if err := s.store.DeleteNode(ws, node.ID); err != nil {
 		return nil, status.Errorf(codes.Internal, "delete node: %v", err)
 	}
 	if err := s.audit.Append("node_remove", adminActor(ctx), node.ID, "", map[string]string{
@@ -330,7 +343,7 @@ func (s *Server) canaryBlockers(canaryNodes []string, version string) []string {
 
 func (a *adminAPIService) GetFleetStatus(ctx context.Context, _ *genezav1.Empty) (*genezav1.FleetStatus, error) {
 	s := a.s
-	nodes, err := s.nodeSummaries()
+	nodes, err := s.nodeSummaries(actorWorkspace(ctx))
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "list nodes: %v", err)
 	}
@@ -383,7 +396,7 @@ func (a *adminAPIService) RevokeSession(ctx context.Context, req *genezav1.Revok
 	if reason == "" {
 		reason = "revoked by admin"
 	}
-	if err := a.s.revokeByID(req.GetSessionId(), "admin "+adminActor(ctx)+": "+reason); err != nil {
+	if err := a.s.revokeByID(actorWorkspace(ctx), req.GetSessionId(), "admin "+adminActor(ctx)+": "+reason); err != nil {
 		return nil, status.Errorf(codes.NotFound, "revoke session: %v", err)
 	}
 	return &genezav1.Empty{}, nil
@@ -409,7 +422,8 @@ func (a *adminAPIService) RevokeUser(ctx context.Context, req *genezav1.RevokeUs
 // realtime (monitoring on/off, future exporters). Persisted so it survives
 // agent reconnects and gateway restarts.
 func (a *adminAPIService) SetNodeModules(ctx context.Context, req *genezav1.SetNodeModulesRequest) (*genezav1.Empty, error) {
-	node, err := a.s.store.FindNode(req.GetNode())
+	ws := actorWorkspace(ctx)
+	node, err := a.s.store.FindNode(ws, req.GetNode())
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "node %q not found", req.GetNode())
 	}
@@ -420,10 +434,10 @@ func (a *adminAPIService) SetNodeModules(ctx context.Context, req *genezav1.SetN
 		}
 		modules = append(modules, NodeModule{Name: m.GetName(), Enabled: m.GetEnabled(), Settings: m.GetSettings()})
 	}
-	if _, err := a.s.store.SetNodeModules(node.ID, modules); err != nil {
+	if _, err := a.s.store.SetNodeModules(ws, node.ID, modules); err != nil {
 		return nil, status.Errorf(codes.Internal, "store node modules: %v", err)
 	}
-	a.s.pushNodeModules(node.ID)
+	a.s.pushNodeModules(ws, node.ID)
 	if err := a.s.audit.Append("node_modules_set", adminActor(ctx), node.ID, "", map[string]string{
 		"modules": strconv.Itoa(len(modules)),
 	}); err != nil {
@@ -433,11 +447,12 @@ func (a *adminAPIService) SetNodeModules(ctx context.Context, req *genezav1.SetN
 }
 
 func (a *adminAPIService) GetNodeModules(ctx context.Context, req *genezav1.GetNodeModulesRequest) (*genezav1.NodeModulesResponse, error) {
-	node, err := a.s.store.FindNode(req.GetNode())
+	ws := actorWorkspace(ctx)
+	node, err := a.s.store.FindNode(ws, req.GetNode())
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "node %q not found", req.GetNode())
 	}
-	rec, err := a.s.store.GetNodeModules(node.ID)
+	rec, err := a.s.store.GetNodeModules(ws, node.ID)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "load node modules: %v", err)
 	}

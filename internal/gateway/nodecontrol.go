@@ -52,7 +52,7 @@ func (n *nodeControlService) Stream(stream grpc.BidiStreamingServer[genezav1.Age
 		return status.Errorf(codes.PermissionDenied, "hello node_id %q does not match certificate identity %q",
 			hello.GetNodeId(), ident.Name)
 	}
-	if _, err := s.store.GetNode(ident.Name); err != nil {
+	if _, err := s.store.GetNode(ident.Workspace, ident.Name); err != nil {
 		return status.Errorf(codes.PermissionDenied, "node %s is not enrolled", ident.Name)
 	}
 
@@ -84,10 +84,10 @@ func (n *nodeControlService) Stream(stream grpc.BidiStreamingServer[genezav1.Age
 	// Push the node's desired agent-module set (monitoring, ...) on connect so a
 	// reconnecting agent restarts whatever was enabled before.
 	nodeName := ident.Name
-	if nr, err := s.store.GetNode(ident.Name); err == nil && nr.Name != "" {
+	if nr, err := s.store.GetNode(ident.Workspace, ident.Name); err == nil && nr.Name != "" {
 		nodeName = nr.Name
 	}
-	s.pushNodeModules(ident.Name)
+	s.pushNodeModules(ident.Workspace, ident.Name)
 
 	for {
 		msg, err := stream.Recv()
@@ -109,7 +109,7 @@ func (n *nodeControlService) Stream(stream grpc.BidiStreamingServer[genezav1.Age
 				i.Detached = hb.GetDetachedSessions()
 			})
 		case *genezav1.AgentMsg_SessionEvent:
-			n.handleSessionEvent(ident.Name, m.SessionEvent)
+			n.handleSessionEvent(ident.Workspace, ident.Name, m.SessionEvent)
 		case *genezav1.AgentMsg_OfferAck:
 			if !h.deliverAck(m.OfferAck) {
 				slog.Warn("offer ack with no waiter", "node", ident.Name, "session", m.OfferAck.GetSessionId())
@@ -127,10 +127,10 @@ func (n *nodeControlService) Stream(stream grpc.BidiStreamingServer[genezav1.Age
 
 // handleSessionEvent advances the session state machine and audits. Events
 // for unknown sessions are audited but cannot corrupt state.
-func (n *nodeControlService) handleSessionEvent(nodeID string, ev *genezav1.SessionEvent) {
+func (n *nodeControlService) handleSessionEvent(ws, nodeID string, ev *genezav1.SessionEvent) {
 	s := n.s
 	update := func(fn func(*SessionRecord)) {
-		err := s.store.UpdateSession(ev.GetSessionId(), func(r *SessionRecord) {
+		err := s.store.UpdateSession(ws, ev.GetSessionId(), func(r *SessionRecord) {
 			if r.NodeID != nodeID {
 				return // a node may only move its own sessions
 			}
@@ -178,7 +178,7 @@ func (n *nodeControlService) handleSessionEvent(nodeID string, ev *genezav1.Sess
 			}
 			r.EndedUnix = time.Now().Unix()
 			r.ExitCode = ev.GetExitCode()
-			s.overlay.release(r.OverlayIP)
+			s.overlayFor(r.WorkspaceID).release(r.OverlayIP)
 		})
 	case "rejected":
 		update(func(r *SessionRecord) {
@@ -186,7 +186,7 @@ func (n *nodeControlService) handleSessionEvent(nodeID string, ev *genezav1.Sess
 				r.State = SessionEnded
 			}
 			r.EndedUnix = time.Now().Unix()
-			s.overlay.release(r.OverlayIP)
+			s.overlayFor(r.WorkspaceID).release(r.OverlayIP)
 		})
 	case "offered":
 		// audit-only
@@ -211,13 +211,14 @@ func (n *nodeControlService) RenewCert(ctx context.Context, req *genezav1.RenewC
 	}
 	// Re-validate enrollment: a node whose record was removed (deprovisioned)
 	// must not be able to keep minting fresh certs off an old-but-unexpired one.
-	if _, err := s.store.GetNode(ident.Name); err != nil {
+	if _, err := s.store.GetNode(ident.Workspace, ident.Name); err != nil {
 		return nil, status.Errorf(codes.PermissionDenied, "node %s is not enrolled", ident.Name)
 	}
 	certPEM, err := s.ca.IssueFromCSR(req.GetCsrPem(), ca.Profile{
-		Kind: ca.KindNode,
-		Name: ident.Name,
-		TTL:  s.cfg.CertTTL.Node.D(),
+		Kind:      ca.KindNode,
+		Workspace: ident.Workspace,
+		Name:      ident.Name,
+		TTL:       s.cfg.CertTTL.Node.D(),
 	})
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "issue node cert: %v", err)
@@ -248,7 +249,7 @@ func (n *nodeControlService) UploadRecording(stream grpc.ClientStreamingServer[g
 	if !sessionIDRe.MatchString(sessionID) {
 		return status.Errorf(codes.InvalidArgument, "invalid session id %q", sessionID)
 	}
-	rec, err := s.store.GetSession(sessionID)
+	rec, err := s.store.GetSession(ident.Workspace, sessionID)
 	if err != nil {
 		return status.Errorf(codes.NotFound, "unknown session %s", sessionID)
 	}

@@ -220,6 +220,7 @@ message LoginRequest {
   string username = 3;       // provider=local
   string password = 4;
   bytes csr_pem = 5;         // PKCS10 CSR for the client-held key
+  string workspace = 6;      // which workspace to mint a cert for (validated vs membership)
 }
 
 message LoginResponse {
@@ -228,6 +229,8 @@ message LoginResponse {
   string user = 3;
   repeated string roles = 4;
   int64 expires_unix = 5;
+  string workspace = 6;                 // the workspace the issued cert is scoped to
+  repeated string available_workspaces = 7; // when ambiguous: candidates to pick from
 }
 
 message NodeSummary {
@@ -315,6 +318,7 @@ message WhoAmIResponse {
   string user = 1;
   repeated string roles = 2;
   int64 cert_expires_unix = 3;
+  string workspace = 4; // the tenant this cert is scoped to
 }
 
 // ---------------------------------------------------------------------------
