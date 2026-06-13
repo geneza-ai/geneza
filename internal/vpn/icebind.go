@@ -430,10 +430,21 @@ func (b *ICEBind) ensurePeer(s PeerSetup) {
 		candTypes = []ice.CandidateType{ice.CandidateTypeHost, ice.CandidateTypeServerReflexive, ice.CandidateTypeRelay}
 	}
 
+	// Tighten ICE timeouts so a misaligned attempt (e.g. the two ends recreating
+	// out of phase after a relay restart) gives up fast and the next recreate
+	// cycle aligns quickly — pion's 25s default makes recovery take minutes. Floor
+	// is the 2s keepalive; 5s disconnected + 8s failed keeps ample grace for a
+	// healthy path (and a false-fail just recreates, which WG floats over).
+	disconnectedTimeout := 5 * time.Second
+	failedTimeout := 8 * time.Second
+	keepaliveInterval := 2 * time.Second
 	agentCfg := &ice.AgentConfig{
-		Urls:           urls,
-		NetworkTypes:   []ice.NetworkType{ice.NetworkTypeUDP4},
-		CandidateTypes: candTypes,
+		Urls:                urls,
+		NetworkTypes:        []ice.NetworkType{ice.NetworkTypeUDP4},
+		CandidateTypes:      candTypes,
+		DisconnectedTimeout: &disconnectedTimeout,
+		FailedTimeout:       &failedTimeout,
+		KeepaliveInterval:   &keepaliveInterval,
 	}
 	// Gather host+srflx on the SHARED GSO socket (so all peers multiplex one
 	// socket and the direct/NAT-traversed data path can GSO-batch from it). Relay
