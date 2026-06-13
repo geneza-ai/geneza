@@ -193,10 +193,16 @@ type CloudConfig struct {
 	InsecureSkipVerify bool `yaml:"insecure_skip_verify,omitempty"`
 	// JoinTokenTTL bounds the minted join token (default 1h, covers boot).
 	JoinTokenTTL Duration `yaml:"join_token_ttl,omitempty"`
-	// GatewayURL is the base HTTPS URL an enrolling VM uses to reach Geneza
-	// (install.sh, stage-1 binaries, ca-roots, updates). Falls back to the
-	// vendordata request's own Host when empty.
+	// GatewayURL is the base HTTPS URL an enrolling VM uses to FETCH the installer
+	// + stage-1 binaries + ca-roots (curl must trust this cert — typically a
+	// public/LE front). Falls back to the vendordata request's own Host when empty.
 	GatewayURL string `yaml:"gateway_url,omitempty"`
+	// GatewayRuntimeURL is the gateway HTTP endpoint the bootstrap/agent use at
+	// RUNTIME (the update API), verified against the gateway's own cert via the
+	// ca-roots the installer fetched. Set this when GatewayURL is a public TLS
+	// front whose cert differs from the gateway's: e.g. installer over the LE
+	// front, runtime over the direct :7402 lab-cert endpoint. Empty = GatewayURL.
+	GatewayRuntimeURL string `yaml:"gateway_runtime_url,omitempty"`
 	// GatewayGRPC is the host:port the agent dials for the enroll RPC; falls back
 	// to host(GatewayURL):7401.
 	GatewayGRPC string `yaml:"gateway_grpc,omitempty"`

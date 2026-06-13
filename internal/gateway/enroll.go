@@ -194,6 +194,16 @@ func (e *enrollmentService) Enroll(ctx context.Context, req *genezav1.EnrollRequ
 	}
 	slog.Info("node enrolled", "node", nodeID, "name", name, "provider", provider.Name(), "approved", autoApprove)
 
+	// Zero-touch reachability: an auto-approved node (cloud instance-identity or a
+	// --auto-approve token) is reachable the moment it enrolls, so fan its overlay
+	// IP + DNS record + WG peer out to existing co-members now. Without this, a
+	// co-member cannot resolve/reach the new node until the next unrelated repush
+	// (the manual-approval path already repushes; this closes the auto path). A
+	// PENDING node is intentionally NOT pushed — it has no authority until approved.
+	if autoApprove {
+		s.repushAllNetworks(ws)
+	}
+
 	return &genezav1.EnrollResponse{
 		NodeId:              nodeID,
 		NodeCertPem:         certPEM,

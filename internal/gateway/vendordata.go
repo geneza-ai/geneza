@@ -348,6 +348,9 @@ func (s *Server) renderOSCloudInit(r *http.Request, cl CloudConfig, joinTok, hos
 		"--gateway-http", shellQuote(base),
 		"--gateway-grpc", shellQuote(grpc),
 	}
+	if cl.GatewayRuntimeURL != "" {
+		args = append(args, "--gateway-http-runtime", shellQuote(strings.TrimRight(cl.GatewayRuntimeURL, "/")))
+	}
 	if rootFP != "" {
 		args = append(args, "--root-fp", shellQuote(rootFP))
 	}

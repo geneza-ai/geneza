@@ -11,23 +11,33 @@ const installScript = `#!/bin/sh
 set -eu
 
 GATEWAY_HTTP="__GATEWAY_HTTP__"
+GATEWAY_HTTP_RUNTIME=""
 GATEWAY_GRPC=""
 TOKEN=""; ROOT_FP=""; NAME=""; LABELS=""; BOOTSTRAP_SHA=""; AGENT_SHA=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --token)           TOKEN="${2:-}"; shift 2 ;;
-    --root-fp)         ROOT_FP="${2:-}"; shift 2 ;;
-    --name)            NAME="${2:-}"; shift 2 ;;
-    --labels)          LABELS="${2:-}"; shift 2 ;;
-    --bootstrap-sha256) BOOTSTRAP_SHA="${2:-}"; shift 2 ;;
-    --agent-sha256)    AGENT_SHA="${2:-}"; shift 2 ;;
-    --gateway-http)    GATEWAY_HTTP="${2:-}"; shift 2 ;;
-    --gateway-grpc)    GATEWAY_GRPC="${2:-}"; shift 2 ;;
-    -h|--help) echo "usage: install.sh --token T --root-fp sha256:... [--bootstrap-sha256 sha256:...] [--agent-sha256 sha256:...] [--name N] [--labels k=v,...] [--gateway-grpc host:7401]"; exit 0 ;;
+    --token)               TOKEN="${2:-}"; shift 2 ;;
+    --root-fp)             ROOT_FP="${2:-}"; shift 2 ;;
+    --name)                NAME="${2:-}"; shift 2 ;;
+    --labels)              LABELS="${2:-}"; shift 2 ;;
+    --bootstrap-sha256)    BOOTSTRAP_SHA="${2:-}"; shift 2 ;;
+    --agent-sha256)        AGENT_SHA="${2:-}"; shift 2 ;;
+    --gateway-http)        GATEWAY_HTTP="${2:-}"; shift 2 ;;
+    --gateway-http-runtime) GATEWAY_HTTP_RUNTIME="${2:-}"; shift 2 ;;
+    --gateway-grpc)        GATEWAY_GRPC="${2:-}"; shift 2 ;;
+    -h|--help) echo "usage: install.sh --token T --root-fp sha256:... [--bootstrap-sha256 sha256:...] [--agent-sha256 sha256:...] [--name N] [--labels k=v,...] [--gateway-http URL] [--gateway-http-runtime URL] [--gateway-grpc host:7401]"; exit 0 ;;
     *) echo "geneza-install: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
+
+# The installer FETCHES install.sh/binaries/ca-roots over GATEWAY_HTTP (which may
+# be a public, publicly-trusted TLS front so this very curl works). The agent +
+# bootstrap then talk to the gateway at RUNTIME (gRPC + the update HTTP API)
+# using the gateway's OWN cert, pinned via the ca-roots they just fetched. When
+# the two differ (public installer front vs direct gateway endpoint) pass
+# --gateway-http-runtime; otherwise it defaults to GATEWAY_HTTP.
+[ -n "$GATEWAY_HTTP_RUNTIME" ] || GATEWAY_HTTP_RUNTIME="$GATEWAY_HTTP"
 
 die() { echo "geneza-install: $*" >&2; exit 1; }
 [ -n "$TOKEN" ]   || die "missing --token"
@@ -37,7 +47,7 @@ command -v curl >/dev/null 2>&1 || die "curl is required"
 [ -n "$NAME" ] || NAME="$(hostname 2>/dev/null || echo geneza-node)"
 
 host_of() { echo "$1" | sed -e 's#^[a-z]*://##' -e 's#/.*$##' -e 's#:.*$##'; }
-[ -n "$GATEWAY_GRPC" ] || GATEWAY_GRPC="$(host_of "$GATEWAY_HTTP"):7401"
+[ -n "$GATEWAY_GRPC" ] || GATEWAY_GRPC="$(host_of "$GATEWAY_HTTP_RUNTIME"):7401"
 
 OS="$(uname -s | tr 'A-Z' 'a-z')"
 case "$OS" in linux|darwin) ;; *) die "unsupported OS: $OS" ;; esac
@@ -95,7 +105,7 @@ install -m0644 "$TMP/ca-roots.pem"     /var/lib/geneza/agent/ca-roots.pem
 
 cat > /etc/geneza/bootstrap.json <<EOF
 {
-  "gateway_http_url": "$GATEWAY_HTTP",
+  "gateway_http_url": "$GATEWAY_HTTP_RUNTIME",
   "ca_roots_file": "/var/lib/geneza/agent/ca-roots.pem",
   "artifact_pub_file": "",
   "root_pub_file": "/etc/geneza/root.pub",
@@ -115,7 +125,7 @@ LBL="{}"
 [ -n "$LABELS" ] && LBL="{$(echo "$LABELS" | sed 's/=/: /g')}"
 cat > /etc/geneza/agent.yaml <<EOF
 gateway_grpc_addr: $GATEWAY_GRPC
-gateway_http_url: $GATEWAY_HTTP
+gateway_http_url: $GATEWAY_HTTP_RUNTIME
 state_dir: /var/lib/geneza/agent
 name: "$NAME"
 labels: $LBL
