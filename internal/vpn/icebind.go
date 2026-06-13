@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pion/ice/v4"
@@ -67,6 +68,12 @@ type peerICE struct {
 	agent       *ice.Agent
 	setup       PeerSetup // retained so a failed agent can be rebuilt
 
+	// directAddr is the peer's selected DIRECT remote (host/srflx) UDP endpoint,
+	// set by OnSelectedCandidatePairChange. Non-nil ⇒ Send GSO-batches straight to
+	// it on the shared socket (the multi-gig path, incl. NAT-traversed); nil ⇒ the
+	// pair is relayed (or not yet up) ⇒ Send falls back to per-datagram ice.Conn.
+	directAddr atomic.Pointer[netip.AddrPort]
+
 	mu           sync.Mutex
 	conn         *ice.Conn
 	cancel       context.CancelFunc
@@ -108,6 +115,15 @@ type ICEBind struct {
 	recvCh  chan recvMsg
 	done    chan struct{} // closed on Close; readers/drainers exit on it (recvCh is never closed -> no send-on-closed panic)
 	closed  bool
+
+	// Shared GSO data socket + pion mux (non-relayOnly only). One UDP socket per
+	// VNI carries ALL peers' host+srflx ICE (via the UniversalUDPMux) AND the
+	// batched WireGuard data (sendmmsg/UDP_SEGMENT TX, recvmmsg/GRO RX) — the
+	// multi-gigabit path. Relayed peers stay on their pion/TURN sockets (no GSO).
+	gso       *gsoConn
+	mux       *ice.UniversalUDPMuxDefault
+	demux     *demuxPacketConn
+	srcToPeer map[netip.AddrPort]*peerICE // direct remote addr -> peer, for WG RX routing
 }
 
 var _ conn.Bind = (*ICEBind)(nil)
@@ -125,6 +141,7 @@ func NewICEBind(vni uint32, relayOnly bool, log *slog.Logger) *ICEBind {
 		peers:     map[[32]byte]*peerICE{},
 		wanted:    map[[32]byte]PeerSetup{},
 		backoff:   map[[32]byte]int{},
+		srcToPeer: map[netip.AddrPort]*peerICE{},
 		recvCh:    make(chan recvMsg, 1024),
 		done:      make(chan struct{}),
 	}
@@ -143,8 +160,12 @@ func (b *ICEBind) SetSelfPub(pub [32]byte) {
 }
 
 // Open returns numDrainers ReceiveFuncs so the device drains recvCh on several
-// goroutines concurrently (no single inbound funnel). No single shared socket
-// (each ice.Agent owns its sockets); port 0 is reported.
+// goroutines concurrently. For non-relayOnly binds it also opens ONE shared
+// GSO/GRO UDP socket per VNI and runs pion's UniversalUDPMux on it (host+srflx),
+// plus a single RX loop that demuxes STUN→pion and WG→recvCh — so the direct
+// (incl. NAT-traversed) data path batches packets per syscall (multi-gig). If the
+// socket/mux can't be set up it degrades to per-peer pion sockets (the prior
+// behavior, no GSO). Port 0 is reported (the device's own listen port is unused).
 func (b *ICEBind) Open(uint16) ([]conn.ReceiveFunc, uint16, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -152,6 +173,18 @@ func (b *ICEBind) Open(uint16) ([]conn.ReceiveFunc, uint16, error) {
 		b.closed = false
 		b.recvCh = make(chan recvMsg, 1024)
 		b.done = make(chan struct{})
+	}
+	if !b.relayOnly && b.gso == nil {
+		if uc, err := net.ListenUDP("udp4", &net.UDPAddr{}); err != nil {
+			b.log.Warn("shared GSO socket unavailable; falling back to per-peer sockets (no GSO)", "err", err)
+		} else {
+			gso := newGSOConn(uc)
+			demux := newDemuxPacketConn(gso, b.done)
+			mux := ice.NewUniversalUDPMuxDefault(ice.UniversalUDPMuxParams{UDPConn: demux})
+			b.gso, b.demux, b.mux = gso, demux, mux
+			go b.readLoop()
+			b.log.Info("shared GSO data socket up", "addr", gso.LocalAddr().String(), "batch", gso.batchSize())
+		}
 	}
 	fns := make([]conn.ReceiveFunc, numDrainers)
 	for i := range fns {
@@ -197,10 +230,20 @@ func (b *ICEBind) Send(bufs [][]byte, ep conn.Endpoint) error {
 	}
 	b.mu.Lock()
 	p := b.peers[ge.wgPub]
+	gso := b.gso
 	b.mu.Unlock()
 	if p == nil {
 		return nil // peer gone mid-flight; next reconcile fixes it
 	}
+	// DIRECT (host/srflx): GSO-batch the whole per-peer batch in one sendmmsg on
+	// the shared socket — the multi-gig path, traversing the same NAT hole pion
+	// punched (the srflx candidate's source IS this socket).
+	if gso != nil {
+		if ap := p.directAddr.Load(); ap != nil {
+			return gso.WriteBatchTo(bufs, *ap)
+		}
+	}
+	// RELAY / pre-direct: per-datagram via the pion *ice.Conn (TURN client socket).
 	p.mu.Lock()
 	c := p.conn
 	p.mu.Unlock()
@@ -215,7 +258,9 @@ func (b *ICEBind) Send(bufs [][]byte, ep conn.Endpoint) error {
 	return nil
 }
 
-func (b *ICEBind) BatchSize() int       { return 1 } // ice.Conn is one-datagram
+// BatchSize is the GSO/GRO batch width: 128 on Linux (sendmmsg/recvmmsg), 1
+// elsewhere. The device stages up to this many packets per peer per Send.
+func (b *ICEBind) BatchSize() int       { return gsoBatchSize }
 func (b *ICEBind) SetMark(uint32) error { return nil }
 
 // ParseEndpoint accepts our "gz:<64hex>" peer-identity token.
@@ -235,13 +280,20 @@ func (b *ICEBind) ParseEndpoint(s string) (conn.Endpoint, error) {
 
 func (b *ICEBind) Close() error {
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	if b.closed {
+		b.mu.Unlock()
 		return nil
 	}
 	b.closed = true
-	close(b.done) // wakes drainers (ErrClosed) + stops reader sends; recvCh is never closed
-	for _, p := range b.peers {
+	close(b.done) // wakes drainers + readLoop + demux readers; recvCh is never closed
+	peers := b.peers
+	mux, gso := b.mux, b.gso
+	b.peers = map[[32]byte]*peerICE{}
+	b.srcToPeer = map[netip.AddrPort]*peerICE{}
+	b.mux, b.gso, b.demux = nil, nil, nil
+	b.mu.Unlock()
+
+	for _, p := range peers {
 		p.mu.Lock()
 		if p.cancel != nil {
 			p.cancel()
@@ -251,7 +303,12 @@ func (b *ICEBind) Close() error {
 			_ = p.agent.Close()
 		}
 	}
-	b.peers = map[[32]byte]*peerICE{}
+	if mux != nil {
+		_ = mux.Close()
+	}
+	if gso != nil {
+		_ = gso.Close() // unblocks readLoop's ReadBatch
+	}
 	return nil
 }
 
@@ -317,11 +374,22 @@ func (b *ICEBind) ensurePeer(s PeerSetup) {
 		candTypes = []ice.CandidateType{ice.CandidateTypeHost, ice.CandidateTypeServerReflexive, ice.CandidateTypeRelay}
 	}
 
-	a, err := ice.NewAgent(&ice.AgentConfig{
+	agentCfg := &ice.AgentConfig{
 		Urls:           urls,
 		NetworkTypes:   []ice.NetworkType{ice.NetworkTypeUDP4},
 		CandidateTypes: candTypes,
-	})
+	}
+	// Gather host+srflx on the SHARED GSO socket (so all peers multiplex one
+	// socket and the direct/NAT-traversed data path can GSO-batch from it). Relay
+	// candidates still use pion's own TURN client socket (unaffected).
+	b.mu.Lock()
+	mux := b.mux
+	b.mu.Unlock()
+	if mux != nil && !b.relayOnly {
+		agentCfg.UDPMux = mux
+		agentCfg.UDPMuxSrflx = mux
+	}
+	a, err := ice.NewAgent(agentCfg)
 	if err != nil {
 		b.log.Warn("ice agent create failed", "peer", shortHex(s.WGPub), "err", err)
 		return
@@ -385,8 +453,28 @@ func (b *ICEBind) ensurePeer(s PeerSetup) {
 		}
 	})
 	_ = a.OnSelectedCandidatePairChange(func(local, remote ice.Candidate) {
+		// A DIRECT pair (host/srflx, not relay) ⇒ record the peer's remote UDP
+		// endpoint so Send GSO-batches straight to it on the shared socket, and map
+		// that src→peer for WG RX demux. A relay pair ⇒ clear it (Send falls back to
+		// the per-datagram ice.Conn over TURN).
+		var ap *netip.AddrPort
+		if remote.Type() != ice.CandidateTypeRelay && local.Type() != ice.CandidateTypeRelay {
+			if addr, err := netip.ParseAddr(remote.Address()); err == nil {
+				v := normAP(netip.AddrPortFrom(addr, uint16(remote.Port())))
+				ap = &v
+			}
+		}
+		old := p.directAddr.Swap(ap)
+		b.mu.Lock()
+		if old != nil {
+			delete(b.srcToPeer, *old)
+		}
+		if ap != nil {
+			b.srcToPeer[*ap] = p
+		}
+		b.mu.Unlock()
 		b.log.Info("ice pair selected", "peer", shortHex(s.WGPub),
-			"local", local.Type().String(), "remote", remote.Type().String())
+			"local", local.Type().String(), "remote", remote.Type().String(), "direct", ap != nil)
 	})
 
 	// Ship OUR ufrag/pwd up so the peer can Dial/Accept us, and re-announce
@@ -621,3 +709,121 @@ func (b *ICEBind) connect(p *peerICE) {
 }
 
 func shortHex(k [32]byte) string { return hex.EncodeToString(k[:4]) }
+
+// normAP normalizes an AddrPort to unmapped IPv4 so map keys are consistent
+// whether the addr came from the kernel (4-byte) or netip.ParseAddr of a pion
+// candidate string.
+func normAP(ap netip.AddrPort) netip.AddrPort {
+	return netip.AddrPortFrom(ap.Addr().Unmap(), ap.Port())
+}
+
+// readLoop is the single RX goroutine for the shared GSO socket. It reads a
+// GRO-coalesced batch per syscall and demultiplexes: STUN packets go to pion (via
+// the demux PacketConn the UniversalUDPMux reads), WireGuard packets are routed to
+// the owning peer (by source addr) and pushed to recvCh for the device drainers.
+// One reader ⇒ no contention on the gso RX scratch. Exits on Close.
+func (b *ICEBind) readLoop() {
+	out := make([][]byte, gsoBatchSize)
+	for i := range out {
+		out[i] = make([]byte, iceReadBuf)
+	}
+	sizes := make([]int, gsoBatchSize)
+	srcs := make([]netip.AddrPort, gsoBatchSize)
+	for {
+		select {
+		case <-b.done:
+			return
+		default:
+		}
+		b.mu.Lock()
+		gso := b.gso
+		b.mu.Unlock()
+		if gso == nil {
+			return
+		}
+		n, err := gso.ReadBatchInto(out, sizes, srcs)
+		if err != nil {
+			select {
+			case <-b.done:
+				return
+			case <-time.After(time.Millisecond): // transient; closed socket also surfaces via b.done
+			}
+			continue
+		}
+		for i := 0; i < n; i++ {
+			pkt := out[i][:sizes[i]]
+			if stun.IsMessage(pkt) {
+				b.demux.push(pkt, srcs[i]) // → pion UniversalUDPMux
+				continue
+			}
+			key := normAP(srcs[i])
+			b.mu.Lock()
+			p := b.srcToPeer[key]
+			if p != nil && b.peers[p.wgPub] != p { // stale entry (peer recreated/removed)
+				delete(b.srcToPeer, key)
+				p = nil
+			}
+			b.mu.Unlock()
+			if p == nil {
+				continue // unknown WG src; drop (WG retransmits once the pair is selected)
+			}
+			buf := bufPool.Get().([]byte)
+			nn := copy(buf, pkt)
+			select {
+			case b.recvCh <- recvMsg{ep: &genezaEndpoint{wgPub: p.wgPub}, buf: buf, n: nn}:
+			case <-b.done:
+				bufPool.Put(buf) //nolint:staticcheck
+				return
+			default: // backpressure: drop, like a UDP socket
+				bufPool.Put(buf) //nolint:staticcheck
+			}
+		}
+	}
+}
+
+// demuxPacketConn is the net.PacketConn handed to pion's UniversalUDPMux. The
+// shared socket is read by ICEBind.readLoop, which feeds ONLY STUN packets here;
+// pion's mux connWorker drains them via ReadFrom. WriteTo (pion's STUN /
+// connectivity-check sends) goes straight out the shared socket. Close is a no-op
+// — the socket is owned by ICEBind (the mux must not close it out from under us).
+type demuxPacketConn struct {
+	gso  *gsoConn
+	in   chan demuxPkt
+	done <-chan struct{}
+}
+
+type demuxPkt struct {
+	buf []byte
+	src *net.UDPAddr
+}
+
+func newDemuxPacketConn(gso *gsoConn, done <-chan struct{}) *demuxPacketConn {
+	return &demuxPacketConn{gso: gso, in: make(chan demuxPkt, 256), done: done}
+}
+
+func (d *demuxPacketConn) push(p []byte, src netip.AddrPort) {
+	cp := make([]byte, len(p))
+	copy(cp, p)
+	pkt := demuxPkt{buf: cp, src: net.UDPAddrFromAddrPort(src)}
+	select {
+	case d.in <- pkt:
+	case <-d.done:
+	default: // STUN retransmits; never block the RX loop
+	}
+}
+
+func (d *demuxPacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
+	select {
+	case pkt := <-d.in:
+		return copy(p, pkt.buf), pkt.src, nil
+	case <-d.done:
+		return 0, nil, net.ErrClosed
+	}
+}
+
+func (d *demuxPacketConn) WriteTo(p []byte, addr net.Addr) (int, error) { return d.gso.WriteTo(p, addr) }
+func (d *demuxPacketConn) Close() error                                 { return nil }
+func (d *demuxPacketConn) LocalAddr() net.Addr                          { return d.gso.LocalAddr() }
+func (d *demuxPacketConn) SetDeadline(time.Time) error                  { return nil }
+func (d *demuxPacketConn) SetReadDeadline(time.Time) error              { return nil }
+func (d *demuxPacketConn) SetWriteDeadline(time.Time) error             { return nil }
