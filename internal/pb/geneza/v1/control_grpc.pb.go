@@ -592,19 +592,22 @@ var UserAPI_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
-	AdminAPI_CreateJoinToken_FullMethodName   = "/geneza.v1.AdminAPI/CreateJoinToken"
-	AdminAPI_ApproveNode_FullMethodName       = "/geneza.v1.AdminAPI/ApproveNode"
-	AdminAPI_ListWorkspaces_FullMethodName    = "/geneza.v1.AdminAPI/ListWorkspaces"
-	AdminAPI_RemoveNode_FullMethodName        = "/geneza.v1.AdminAPI/RemoveNode"
-	AdminAPI_PublishArtifact_FullMethodName   = "/geneza.v1.AdminAPI/PublishArtifact"
-	AdminAPI_SetDesiredVersion_FullMethodName = "/geneza.v1.AdminAPI/SetDesiredVersion"
-	AdminAPI_GetFleetStatus_FullMethodName    = "/geneza.v1.AdminAPI/GetFleetStatus"
-	AdminAPI_ReloadPolicy_FullMethodName      = "/geneza.v1.AdminAPI/ReloadPolicy"
-	AdminAPI_QueryAudit_FullMethodName        = "/geneza.v1.AdminAPI/QueryAudit"
-	AdminAPI_RevokeSession_FullMethodName     = "/geneza.v1.AdminAPI/RevokeSession"
-	AdminAPI_RevokeUser_FullMethodName        = "/geneza.v1.AdminAPI/RevokeUser"
-	AdminAPI_SetNodeModules_FullMethodName    = "/geneza.v1.AdminAPI/SetNodeModules"
-	AdminAPI_GetNodeModules_FullMethodName    = "/geneza.v1.AdminAPI/GetNodeModules"
+	AdminAPI_CreateJoinToken_FullMethodName    = "/geneza.v1.AdminAPI/CreateJoinToken"
+	AdminAPI_ApproveNode_FullMethodName        = "/geneza.v1.AdminAPI/ApproveNode"
+	AdminAPI_ListWorkspaces_FullMethodName     = "/geneza.v1.AdminAPI/ListWorkspaces"
+	AdminAPI_RemoveNode_FullMethodName         = "/geneza.v1.AdminAPI/RemoveNode"
+	AdminAPI_PublishArtifact_FullMethodName    = "/geneza.v1.AdminAPI/PublishArtifact"
+	AdminAPI_SetDesiredVersion_FullMethodName  = "/geneza.v1.AdminAPI/SetDesiredVersion"
+	AdminAPI_GetFleetStatus_FullMethodName     = "/geneza.v1.AdminAPI/GetFleetStatus"
+	AdminAPI_ReloadPolicy_FullMethodName       = "/geneza.v1.AdminAPI/ReloadPolicy"
+	AdminAPI_QueryAudit_FullMethodName         = "/geneza.v1.AdminAPI/QueryAudit"
+	AdminAPI_RevokeSession_FullMethodName      = "/geneza.v1.AdminAPI/RevokeSession"
+	AdminAPI_RevokeUser_FullMethodName         = "/geneza.v1.AdminAPI/RevokeUser"
+	AdminAPI_SetNodeModules_FullMethodName     = "/geneza.v1.AdminAPI/SetNodeModules"
+	AdminAPI_GetNodeModules_FullMethodName     = "/geneza.v1.AdminAPI/GetNodeModules"
+	AdminAPI_BindSource_FullMethodName         = "/geneza.v1.AdminAPI/BindSource"
+	AdminAPI_UnbindSource_FullMethodName       = "/geneza.v1.AdminAPI/UnbindSource"
+	AdminAPI_ListSourceBindings_FullMethodName = "/geneza.v1.AdminAPI/ListSourceBindings"
 )
 
 // AdminAPIClient is the client API for AdminAPI service.
@@ -634,6 +637,12 @@ type AdminAPIClient interface {
 	// gateway persists the desired set and pushes it to the node in realtime.
 	SetNodeModules(ctx context.Context, in *SetNodeModulesRequest, opts ...grpc.CallOption) (*Empty, error)
 	GetNodeModules(ctx context.Context, in *GetNodeModulesRequest, opts ...grpc.CallOption) (*NodeModulesResponse, error)
+	// Cloud-qualified SOURCE bindings (workspace-as-hub, §6): bind an external
+	// identity source (e.g. openstack:project:<svc>:<uuid>, idp:group:<realm>:<g>)
+	// to a workspace so its VMs/users enroll/land there. Operator pre-bind path.
+	BindSource(ctx context.Context, in *BindSourceRequest, opts ...grpc.CallOption) (*Empty, error)
+	UnbindSource(ctx context.Context, in *UnbindSourceRequest, opts ...grpc.CallOption) (*Empty, error)
+	ListSourceBindings(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*ListSourceBindingsResponse, error)
 }
 
 type adminAPIClient struct {
@@ -777,6 +786,36 @@ func (c *adminAPIClient) GetNodeModules(ctx context.Context, in *GetNodeModulesR
 	return out, nil
 }
 
+func (c *adminAPIClient) BindSource(ctx context.Context, in *BindSourceRequest, opts ...grpc.CallOption) (*Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Empty)
+	err := c.cc.Invoke(ctx, AdminAPI_BindSource_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *adminAPIClient) UnbindSource(ctx context.Context, in *UnbindSourceRequest, opts ...grpc.CallOption) (*Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Empty)
+	err := c.cc.Invoke(ctx, AdminAPI_UnbindSource_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *adminAPIClient) ListSourceBindings(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*ListSourceBindingsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListSourceBindingsResponse)
+	err := c.cc.Invoke(ctx, AdminAPI_ListSourceBindings_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AdminAPIServer is the server API for AdminAPI service.
 // All implementations must embed UnimplementedAdminAPIServer
 // for forward compatibility.
@@ -804,6 +843,12 @@ type AdminAPIServer interface {
 	// gateway persists the desired set and pushes it to the node in realtime.
 	SetNodeModules(context.Context, *SetNodeModulesRequest) (*Empty, error)
 	GetNodeModules(context.Context, *GetNodeModulesRequest) (*NodeModulesResponse, error)
+	// Cloud-qualified SOURCE bindings (workspace-as-hub, §6): bind an external
+	// identity source (e.g. openstack:project:<svc>:<uuid>, idp:group:<realm>:<g>)
+	// to a workspace so its VMs/users enroll/land there. Operator pre-bind path.
+	BindSource(context.Context, *BindSourceRequest) (*Empty, error)
+	UnbindSource(context.Context, *UnbindSourceRequest) (*Empty, error)
+	ListSourceBindings(context.Context, *Empty) (*ListSourceBindingsResponse, error)
 	mustEmbedUnimplementedAdminAPIServer()
 }
 
@@ -852,6 +897,15 @@ func (UnimplementedAdminAPIServer) SetNodeModules(context.Context, *SetNodeModul
 }
 func (UnimplementedAdminAPIServer) GetNodeModules(context.Context, *GetNodeModulesRequest) (*NodeModulesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetNodeModules not implemented")
+}
+func (UnimplementedAdminAPIServer) BindSource(context.Context, *BindSourceRequest) (*Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method BindSource not implemented")
+}
+func (UnimplementedAdminAPIServer) UnbindSource(context.Context, *UnbindSourceRequest) (*Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method UnbindSource not implemented")
+}
+func (UnimplementedAdminAPIServer) ListSourceBindings(context.Context, *Empty) (*ListSourceBindingsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListSourceBindings not implemented")
 }
 func (UnimplementedAdminAPIServer) mustEmbedUnimplementedAdminAPIServer() {}
 func (UnimplementedAdminAPIServer) testEmbeddedByValue()                  {}
@@ -1097,6 +1151,60 @@ func _AdminAPI_GetNodeModules_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AdminAPI_BindSource_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BindSourceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminAPIServer).BindSource(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminAPI_BindSource_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminAPIServer).BindSource(ctx, req.(*BindSourceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AdminAPI_UnbindSource_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UnbindSourceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminAPIServer).UnbindSource(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminAPI_UnbindSource_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminAPIServer).UnbindSource(ctx, req.(*UnbindSourceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AdminAPI_ListSourceBindings_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminAPIServer).ListSourceBindings(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminAPI_ListSourceBindings_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminAPIServer).ListSourceBindings(ctx, req.(*Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AdminAPI_ServiceDesc is the grpc.ServiceDesc for AdminAPI service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1151,6 +1259,18 @@ var AdminAPI_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetNodeModules",
 			Handler:    _AdminAPI_GetNodeModules_Handler,
+		},
+		{
+			MethodName: "BindSource",
+			Handler:    _AdminAPI_BindSource_Handler,
+		},
+		{
+			MethodName: "UnbindSource",
+			Handler:    _AdminAPI_UnbindSource_Handler,
+		},
+		{
+			MethodName: "ListSourceBindings",
+			Handler:    _AdminAPI_ListSourceBindings_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

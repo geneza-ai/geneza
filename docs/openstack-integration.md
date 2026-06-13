@@ -1,10 +1,38 @@
 # OpenStack → Geneza integration — design spec
 
-**Status:** design (2026-06-13). Trust model + wire format **empirically validated**
-on the kolla1 lab (Nova 2026.1): live vendordata capture, Keystone token
-validation, and project→domain resolution all confirmed (see "Validated facts").
+**Status:** enrollment plane **IMPLEMENTED + end-to-end validated on the lab**
+(2026-06-13); access plane (§13) still design-only. The enrollment plane runs in
+`internal/gateway/{openstack,vendordata}.go` + the clouds registry in `config.go`;
+the §15 must-fixes that gate it (#1–#4, #15) are built in. A fresh Ubuntu 24.04 VM
+booted on kolla1 (Nova 2026.1) with `--config-drive true` **auto-joins Geneza with
+zero per-VM action** and is reachable by name (see "Validated end-to-end" below).
 Supersedes the earlier seam draft (which wrongly assumed Nova signs metadata —
 **it does not**; see §3).
+
+## Validated end-to-end (kolla1 + geneza1, 2026-06-13)
+A real `openstack server create … --config-drive true` in a bound project →
+**fully automatic** join, proven live against real Nova 2026.1:
+- **Nova auto-called** `/openstack/vendordata/kolla1` at build (**6 hits in <1 s**
+  → **one** token: idempotency #15 confirmed against real Nova — `reused=false`
+  then 5× `reused=true`).
+- **Confused-deputy defense held (#1):** a forged `project-id` in the body was
+  ignored; the binding used Nova's authoritative `tenant_id` from the server
+  callback (`workspace=default`, the bound project).
+- **Service-token gate (#4):** only a `service`-scoped Nova token is accepted.
+- **Stage-1 binaries SHA256-verified before exec (#2)** by `install.sh` (live).
+- **TLS (#3):** Nova reached the endpoint over the public Let's Encrypt front
+  (system-trusted); installer fetch vs gateway runtime use distinct certs.
+- VM **auto-approved → online** (worker pulled via the TUF-lite chain), labels
+  correctly namespaced (`os:project`/`os:instance` trusted vs `os.claim:boot-role:*`
+  tenant hints, #7), **in-network DNS** resolved it bidirectionally, and
+  `geneza exec`/`ssh` reached it over the Noise-tunnel-through-blind-relay.
+- kolla1 restored to pristine afterward (nova config reverted, test VMs/project
+  removed, user VMs untouched).
+
+**Known follow-ups (data-plane, not enrollment):** the WireGuard *mesh* overlay
+ping between a NAT'd OpenStack VM and a vmbr5 node did not pass (cross double-NAT
+ICE/relay convergence — the data-plane subsystem, tasks #36–#41); `geneza
+exec`/`ssh` + in-network DNS were the proven reach paths.
 
 The integration has two independent planes; build them separately:
 

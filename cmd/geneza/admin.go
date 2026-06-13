@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -29,10 +30,13 @@ func newAdminCmd() *cobra.Command {
 	nodes.AddCommand(newNodeApproveCmd(true), newNodeApproveCmd(false), newNodeRemoveCmd())
 	workspaces := &cobra.Command{Use: "workspaces", Aliases: []string{"ws"}, Short: "Tenant workspaces hosted by this gateway"}
 	workspaces.AddCommand(newWorkspacesLsCmd())
+	bindings := &cobra.Command{Use: "bindings", Aliases: []string{"binding"}, Short: "Cloud-qualified source bindings (e.g. openstack:project:<svc>:<uuid> -> workspace)"}
+	bindings.AddCommand(newBindingsAddCmd(), newBindingsLsCmd(), newBindingsRmCmd())
 	cmd.AddCommand(
 		tokens,
 		nodes,
 		workspaces,
+		bindings,
 		newFleetCmd(),
 		newPublishCmd(),
 		newDesiredCmd(),
@@ -68,6 +72,95 @@ func newNodeRemoveCmd() *cobra.Command {
 			}
 			fmt.Printf("removed %s\n", args[0])
 			return nil
+		},
+	}
+}
+
+// newBindingsAddCmd builds `admin bindings add KEY WORKSPACE` — pre-bind an
+// external source (e.g. openstack:project:kolla1:<uuid>) to a workspace.
+func newBindingsAddCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "add KEY WORKSPACE",
+		Short: "Bind a cloud-qualified source (openstack:project:<svc>:<uuid>, idp:group:<realm>:<g>, ...) to a workspace",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			e, err := loadEnv()
+			if err != nil {
+				return err
+			}
+			cc, api, err := dialAdmin(e)
+			if err != nil {
+				return err
+			}
+			defer cc.Close()
+			ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
+			defer cancel()
+			if _, err := api.BindSource(ctx, &genezav1.BindSourceRequest{Key: args[0], WorkspaceId: args[1]}); err != nil {
+				return client.Humanize(err)
+			}
+			fmt.Printf("bound %s -> %s\n", args[0], args[1])
+			return nil
+		},
+	}
+}
+
+// newBindingsRmCmd builds `admin bindings rm KEY`.
+func newBindingsRmCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:     "rm KEY",
+		Aliases: []string{"remove", "unbind", "delete"},
+		Short:   "Remove a source binding",
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			e, err := loadEnv()
+			if err != nil {
+				return err
+			}
+			cc, api, err := dialAdmin(e)
+			if err != nil {
+				return err
+			}
+			defer cc.Close()
+			ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
+			defer cancel()
+			if _, err := api.UnbindSource(ctx, &genezav1.UnbindSourceRequest{Key: args[0]}); err != nil {
+				return client.Humanize(err)
+			}
+			fmt.Printf("unbound %s\n", args[0])
+			return nil
+		},
+	}
+}
+
+// newBindingsLsCmd builds `admin bindings ls`.
+func newBindingsLsCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:     "ls",
+		Aliases: []string{"list"},
+		Short:   "List source bindings",
+		Args:    cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			e, err := loadEnv()
+			if err != nil {
+				return err
+			}
+			cc, api, err := dialAdmin(e)
+			if err != nil {
+				return err
+			}
+			defer cc.Close()
+			ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
+			defer cancel()
+			resp, err := api.ListSourceBindings(ctx, &genezav1.Empty{})
+			if err != nil {
+				return client.Humanize(err)
+			}
+			tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+			fmt.Fprintln(tw, "KEY\tWORKSPACE\tBY\tAUTO")
+			for _, b := range resp.GetBindings() {
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%v\n", b.GetKey(), b.GetWorkspaceId(), b.GetCreatedBy(), b.GetAutoProvisioned())
+			}
+			return tw.Flush()
 		},
 	}
 }

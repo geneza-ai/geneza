@@ -125,6 +125,71 @@ func (a *adminAPIService) ApproveNode(ctx context.Context, req *genezav1.Approve
 	return &genezav1.Empty{}, nil
 }
 
+// BindSource binds a cloud-qualified external source (e.g. an OpenStack project)
+// to a workspace — the operator pre-bind path (§6/§9). Admin-gated; the target
+// workspace must exist. (The full platform-admin cert class + cross-tenant
+// guards remain a follow-up, task #42.)
+func (a *adminAPIService) BindSource(ctx context.Context, req *genezav1.BindSourceRequest) (*genezav1.Empty, error) {
+	s := a.s
+	key := strings.TrimSpace(req.GetKey())
+	ws := strings.TrimSpace(req.GetWorkspaceId())
+	if key == "" || ws == "" {
+		return nil, status.Error(codes.InvalidArgument, "key and workspace_id are required")
+	}
+	if _, err := s.store.GetWorkspace(ws); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil, status.Errorf(codes.NotFound, "workspace %q not found", ws)
+		}
+		return nil, status.Errorf(codes.Internal, "resolve workspace: %v", err)
+	}
+	by := adminActor(ctx)
+	if err := s.store.PutSourceBinding(&SourceBinding{
+		Key: key, WorkspaceID: ws, CreatedUnix: time.Now().Unix(), CreatedBy: by,
+	}); err != nil {
+		return nil, status.Errorf(codes.Internal, "store binding: %v", err)
+	}
+	if err := s.audit.Append("source_bind", by, "", "", map[string]string{
+		"key": key, "workspace": ws, "decision": "bind",
+	}); err != nil {
+		return nil, status.Errorf(codes.Internal, "audit append: %v", err)
+	}
+	return &genezav1.Empty{}, nil
+}
+
+// UnbindSource removes a source binding (operator unbind path).
+func (a *adminAPIService) UnbindSource(ctx context.Context, req *genezav1.UnbindSourceRequest) (*genezav1.Empty, error) {
+	s := a.s
+	key := strings.TrimSpace(req.GetKey())
+	if key == "" {
+		return nil, status.Error(codes.InvalidArgument, "key is required")
+	}
+	if err := s.store.DeleteSourceBinding(key); err != nil {
+		return nil, status.Errorf(codes.Internal, "delete binding: %v", err)
+	}
+	if err := s.audit.Append("source_bind", adminActor(ctx), "", "", map[string]string{
+		"key": key, "decision": "unbind",
+	}); err != nil {
+		return nil, status.Errorf(codes.Internal, "audit append: %v", err)
+	}
+	return &genezav1.Empty{}, nil
+}
+
+// ListSourceBindings lists all cloud-qualified source bindings.
+func (a *adminAPIService) ListSourceBindings(_ context.Context, _ *genezav1.Empty) (*genezav1.ListSourceBindingsResponse, error) {
+	bs, err := a.s.store.ListSourceBindings()
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "list bindings: %v", err)
+	}
+	out := make([]*genezav1.SourceBindingInfo, 0, len(bs))
+	for _, b := range bs {
+		out = append(out, &genezav1.SourceBindingInfo{
+			Key: b.Key, WorkspaceId: b.WorkspaceID, CreatedUnix: b.CreatedUnix,
+			CreatedBy: b.CreatedBy, AutoProvisioned: b.AutoProvisioned,
+		})
+	}
+	return &genezav1.ListSourceBindingsResponse{Bindings: out}, nil
+}
+
 // ListWorkspaces lists the tenants this gateway hosts (from the store registry).
 func (a *adminAPIService) ListWorkspaces(ctx context.Context, _ *genezav1.Empty) (*genezav1.ListWorkspacesResponse, error) {
 	wss, err := a.s.store.ListWorkspaces()

@@ -443,6 +443,12 @@ service AdminAPI {
   // gateway persists the desired set and pushes it to the node in realtime.
   rpc SetNodeModules(SetNodeModulesRequest) returns (Empty);
   rpc GetNodeModules(GetNodeModulesRequest) returns (NodeModulesResponse);
+  // Cloud-qualified SOURCE bindings (workspace-as-hub, §6): bind an external
+  // identity source (e.g. openstack:project:<svc>:<uuid>, idp:group:<realm>:<g>)
+  // to a workspace so its VMs/users enroll/land there. Operator pre-bind path.
+  rpc BindSource(BindSourceRequest) returns (Empty);
+  rpc UnbindSource(UnbindSourceRequest) returns (Empty);
+  rpc ListSourceBindings(Empty) returns (ListSourceBindingsResponse);
 }
 
 message SetNodeModulesRequest {
@@ -510,6 +516,27 @@ message WorkspaceInfo {
 
 message ListWorkspacesResponse {
   repeated WorkspaceInfo workspaces = 1;
+}
+
+message BindSourceRequest {
+  string key = 1;          // cloud-qualified binding, e.g. openstack:project:kolla1:<uuid>
+  string workspace_id = 2; // target workspace (must exist)
+}
+
+message UnbindSourceRequest {
+  string key = 1;
+}
+
+message SourceBindingInfo {
+  string key = 1;
+  string workspace_id = 2;
+  int64 created_unix = 3;
+  string created_by = 4;
+  bool auto_provisioned = 5;
+}
+
+message ListSourceBindingsResponse {
+  repeated SourceBindingInfo bindings = 1;
 }
 
 // First chunk must carry signed_manifest (JSON types.Signed wrapping
