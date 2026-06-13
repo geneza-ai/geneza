@@ -103,6 +103,8 @@ type ICEBind struct {
 	sink    SignalSink
 	selfPub [32]byte
 	peers   map[[32]byte]*peerICE
+	wanted  map[[32]byte]PeerSetup // desired peer set (last SyncPeers); recreatePeer never resurrects a peer not here
+	backoff map[[32]byte]int       // consecutive recreate attempts per peer (reset on Connected); drives recreate backoff
 	recvCh  chan recvMsg
 	done    chan struct{} // closed on Close; readers/drainers exit on it (recvCh is never closed -> no send-on-closed panic)
 	closed  bool
@@ -121,6 +123,8 @@ func NewICEBind(vni uint32, relayOnly bool, log *slog.Logger) *ICEBind {
 		relayOnly: relayOnly,
 		log:       log.With("component", "icebind", "vni", vni),
 		peers:     map[[32]byte]*peerICE{},
+		wanted:    map[[32]byte]PeerSetup{},
+		backoff:   map[[32]byte]int{},
 		recvCh:    make(chan recvMsg, 1024),
 		done:      make(chan struct{}),
 	}
@@ -254,6 +258,14 @@ func (b *ICEBind) Close() error {
 // SyncPeers reconciles the ICE agent set against the gateway's desired peers.
 func (b *ICEBind) SyncPeers(setups []PeerSetup) {
 	want := make(map[[32]byte]bool, len(setups))
+	// Record the desired set FIRST so an in-flight recreatePeer (which re-adds via
+	// ensurePeer) never resurrects a peer this sync is about to remove.
+	b.mu.Lock()
+	b.wanted = make(map[[32]byte]PeerSetup, len(setups))
+	for _, s := range setups {
+		b.wanted[s.WGPub] = s
+	}
+	b.mu.Unlock()
 	for _, s := range setups {
 		want[s.WGPub] = true
 		b.ensurePeer(s)
@@ -265,6 +277,7 @@ func (b *ICEBind) SyncPeers(setups []PeerSetup) {
 		if !want[k] {
 			gone = append(gone, p)
 			delete(b.peers, k)
+			delete(b.backoff, k)
 		}
 	}
 	b.mu.Unlock()
@@ -341,21 +354,28 @@ func (b *ICEBind) ensurePeer(s PeerSetup) {
 			p.iceConnected = true
 			p.restarting = false
 			p.mu.Unlock()
+			b.mu.Lock()
+			delete(b.backoff, s.WGPub) // converged: clear the recreate backoff
+			b.mu.Unlock()
 		case ice.ConnectionStateFailed:
-			// Recovery from a path failure (e.g. the relay restarted, killing the
-			// selected pair). pion's in-place agent.Restart does NOT reliably resume
-			// the check loop for an established agent, so we fully RECREATE the peer's
-			// ICE agent (fresh Dial), reusing the proven initial-connect path. The WG
-			// endpoint is gz:<wgpub> (unchanged), so the bind just swaps to the new
-			// *ice.Conn — WG keeps its session (no re-handshake within the rekey window).
+			// Recovery from ANY ICE failure — both an initial connect that never
+			// reached Connected (e.g. a NAT'd relay-floor peer whose first attempt
+			// raced the other side coming up) AND an established path that dropped
+			// (e.g. the relay restarted, killing the selected pair). pion's in-place
+			// agent.Restart does NOT reliably resume the check loop, so we fully
+			// RECREATE the peer's ICE agent (fresh Dial), reusing the proven
+			// initial-connect path with bounded backoff. The WG endpoint is
+			// gz:<wgpub> (unchanged), so the bind just swaps to the new *ice.Conn —
+			// WG keeps its session (no re-handshake within the rekey window). The
+			// restarting flag + recreatePeer's idempotency dedup concurrent triggers.
 			p.mu.Lock()
-			established := p.conn != nil && !p.restarting
-			if established {
+			restart := !p.restarting
+			if restart {
 				p.restarting = true
 			}
 			p.iceConnected = false
 			p.mu.Unlock()
-			if established {
+			if restart {
 				go b.recreatePeer(p)
 			}
 		case ice.ConnectionStateDisconnected:
@@ -384,21 +404,39 @@ func (b *ICEBind) ensurePeer(s PeerSetup) {
 	go b.reannounce(p, sink, ufrag, pwd)
 }
 
-// reannounce re-sends our ICE creds + gathered candidates every 2s until the
-// peer connects (capped ~40s), so a peer whose agent appeared after our first
-// announce still receives them. Idempotent at the receiver (AddRemoteCandidate
-// dedups; the one-shot connect ignores repeat creds).
+// reannounce re-sends our ICE creds + gathered candidates until the peer connects
+// — PERPETUALLY, never capped — so convergence is robust no matter when the other
+// side's agent appears (late enroll, worker restart after a TUF self-update, a
+// recreatePeer rebuild on either end). The gateway holds no signaling state and
+// drops a disco msg to an offline peer, so the ONLY thing that guarantees both
+// sides eventually hold each other's creds is that both keep announcing until
+// connected. Cadence is tiered to stay cheap: fast while converging, slow as a
+// steady-state heartbeat for a peer that is simply unreachable right now.
+// Idempotent at the receiver (AddRemoteCandidate dedups; the one-shot connect
+// ignores repeat creds). Stops only when this peerICE connects, is replaced
+// (recreate/teardown), or the bind closes.
 func (b *ICEBind) reannounce(p *peerICE, sink SignalSink, ufrag, pwd string) {
 	if sink == nil {
 		return
 	}
-	for i := 0; i < 20; i++ {
-		time.Sleep(2 * time.Second)
+	for i := 0; ; i++ {
+		d := 2 * time.Second // first ~30s: fast convergence
+		switch {
+		case i >= 39:
+			d = 10 * time.Second // after ~2min: slow heartbeat
+		case i >= 15:
+			d = 5 * time.Second // ~30s..2min
+		}
+		select {
+		case <-time.After(d):
+		case <-b.done:
+			return
+		}
 		b.mu.Lock()
 		replaced := b.peers[p.wgPub] != p
 		b.mu.Unlock()
 		if replaced {
-			return // this peerICE was recreated; its re-announce goroutine is stale
+			return // this peerICE was recreated/torn down; its re-announce is stale
 		}
 		p.mu.Lock()
 		connected := p.iceConnected
@@ -414,13 +452,22 @@ func (b *ICEBind) reannounce(p *peerICE, sink SignalSink, ufrag, pwd string) {
 	}
 }
 
+// recreateBackoff is the per-attempt delay before rebuilding a failed peer's ICE
+// agent, capped so a persistently-unreachable peer retries at a steady low rate
+// (and doesn't hammer the TURN relay) while a transient failure recovers fast.
+var recreateBackoff = []time.Duration{2 * time.Second, 3 * time.Second, 5 * time.Second, 8 * time.Second, 12 * time.Second, 20 * time.Second}
+
 // recreatePeer tears down a failed peer's ICE agent and rebuilds it from scratch
-// (fresh agent + fresh Dial), reusing the initial-connect path. Both peers' pairs
-// fail together on a relay restart, so both recreate and reconverge via the same
-// re-announce mechanism that brought them up initially. Bounded by pion's
-// FailedTimeout (~25s) per attempt; a brief asymmetric-timing window may need one
-// extra cycle. The WG endpoint (gz:<wgpub>) is unchanged, so the bind swaps to
-// the new *ice.Conn transparently — no WG re-handshake within the rekey window.
+// (fresh agent + fresh Dial), reusing the initial-connect path. This is the SINGLE
+// recovery path for every ICE failure — initial connect that never succeeded as
+// well as an established path that dropped. Both peers keep retrying (perpetual
+// re-announce + recreate) until their attempts overlap and the connectivity check
+// completes, so a NAT'd relay-floor peer converges even if the first try raced.
+// Bounded by pion's FailedTimeout (~25s) per attempt plus an escalating backoff.
+// Idempotent: if this peerICE was already replaced (concurrent trigger) or torn
+// down (no longer wanted), it does nothing — it never resurrects a removed peer.
+// The WG endpoint (gz:<wgpub>) is unchanged, so the bind swaps to the new
+// *ice.Conn transparently — no WG re-handshake within the rekey window.
 func (b *ICEBind) recreatePeer(p *peerICE) {
 	b.mu.Lock()
 	if b.closed || b.peers[p.wgPub] != p {
@@ -428,7 +475,8 @@ func (b *ICEBind) recreatePeer(p *peerICE) {
 		return // already replaced or shutting down
 	}
 	delete(b.peers, p.wgPub)
-	setup := p.setup
+	attempt := b.backoff[p.wgPub]
+	b.backoff[p.wgPub] = attempt + 1
 	b.mu.Unlock()
 
 	p.mu.Lock()
@@ -439,12 +487,20 @@ func (b *ICEBind) recreatePeer(p *peerICE) {
 	if p.agent != nil {
 		_ = p.agent.Close()
 	}
-	b.log.Info("ice path failed; recreating peer agent", "peer", shortHex(p.wgPub))
-	time.Sleep(2 * time.Second) // brief backoff (also lets a restarted relay settle)
+	d := recreateBackoff[min(attempt, len(recreateBackoff)-1)]
+	b.log.Info("ice path failed; recreating peer agent", "peer", shortHex(p.wgPub), "attempt", attempt+1, "backoff", d)
+	select {
+	case <-time.After(d): // backoff (also lets a restarted relay settle)
+	case <-b.done:
+		return
+	}
+	// Only rebuild if the peer is STILL wanted (a SyncPeers during the backoff may
+	// have removed it) and we're not shutting down.
 	b.mu.Lock()
-	closed := b.closed
+	setup, wanted := b.wanted[p.wgPub]
+	rebuild := !b.closed && wanted
 	b.mu.Unlock()
-	if !closed {
+	if rebuild {
 		b.ensurePeer(setup)
 	}
 }
@@ -467,11 +523,14 @@ func (b *ICEBind) AddRemoteCandidate(peerWGPub [32]byte, candidate string) {
 	}
 }
 
-// OnICECreds records the peer's ufrag/pwd and starts the ICE connection once
-// (pion's Dial/Accept is once-per-agent). Exactly one side Dials, the other
-// Accepts. The gateway guarantees the FIRST creds we see are the peer's CURRENT
-// creds (it clears stale cache on the peer's reconnect), so the one-shot connect
-// never locks onto a superseded pair.
+// OnICECreds records the peer's ufrag/pwd and starts the ICE connection once per
+// agent instance (pion's Dial/Accept is once-per-agent). Exactly one side Dials,
+// the other Accepts (role fixed by PeerSetup.Controlling). If the creds we lock
+// onto turn out to be superseded (the peer recreated its agent after we Dialed),
+// the connectivity check simply fails and recreatePeer rebuilds THIS side too;
+// both ends keep recreating + re-announcing (perpetually) until a matched pair of
+// fresh agents completes the check. So a one-shot-per-instance connect is safe
+// without any gateway-side signaling state.
 func (b *ICEBind) OnICECreds(peerWGPub [32]byte, ufrag, pwd string) {
 	b.mu.Lock()
 	p := b.peers[peerWGPub]
@@ -511,9 +570,21 @@ func (b *ICEBind) connect(p *peerICE) {
 	}
 	if err != nil {
 		b.log.Warn("ice connect failed", "peer", shortHex(p.wgPub), "err", err)
+		// Deterministic recovery: this agent's Dial/Accept is spent (pion is
+		// once-per-agent), so rebuild a fresh one rather than leaving the peer
+		// stuck. Leave connecting=true so a stray repeat-cred can't re-Dial this
+		// dead agent before the recreate swaps in a new peerICE. The Failed
+		// state-change may also fire recreate; restarting + recreatePeer idempotency
+		// collapse them to a single rebuild.
 		p.mu.Lock()
-		p.connecting = false
+		restart := !p.restarting
+		if restart {
+			p.restarting = true
+		}
 		p.mu.Unlock()
+		if restart {
+			go b.recreatePeer(p)
+		}
 		return
 	}
 	p.mu.Lock()
