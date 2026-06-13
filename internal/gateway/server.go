@@ -64,6 +64,12 @@ type Server struct {
 	// overlay-IP assignment.
 	overlayMu sync.Mutex
 	overlays  map[string]*overlayAllocator
+
+	// disco caches the latest ICE signaling (creds + candidates) per directed
+	// node pair so a restarting/late peer still converges (signaling has no other
+	// retransmit). See internal/gateway/disco.go.
+	discoMu    sync.Mutex
+	discoCache map[discoKey]*cachedDisco
 }
 
 // defaultWorkspace is the tenant that single-tenant deployments and legacy

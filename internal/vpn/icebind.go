@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/pion/ice/v4"
 	"github.com/pion/stun/v3"
@@ -64,6 +65,7 @@ type peerICE struct {
 	wgPub       [32]byte
 	controlling bool
 	agent       *ice.Agent
+	setup       PeerSetup // retained so a failed agent can be rebuilt
 
 	mu          sync.Mutex
 	conn        *ice.Conn
@@ -274,7 +276,7 @@ func (b *ICEBind) ensurePeer(s PeerSetup) {
 		return
 	}
 
-	p := &peerICE{wgPub: s.WGPub, controlling: s.Controlling, agent: a}
+	p := &peerICE{wgPub: s.WGPub, controlling: s.Controlling, agent: a, setup: s}
 	b.mu.Lock()
 	b.peers[s.WGPub] = p
 	b.mu.Unlock()
@@ -290,6 +292,12 @@ func (b *ICEBind) ensurePeer(s PeerSetup) {
 	})
 	_ = a.OnConnectionStateChange(func(st ice.ConnectionState) {
 		b.log.Debug("ice state", "peer", shortHex(s.WGPub), "state", st.String())
+		// On failure (e.g. the relay died, killing the selected pair), rebuild the
+		// agent so it re-gathers a fresh relay allocation + re-announces. pion does
+		// not re-allocate on its own; this is the recovery trigger.
+		if st == ice.ConnectionStateFailed {
+			go b.restartPeer(s.WGPub)
+		}
 	})
 	_ = a.OnSelectedCandidatePairChange(func(local, remote ice.Candidate) {
 		b.log.Info("ice pair selected", "peer", shortHex(s.WGPub),
@@ -303,6 +311,40 @@ func (b *ICEBind) ensurePeer(s PeerSetup) {
 	if err := a.GatherCandidates(); err != nil {
 		b.log.Warn("ice gather failed", "peer", shortHex(s.WGPub), "err", err)
 	}
+}
+
+// restartPeer tears down a failed peer's ICE agent and rebuilds it (re-gather +
+// re-announce), with a short backoff so a persistently-unreachable relay doesn't
+// spin. The agent's setup (TURN creds, role) is reused; the gateway's disco
+// cache replays the peer's signaling so both ends re-converge.
+func (b *ICEBind) restartPeer(wgPub [32]byte) {
+	b.mu.Lock()
+	p := b.peers[wgPub]
+	if p == nil || b.closed {
+		b.mu.Unlock()
+		return
+	}
+	delete(b.peers, wgPub)
+	setup := p.setup
+	b.mu.Unlock()
+
+	p.mu.Lock()
+	if p.cancel != nil {
+		p.cancel()
+	}
+	p.mu.Unlock()
+	if p.agent != nil {
+		_ = p.agent.Close()
+	}
+	b.log.Info("ice failed; rebuilding peer agent", "peer", shortHex(wgPub))
+	time.Sleep(3 * time.Second) // backoff before re-gather
+	b.mu.Lock()
+	closed := b.closed
+	b.mu.Unlock()
+	if closed {
+		return
+	}
+	b.ensurePeer(setup)
 }
 
 // AddRemoteCandidate feeds a peer's gateway-forwarded ICE candidate to its agent.
