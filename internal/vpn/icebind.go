@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"math/rand/v2"
 	"net"
 	"net/netip"
 	"strings"
@@ -643,8 +644,13 @@ func (b *ICEBind) recreatePeer(p *peerICE) {
 	if p.agent != nil {
 		_ = p.agent.Close()
 	}
-	d := recreateBackoff[min(attempt, len(recreateBackoff)-1)]
-	b.log.Info("ice path failed; recreating peer agent", "peer", shortHex(p.wgPub), "attempt", attempt+1, "backoff", d)
+	// Jittered backoff: +0..100% so the two ends DON'T recreate in lockstep — with
+	// identical ladders both peers' Dial/Accept windows kept missing, needing many
+	// cycles to align. Random offset desyncs them so a fresh pair overlaps in 1-2
+	// cycles (this is the dominant factor in relay-restart recovery time).
+	base := recreateBackoff[min(attempt, len(recreateBackoff)-1)]
+	d := base + time.Duration(rand.Int64N(int64(base)))
+	b.log.Info("ice path failed; recreating peer agent", "peer", shortHex(p.wgPub), "attempt", attempt+1, "backoff", d.Round(100*time.Millisecond))
 	select {
 	case <-time.After(d): // backoff (also lets a restarted relay settle)
 	case <-b.done:
