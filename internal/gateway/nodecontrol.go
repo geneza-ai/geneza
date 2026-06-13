@@ -88,6 +88,9 @@ func (n *nodeControlService) Stream(stream grpc.BidiStreamingServer[genezav1.Age
 		nodeName = nr.Name
 	}
 	s.pushNodeModules(ident.Workspace, ident.Name)
+	// Push the node's desired per-Network WireGuard set so a reconnecting agent
+	// re-derives the same overlay interfaces it had before.
+	s.pushNodeNetworks(ident.Workspace, ident.Name)
 
 	for {
 		msg, err := stream.Recv()

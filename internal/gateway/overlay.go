@@ -83,3 +83,63 @@ func validCIDR(s string) bool {
 	_, _, err := net.ParseCIDR(s)
 	return err == nil
 }
+
+// allocIPInCIDR hands out a STABLE host address from an arbitrary subnet for the
+// per-Network FIB. It reserves the first usable host (.1) as the Network gateway
+// and skips the network/broadcast addresses, so two Networks with the same CIDR
+// allocate independently but consistently. Caller passes the already-used set.
+func allocIPInCIDR(cidr string, used map[string]bool) (string, error) {
+	ip, ipnet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return "", fmt.Errorf("network subnet %q: %w", cidr, err)
+	}
+	ip = ip.Mask(ipnet.Mask)
+	ones, bits := ipnet.Mask.Size()
+	// Network + the reserved .1 gateway are skipped; for a host-bit subnet (/31,
+	// /32) there is nothing to hand out.
+	if bits-ones < 2 {
+		return "", fmt.Errorf("network subnet %q too small to allocate hosts", cidr)
+	}
+	cur := cloneIP(ip)
+	incIP(cur) // skip network address
+	gateway := cloneIP(cur)
+	incIP(cur) // skip the reserved .1 gateway
+	for ipnet.Contains(cur) {
+		s := cur.String()
+		// Skip the IPv4 broadcast (all-ones host) and the gateway.
+		if !isBroadcast(cur, ipnet) && s != gateway.String() && !used[s] {
+			return s, nil
+		}
+		incIP(cur)
+	}
+	return "", fmt.Errorf("network subnet %q address pool exhausted", cidr)
+}
+
+func cloneIP(ip net.IP) net.IP {
+	c := make(net.IP, len(ip))
+	copy(c, ip)
+	return c
+}
+
+func incIP(ip net.IP) {
+	for i := len(ip) - 1; i >= 0; i-- {
+		ip[i]++
+		if ip[i] != 0 {
+			break
+		}
+	}
+}
+
+// isBroadcast reports whether ip is the all-ones (broadcast) host of an IPv4
+// subnet; IPv6 has no broadcast so it always returns false there.
+func isBroadcast(ip net.IP, ipnet *net.IPNet) bool {
+	v4 := ip.To4()
+	if v4 == nil {
+		return false
+	}
+	bcast := make(net.IP, len(v4))
+	for i := range v4 {
+		bcast[i] = v4[i] | ^ipnet.Mask[i]
+	}
+	return v4.Equal(bcast)
+}

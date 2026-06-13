@@ -77,6 +77,11 @@ type Worker struct {
 	// modules reconciles pluggable agent modules (monitoring, future exporters)
 	// against the gateway's pushed ModuleConfig and streams their metrics up.
 	modules *moduleManager
+
+	// networks reconciles per-Network kernel-WireGuard interfaces against the
+	// gateway's pushed NetworkConfig (the data plane). nil when the agent has no
+	// WG key (enrolled before the data plane) — dispatch guards on it.
+	networks *networkManager
 }
 
 // advertisedServices converts the configured services into the hello message.
@@ -137,6 +142,11 @@ func NewWorker(log *slog.Logger, cfg *Config, noSpawnSessionHost bool) (*Worker,
 		uploadKick: make(chan struct{}, 1),
 	}
 	w.modules = newModuleManager(log, w.enqueue)
+	if st.HasWG {
+		w.networks = newNetworkManager(log, st.WGPriv)
+	} else {
+		log.Warn("no wireguard key in state dir; per-Network data plane disabled (re-enroll to enable)")
+	}
 	cluster, trusted, err := parseAndCheckClusterConfig(st.ClusterRaw, 0)
 	if err != nil {
 		return nil, fmt.Errorf("cluster config in state dir: %w", err)
@@ -244,6 +254,9 @@ func (w *Worker) Run(ctx context.Context) error {
 
 	wg.Wait()
 	w.modules.stopAll()
+	if w.networks != nil {
+		w.networks.downAll()
+	}
 	w.closeConn()
 	w.closeHostConn()
 	return ctx.Err()
@@ -458,6 +471,10 @@ func (w *Worker) streamOnce(ctx context.Context) error {
 			w.handleClusterConfig(ctx, m.ClusterConfig)
 		case *genezav1.GatewayMsg_ModuleConfig:
 			w.modules.reconcile(m.ModuleConfig)
+		case *genezav1.GatewayMsg_NetworkConfig:
+			if w.networks != nil {
+				w.networks.reconcile(m.NetworkConfig)
+			}
 		case *genezav1.GatewayMsg_Ping:
 			// Liveness probe; the next heartbeat answers it implicitly.
 		default:

@@ -118,6 +118,13 @@ func (e *enrollmentService) Enroll(ctx context.Context, req *genezav1.EnrollRequ
 	if len(req.GetCsrPem()) == 0 {
 		return deny("missing CSR", status.Error(codes.InvalidArgument, "csr_pem is required"))
 	}
+	// The WireGuard data-plane static key is optional (additive): agents that
+	// predate the data plane omit it and simply get no overlay interfaces until
+	// they re-enroll. When present it must be a 32-byte Curve25519 key.
+	if wg := req.GetWgStaticPub(); len(wg) != 0 && len(wg) != 32 {
+		return deny("bad wg static key length",
+			status.Error(codes.InvalidArgument, "wg_static_pub must be 32 bytes when present"))
+	}
 
 	nodeID, err := randHexID("n-")
 	if err != nil {
@@ -159,6 +166,7 @@ func (e *enrollmentService) Enroll(ctx context.Context, req *genezav1.EnrollRequ
 		Name:     name,
 		Labels:   labels,
 		NoisePub: req.GetNoiseStaticPub(),
+		WGPub:    req.GetWgStaticPub(),
 		Platform: PlatformRecord{
 			OS:           req.GetPlatform().GetOs(),
 			Arch:         req.GetPlatform().GetArch(),

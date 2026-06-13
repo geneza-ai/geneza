@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"time"
 
+	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 
@@ -113,6 +114,13 @@ func Enroll(ctx context.Context, log *slog.Logger, cfg *Config, opts EnrollOptio
 	if err != nil {
 		return err
 	}
+	// Dedicated per-node WireGuard data-plane keypair (clamped by wgtypes),
+	// distinct from the Noise control/SSH key for clean protocol separation.
+	wgKey, err := wgtypes.GeneratePrivateKey()
+	if err != nil {
+		return fmt.Errorf("generate wireguard key: %w", err)
+	}
+	wgPub := wgKey.PublicKey()
 
 	// Enrollment uses server-auth TLS only: identity is the one-time token.
 	creds := credentials.NewTLS(&tls.Config{RootCAs: rootPool, MinVersion: tls.VersionTLS12})
@@ -131,6 +139,7 @@ func Enroll(ctx context.Context, log *slog.Logger, cfg *Config, opts EnrollOptio
 		RequestedName:  name,
 		CsrPem:         csrPEM,
 		NoiseStaticPub: noiseKey.Public,
+		WgStaticPub:    wgPub[:],
 		Labels:         labels,
 		Platform: &genezav1.PlatformInfo{
 			Os:           runtime.GOOS,
@@ -169,6 +178,13 @@ func Enroll(ctx context.Context, log *slog.Logger, cfg *Config, opts EnrollOptio
 	if err != nil {
 		return err
 	}
+	wgJSON, err := json.Marshal(wgFile{
+		Priv: wgKey.String(), // base64 (wgtypes canonical)
+		Pub:  wgPub.String(),
+	})
+	if err != nil {
+		return err
+	}
 
 	writes := []struct {
 		name string
@@ -179,6 +195,7 @@ func Enroll(ctx context.Context, log *slog.Logger, cfg *Config, opts EnrollOptio
 		{fileNodeKey, keyPEM, 0o600},
 		{fileNodeCert, resp.NodeCertPem, 0o600},
 		{fileNoise, noiseJSON, 0o600},
+		{fileWG, wgJSON, 0o600},
 		{fileClusterConfig, resp.SignedClusterConfig, 0o600},
 		{fileGatewayAddr, []byte(gateway + "\n"), 0o600},
 		{fileNodeID, []byte(resp.NodeId + "\n"), 0o600}, // last: enrollment marker

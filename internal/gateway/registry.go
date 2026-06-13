@@ -37,6 +37,21 @@ type agentHandle struct {
 	mu      sync.Mutex
 	info    AgentInfo
 	waiters map[string]chan *genezav1.SessionOfferAck
+
+	// netVersion is the per-principal monotonic version stamped on each
+	// NetworkConfig push. Computed (not stored) — Network membership is derived,
+	// so the version need only be monotonic for the life of the connection.
+	netVersion int64
+}
+
+// nextNetVersion returns the next monotonic NetworkConfig version for this
+// connection. Serialized under sendMu so an explicit push and a sweep push
+// cannot mint the same number.
+func (h *agentHandle) nextNetVersion() int64 {
+	h.sendMu.Lock()
+	defer h.sendMu.Unlock()
+	h.netVersion++
+	return h.netVersion
 }
 
 func (h *agentHandle) send(msg *genezav1.GatewayMsg) error {
@@ -226,6 +241,21 @@ func (r *Registry) SendModuleConfig(nodeID string, cfg *genezav1.ModuleConfig) e
 	}
 	return h.send(&genezav1.GatewayMsg{Msg: &genezav1.GatewayMsg_ModuleConfig{ModuleConfig: cfg}})
 }
+
+// SendNetworkConfig pushes a node's desired per-Network WireGuard set in
+// realtime. Returns an error if the node is not connected (it reconciles on the
+// next reconnect). The caller stamps cfg.Version via handle.nextNetVersion.
+func (r *Registry) SendNetworkConfig(nodeID string, cfg *genezav1.NetworkConfig) error {
+	h := r.get(nodeID)
+	if h == nil {
+		return fmt.Errorf("node %s is not connected", nodeID)
+	}
+	return h.send(&genezav1.GatewayMsg{Msg: &genezav1.GatewayMsg_NetworkConfig{NetworkConfig: cfg}})
+}
+
+// handle returns the live agentHandle for a node (nil if not connected); used by
+// the network-push path to mint a per-connection monotonic version.
+func (r *Registry) handle(nodeID string) *agentHandle { return r.get(nodeID) }
 
 // Broadcast pushes a (signed) cluster config to every connected agent.
 // Best-effort: agents that miss it reconcile on their next hello.

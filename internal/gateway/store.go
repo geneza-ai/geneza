@@ -144,6 +144,11 @@ type NodeRecord struct {
 	// OverlayIP is the machine's STABLE overlay address within its workspace's
 	// overlay space, assigned at approval. DNS resolves <machine> -> this.
 	OverlayIP string `json:"overlay_ip,omitempty"`
+	// WGPub is the node's dedicated WireGuard static public key (Curve25519, 32
+	// bytes), generated at enroll and distributed to co-members as a peer key by
+	// the per-Network data plane. Additive: old records decode nil and are
+	// skipped as data-plane peers until they re-enroll with a key.
+	WGPub []byte `json:"wg_pub,omitempty"`
 }
 
 type TokenRecord struct {
@@ -398,6 +403,62 @@ func (s *Store) ListSubnets(ws string) ([]*SubnetRecord, error) {
 	if err != nil {
 		return nil, err
 	}
+	return out, nil
+}
+
+// --- bindings (FIB: per-(VNI,node) stable overlay IP, per-workspace) ---
+
+// bindingKey is the VNI-qualified key so the same node holds an independent IP
+// per Network (overlapping CIDRs across Networks never collide).
+func bindingKey(vni uint32, nodeID string) string {
+	return fmt.Sprintf("%d/%s", vni, nodeID)
+}
+
+func (s *Store) PutBinding(rec *BindingRecord) error {
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		b, err := wsChildW(tx, rec.WorkspaceID, childBindings)
+		if err != nil {
+			return err
+		}
+		return putJSONB(b, bindingKey(rec.VNI, rec.NodeID), rec)
+	})
+}
+
+func (s *Store) GetBinding(ws string, vni uint32, nodeID string) (*BindingRecord, error) {
+	var rec BindingRecord
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		return getJSONB(wsChildR(tx, ws, childBindings), bindingKey(vni, nodeID), &rec)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &rec, nil
+}
+
+// ListBindings returns every binding for a Network (used to compute the in-use
+// IP set when allocating a new per-Network address).
+func (s *Store) ListBindings(ws string, vni uint32) ([]*BindingRecord, error) {
+	var out []*BindingRecord
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		b := wsChildR(tx, ws, childBindings)
+		if b == nil {
+			return nil
+		}
+		return b.ForEach(func(_, v []byte) error {
+			var r BindingRecord
+			if err := json.Unmarshal(v, &r); err != nil {
+				return err
+			}
+			if r.VNI == vni {
+				out = append(out, &r)
+			}
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].NodeID < out[j].NodeID })
 	return out, nil
 }
 

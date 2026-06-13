@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/flynn/noise"
+	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
 	"osie.cloud/geneza/internal/ca"
 	"osie.cloud/geneza/internal/types"
@@ -27,6 +28,7 @@ const (
 	fileNodeCert      = "node.crt"
 	fileCARoots       = "ca-roots.pem"
 	fileNoise         = "noise.json"
+	fileWG            = "wg.json"
 	fileNodeID        = "node-id"
 	fileClusterConfig = "cluster-config.json"
 	fileGatewayAddr   = "gateway-addr"
@@ -42,11 +44,21 @@ type State struct {
 	NodeCertPEM []byte
 	CARootsPEM  []byte
 	Noise       noise.DHKey
-	ClusterRaw  []byte // types.Signed envelope bytes
-	GatewayAddr string // recorded at enroll time; config may override
+	WGPriv      wgtypes.Key // WireGuard data-plane static private key
+	HasWG       bool        // false for agents enrolled before the data plane
+	ClusterRaw  []byte      // types.Signed envelope bytes
+	GatewayAddr string      // recorded at enroll time; config may override
 }
 
 type noiseFile struct {
+	Priv string `json:"priv"`
+	Pub  string `json:"pub"`
+}
+
+// wgFile persists the agent's dedicated WireGuard static keypair (hex). The
+// public key is redundant (derivable from priv) but stored for symmetry with
+// noise.json and easy inspection.
+type wgFile struct {
 	Priv string `json:"priv"`
 	Pub  string `json:"pub"`
 }
@@ -138,6 +150,21 @@ func LoadState(dir string) (*State, error) {
 	}
 	if len(st.Noise.Private) != 32 || len(st.Noise.Public) != 32 {
 		return nil, fmt.Errorf("%s: keys must be 32 bytes", fileNoise)
+	}
+
+	// WireGuard data-plane key is optional: agents enrolled before the data plane
+	// have no wg.json and simply run without overlay interfaces.
+	if wb, err := os.ReadFile(filepath.Join(dir, fileWG)); err == nil {
+		var wf wgFile
+		if err := json.Unmarshal(wb, &wf); err != nil {
+			return nil, fmt.Errorf("%s: %w", fileWG, err)
+		}
+		key, err := wgtypes.ParseKey(wf.Priv)
+		if err != nil {
+			return nil, fmt.Errorf("%s: bad priv key: %w", fileWG, err)
+		}
+		st.WGPriv = key
+		st.HasWG = true
 	}
 
 	st.ClusterRaw, err = os.ReadFile(filepath.Join(dir, fileClusterConfig))

@@ -31,6 +31,7 @@ message EnrollRequest {
   bytes noise_static_pub = 6;        // 32-byte Curve25519 static public key
   map<string, string> labels = 7;
   PlatformInfo platform = 8;
+  bytes wg_static_pub = 9;           // 32-byte Curve25519 WireGuard data-plane static public key
 }
 
 message PlatformInfo {
@@ -76,7 +77,33 @@ message GatewayMsg {
     Ping ping = 3;
     SessionRevoke session_revoke = 4; // continuous authz: tear down a live session
     ModuleConfig module_config = 5;   // pluggable per-node agent modules (monitoring, ...)
+    NetworkConfig network_config = 6; // per-Network WireGuard data plane (desired set)
   }
+}
+
+// NetworkConfig is the gateway's desired set of overlay Networks for THIS
+// principal (node or VPN client), pushed in realtime over the control stream.
+// Each NetworkSpec maps to ONE kernel-WireGuard interface at the agent; a VNI
+// absent from a later push means "tear that interface down". Membership is
+// tag-gated server-side (policy.LabelsMatch), so a principal only ever sees the
+// Networks it is allowed into — the relay never parses the WG payload.
+message NetworkConfig {
+  int64 version = 1;                 // monotonic per principal; agent ignores stale
+  repeated NetworkSpec networks = 2; // desired set; a VNI absent => tear it down
+}
+
+message NetworkSpec {
+  uint32 vni = 1;                    // 24-bit; ONE wg interface at the agent
+  string name = 2;
+  string overlay_cidr = 3;           // THIS principal's overlay IP/CIDR on this Network
+  repeated WGPeer peers = 4;
+}
+
+message WGPeer {
+  bytes  wg_pubkey = 1;              // peer WireGuard static (Curve25519, 32 bytes)
+  string endpoint = 2;              // direct host:port if known; else DERP relay addr
+  repeated string allowed_ips = 3;   // peer overlay /32 (+ subnet-route CIDRs later)
+  bytes  rendezvous_token = 4;       // DERP fallback token; empty when direct
 }
 
 // ModuleConfig is the gateway's desired set of agent modules for THIS node,
