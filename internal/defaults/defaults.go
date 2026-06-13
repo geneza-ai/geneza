@@ -7,7 +7,8 @@ import "time"
 const (
 	GatewayGRPCPort = 7401 // mTLS gRPC: enrollment, node control, user/admin API
 	GatewayHTTPPort = 7402 // HTTPS: artifact blobs, desired-version, CA roots
-	RelayPort       = 7403 // TLS rendezvous relay
+	RelayPort       = 7403 // TLS rendezvous relay (TCP: Noise/SSH sessions)
+	RelayDataPort   = 7404 // blind DERP-lite UDP forwarder (WireGuard data plane)
 	WebProxyPort    = 7405 // web session proxy (browser path)
 )
 
@@ -50,6 +51,7 @@ const (
 	TunnelChunk     = 32 * 1024
 	RelayMatchTTL   = 60 * time.Second // unmatched rendezvous slot lifetime
 	RelayIdleClose  = 10 * time.Minute
+	RelayDataIdle   = 60 * time.Second // blind UDP forwarder: idle-expire a mailbox
 	HeartbeatPeriod = 15 * time.Second
 )
 

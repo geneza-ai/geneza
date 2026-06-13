@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -143,7 +144,14 @@ func NewWorker(log *slog.Logger, cfg *Config, noSpawnSessionHost bool) (*Worker,
 	}
 	w.modules = newModuleManager(log, w.enqueue)
 	if st.HasWG {
-		w.networks = newNetworkManager(log, st.WGPriv)
+		var backend wgBackend
+		if strings.EqualFold(cfg.Dataplane, "userspace") {
+			backend = newUserspaceWGBackend(log)
+			log.Info("data plane: userspace WireGuard (magicsock-lite)")
+		} else {
+			backend = realWGBackend{log: log}
+		}
+		w.networks = newNetworkManager(log, st.WGPriv, backend)
 		// Report each Network's WG listen port up the control stream so the
 		// gateway can derive a direct endpoint (paired with the observed source
 		// IP) and hand it to co-members.

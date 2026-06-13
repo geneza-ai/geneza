@@ -126,12 +126,24 @@ func (s *Server) networkPeers(ws string, net *NetworkRecord, self *NodeRecord) [
 			WgPubkey:   peer.WGPub,
 			AllowedIps: []string{ip + "/32"},
 		}
-		// Direct path: if the peer's endpoint is discovered (observed source IP +
-		// reported WG listen port), hand it over so WG connects directly. Absent
-		// (peer offline / not yet reported), the peer is configured key-only until
-		// its endpoint arrives (a later push fills it; DERP fallback is Phase D+).
+		// Direct hint (LAN-only under NAT): observed control-stream source IP +
+		// reported WG listen port. The userspace path treats this as a candidate;
+		// the kernel path uses it directly on a flat L2.
 		if ep, ok := s.registry.NodeEndpoint(peer.ID, net.VNI); ok {
 			wp.Endpoint = ep
+		}
+		// Blind-relay floor coordinates (userspace data plane): the rid pair +
+		// flow secret for self↔peer in this Network. Best-effort — on error the
+		// peer is still pushed (the kernel path ignores .relay).
+		if rc, err := s.relayPathFor(ws, net.VNI, self.ID, peer.ID); err == nil {
+			wp.Relay = &genezav1.RelayPath{
+				RelayAddr:  rc.relayAddr,
+				SelfRid:    rc.selfRid,
+				PeerRid:    rc.peerRid,
+				FlowSecret: rc.flowSecret,
+			}
+		} else {
+			slog.Debug("relay path unavailable", "ws", ws, "vni", net.VNI, "self", self.ID, "peer", peer.ID, "err", err)
 		}
 		peers = append(peers, wp)
 	}

@@ -24,6 +24,9 @@ import (
 type Config struct {
 	// Listen is the TCP listen address, e.g. ":7403".
 	Listen string
+	// DataListen is the UDP listen address for the blind DERP-lite WireGuard
+	// data forwarder, e.g. ":7404". Empty disables the forwarder.
+	DataListen string
 	// TLS enables TLS on the listener. It must only be false in unit tests:
 	// the hello frame carries the rendezvous token, which must never cross a
 	// real network in cleartext.
@@ -54,6 +57,7 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		Listen:       fmt.Sprintf(":%d", defaults.RelayPort),
+		DataListen:   fmt.Sprintf(":%d", defaults.RelayDataPort),
 		TLS:          true,
 		MatchTTL:     defaults.RelayMatchTTL,
 		IdleTimeout:  defaults.RelayIdleClose,
@@ -67,16 +71,17 @@ func DefaultConfig() Config {
 // fileConfig is the YAML-facing shape; durations are strings ("60s", "10m")
 // and tls is a *bool so "absent" defaults to true rather than false.
 type fileConfig struct {
-	Listen       string `yaml:"listen"`
-	TLS          *bool  `yaml:"tls"`
-	CertFile     string `yaml:"cert_file"`
-	KeyFile      string `yaml:"key_file"`
-	MatchTTL     string `yaml:"match_ttl"`
-	IdleTimeout  string `yaml:"idle_timeout"`
-	MaxPending   int    `yaml:"max_pending"`
-	HelloTimeout string `yaml:"hello_timeout"`
-	StatsPeriod  string `yaml:"stats_period"`
-	DrainTimeout string `yaml:"drain_timeout"`
+	Listen       string  `yaml:"listen"`
+	DataListen   *string `yaml:"data_listen"`
+	TLS          *bool   `yaml:"tls"`
+	CertFile     string  `yaml:"cert_file"`
+	KeyFile      string  `yaml:"key_file"`
+	MatchTTL     string  `yaml:"match_ttl"`
+	IdleTimeout  string  `yaml:"idle_timeout"`
+	MaxPending   int     `yaml:"max_pending"`
+	HelloTimeout string  `yaml:"hello_timeout"`
+	StatsPeriod  string  `yaml:"stats_period"`
+	DrainTimeout string  `yaml:"drain_timeout"`
 }
 
 // Load reads a relay.yaml, applies defaults, and validates. Unknown YAML
@@ -94,6 +99,9 @@ func Load(path string) (Config, error) {
 
 	if fc.Listen != "" {
 		cfg.Listen = fc.Listen
+	}
+	if fc.DataListen != nil {
+		cfg.DataListen = *fc.DataListen // explicit, incl. "" to disable
 	}
 	if fc.TLS != nil {
 		cfg.TLS = *fc.TLS

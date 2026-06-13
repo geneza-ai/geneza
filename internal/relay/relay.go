@@ -45,6 +45,8 @@ type Relay struct {
 	active atomic.Int64 // live splices, for the stats log
 	wg     sync.WaitGroup
 	done   chan struct{}
+
+	fwd *udpForwarder // blind UDP WireGuard data forwarder (nil if disabled)
 }
 
 // New builds a Relay; cfg must already be validated (Load does this).
@@ -83,6 +85,20 @@ func (r *Relay) ListenAndServe() error {
 	}
 	if err != nil {
 		return fmt.Errorf("relay: listen %s: %w", r.cfg.Listen, err)
+	}
+	// Start the blind UDP WireGuard data forwarder alongside the TCP rendezvous
+	// (separate listener; the TCP splice path is untouched).
+	if r.cfg.DataListen != "" {
+		fwd, ferr := newUDPForwarder(r.cfg.DataListen, r.log)
+		if ferr != nil {
+			ln.Close()
+			return fmt.Errorf("relay: udp data listen %s: %w", r.cfg.DataListen, ferr)
+		}
+		r.mu.Lock()
+		r.fwd = fwd
+		r.mu.Unlock()
+		r.wg.Add(1)
+		go func() { defer r.wg.Done(); fwd.serve() }()
 	}
 	return r.Serve(ln)
 }
@@ -174,6 +190,7 @@ func (r *Relay) Shutdown(ctx context.Context) error {
 	r.closed = true
 	close(r.done)
 	ln := r.ln
+	fwd := r.fwd
 	for token, s := range r.pending {
 		delete(r.pending, token)
 		s.timer.Stop()
@@ -182,6 +199,9 @@ func (r *Relay) Shutdown(ctx context.Context) error {
 	r.mu.Unlock()
 	if ln != nil {
 		ln.Close()
+	}
+	if fwd != nil {
+		fwd.close() // makes the udp read loop return -> r.wg unblocks
 	}
 
 	drained := make(chan struct{})

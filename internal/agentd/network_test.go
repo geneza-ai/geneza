@@ -41,7 +41,7 @@ func (f *fakeWG) SetAddr(name, cidr string) error {
 	f.addr[name] = cidr
 	return nil
 }
-func (f *fakeWG) Configure(name string, _ wgtypes.Key, _ int, peers []wgtypes.PeerConfig) error {
+func (f *fakeWG) Configure(name string, _ wgtypes.Key, _ int, peers []*genezav1.WGPeer) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.peers[name] = len(peers)

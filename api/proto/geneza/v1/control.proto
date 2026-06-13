@@ -114,10 +114,24 @@ message NetworkSpec {
 }
 
 message WGPeer {
+  reserved 4;                        // was rendezvous_token (kernel-WG era); superseded by relay
+  reserved "rendezvous_token";
   bytes  wg_pubkey = 1;              // peer WireGuard static (Curve25519, 32 bytes)
-  string endpoint = 2;              // direct host:port if known; else DERP relay addr
+  string endpoint = 2;              // direct host:port HINT (LAN-only under NAT); may be empty
   repeated string allowed_ips = 3;   // peer overlay /32 (+ subnet-route CIDRs later)
-  bytes  rendezvous_token = 4;       // DERP fallback token; empty when direct
+  RelayPath relay = 5;               // blind DERP-lite relay floor coordinates for this peer
+}
+
+// RelayPath carries the blind-relay floor coordinates the gateway mints for an
+// ordered peer pair within a Network: the endpoint registers self_rid and sends
+// this peer's traffic addressed to peer_rid. The relay never sees these as
+// anything but opaque 48-bit ids; flow_secret authenticates the rid claim end to
+// end (the relay can't verify it — it holds no key). See docs/magicsock-design.md.
+message RelayPath {
+  string relay_addr  = 1;            // relay UDP data endpoint, host:port (e.g. geneza-core:7404)
+  uint64 self_rid    = 2;            // 48-bit rid THIS endpoint REGisters + receives DATA on
+  uint64 peer_rid    = 3;            // 48-bit rid to address DATA to (the peer's mailbox)
+  bytes  flow_secret = 4;            // 16-byte per-flow secret (HMAC tail on REG; E2E, relay-opaque)
 }
 
 // ModuleConfig is the gateway's desired set of agent modules for THIS node,

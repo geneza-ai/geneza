@@ -37,13 +37,14 @@ var (
 
 // Per-workspace child sub-bucket names (under ws/<wsID>/).
 const (
-	childNodes    = "nodes"
-	childSessions = "sessions"
-	childModules  = "node_modules"
-	childNetworks = "networks"
-	childSubnets  = "subnets"
-	childRoutes   = "routes"
-	childBindings = "bindings"
+	childNodes      = "nodes"
+	childSessions   = "sessions"
+	childModules    = "node_modules"
+	childNetworks   = "networks"
+	childSubnets    = "subnets"
+	childRoutes     = "routes"
+	childBindings   = "bindings"
+	childRelayPaths = "relaypaths"
 )
 
 var ErrNotFound = errors.New("not found")
@@ -116,6 +117,20 @@ type BindingRecord struct {
 	VNI         uint32 `json:"vni"`
 	NodeID      string `json:"node_id"`
 	OverlayIP   string `json:"overlay_ip"`
+}
+
+// RelayPathRecord persists the blind-relay coordinates for an unordered peer
+// pair in a Network: each node's 48-bit mailbox rid (lo registers RidLo and
+// receives the peer's traffic on it; hi registers RidHi) plus a shared per-flow
+// secret. Node ids are sorted so the record is order-independent.
+type RelayPathRecord struct {
+	WorkspaceID string `json:"workspace_id"`
+	VNI         uint32 `json:"vni"`
+	NodeLo      string `json:"node_lo"`
+	NodeHi      string `json:"node_hi"`
+	RidLo       uint64 `json:"rid_lo"`
+	RidHi       uint64 `json:"rid_hi"`
+	FlowSecret  []byte `json:"flow_secret"`
 }
 
 // PlatformRecord is the enrolled node's reported platform.
@@ -460,6 +475,33 @@ func (s *Store) ListBindings(ws string, vni uint32) ([]*BindingRecord, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].NodeID < out[j].NodeID })
 	return out, nil
+}
+
+// --- relay paths (blind-relay rid pairs, per-workspace) ---
+
+func relayPathKey(vni uint32, lo, hi string) string {
+	return fmt.Sprintf("%d/%s/%s", vni, lo, hi)
+}
+
+func (s *Store) GetRelayPath(ws string, vni uint32, lo, hi string) (*RelayPathRecord, error) {
+	var rec RelayPathRecord
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		return getJSONB(wsChildR(tx, ws, childRelayPaths), relayPathKey(vni, lo, hi), &rec)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &rec, nil
+}
+
+func (s *Store) PutRelayPath(rec *RelayPathRecord) error {
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		b, err := wsChildW(tx, rec.WorkspaceID, childRelayPaths)
+		if err != nil {
+			return err
+		}
+		return putJSONB(b, relayPathKey(rec.VNI, rec.NodeLo, rec.NodeHi), rec)
+	})
 }
 
 // --- nodes (per-workspace) ---

@@ -32,6 +32,10 @@ type Config struct {
 	// node), subnet-route (addr=CIDR), exit-node (addr empty). Each is policy-
 	// gated by name/kind/labels.
 	Services []ServiceDecl `yaml:"services"`
+	// Dataplane selects the per-Network overlay backend: "kernel" (kernel
+	// WireGuard via wgctrl; direct-only) or "userspace" (wireguard-go +
+	// magicsock-lite: relay floor + NAT traversal). Defaults to "kernel".
+	Dataplane string `yaml:"dataplane"`
 }
 
 // ServiceDecl declares one exposed service in agent.yaml.

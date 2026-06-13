@@ -38,23 +38,26 @@ type networkManager struct {
 	version int64
 }
 
-// wgBackend abstracts the kernel-WireGuard operations so reconcile logic is
-// unit-testable without root or the wireguard module.
+// wgBackend abstracts the per-Network WireGuard data-plane operations so the
+// reconcile logic is backend-agnostic (kernel wgctrl OR userspace wireguard-go +
+// magicsock) and unit-testable without root. Configure takes the raw desired
+// peer set so a backend can extract whatever it needs (allowed-ips for the
+// kernel path; relay coordinates + UAPI for the userspace path).
 type wgBackend interface {
 	Create(name string) error
 	SetAddr(name, cidr string) error
-	Configure(name string, priv wgtypes.Key, listenPort int, peers []wgtypes.PeerConfig) error
+	Configure(name string, priv wgtypes.Key, listenPort int, peers []*genezav1.WGPeer) error
 	ListenPort(name string) (int, error)
 	Delete(name string) error
 }
 
-// realWGBackend drives the actual kernel interface via internal/vpn.
-type realWGBackend struct{}
+// realWGBackend drives the kernel WireGuard interface via internal/vpn (wgctrl).
+type realWGBackend struct{ log *slog.Logger }
 
 func (realWGBackend) Create(name string) error        { return vpn.WGCreate(name) }
 func (realWGBackend) SetAddr(name, cidr string) error { return vpn.WGSetAddr(name, cidr) }
-func (realWGBackend) Configure(name string, priv wgtypes.Key, port int, peers []wgtypes.PeerConfig) error {
-	return vpn.WGConfigure(name, priv, port, peers)
+func (r realWGBackend) Configure(name string, priv wgtypes.Key, port int, peers []*genezav1.WGPeer) error {
+	return vpn.WGConfigure(name, priv, port, toPeerConfigs(peers, r.log))
 }
 func (realWGBackend) ListenPort(name string) (int, error) { return vpn.WGListenPort(name) }
 func (realWGBackend) Delete(name string) error            { return vpn.WGDelete(name) }
@@ -73,11 +76,11 @@ type wgIface struct {
 	addr string // overlay CIDR currently assigned (e.g. 100.64.0.2/24)
 }
 
-func newNetworkManager(log *slog.Logger, wgPriv wgtypes.Key) *networkManager {
+func newNetworkManager(log *slog.Logger, wgPriv wgtypes.Key, wg wgBackend) *networkManager {
 	return &networkManager{
 		log:     log.With("component", "networks"),
 		wgPriv:  wgPriv,
-		wg:      realWGBackend{},
+		wg:      wg,
 		running: map[uint32]*wgIface{},
 	}
 }
@@ -154,13 +157,13 @@ func (m *networkManager) upOrSyncLocked(vni uint32, spec *genezav1.NetworkSpec) 
 			iface.addr = spec.GetOverlayCidr()
 		}
 	}
-	// Key + peers (ReplacePeers: the pushed set is authoritative).
-	peers := toPeerConfigs(spec.GetPeers(), m.log)
-	if err := m.wg.Configure(name, m.wgPriv, 0, peers); err != nil {
+	// Key + peers (ReplacePeers: the pushed set is authoritative). The backend
+	// converts (kernel: allowed-ips) or renders UAPI + relay coords (userspace).
+	if err := m.wg.Configure(name, m.wgPriv, 0, spec.GetPeers()); err != nil {
 		m.log.Error("wg configure failed", "vni", vni, "iface", name, "err", err)
 		return
 	}
-	m.log.Debug("network reconciled", "vni", vni, "iface", name, "peers", len(peers))
+	m.log.Debug("network reconciled", "vni", vni, "iface", name, "peers", len(spec.GetPeers()))
 }
 
 func (m *networkManager) downLocked(vni uint32) {
