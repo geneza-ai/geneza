@@ -115,6 +115,22 @@ func (s *Server) sendCachedDisco(toNodeID string, peerWGPub []byte, vni uint32, 
 	}
 }
 
+// clearDiscoCache drops all cached ICE signaling involving a node. Called when a
+// node's control stream (re)connects: its previous worker incarnation's creds +
+// candidates are now stale (a fresh ICE agent has new ufrag/pwd + a new TURN
+// allocation), and replaying them would make the peer's one-shot ICE dial lock
+// onto a dead pair. Clearing guarantees the next replay carries only CURRENT
+// signaling.
+func (s *Server) clearDiscoCache(nodeID string) {
+	s.discoMu.Lock()
+	defer s.discoMu.Unlock()
+	for k := range s.discoCache {
+		if k.from == nodeID || k.to == nodeID {
+			delete(s.discoCache, k)
+		}
+	}
+}
+
 func (s *Server) findNodeByWGPub(ws string, wgpub []byte) *NodeRecord {
 	if len(wgpub) != 32 {
 		return nil
