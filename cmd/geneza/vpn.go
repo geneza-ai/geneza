@@ -124,28 +124,10 @@ func runVPN(ctx context.Context, sess *client.Session, api genezav1.UserAPIClien
 		cleanups = append(cleanups, func() { vpn.DelRoute(rr, tun.Name()) })
 	}
 
-	// Tenant DNS (MagicDNS-style): a local stub relays *.<zone> queries to the
-	// gateway's policy-aware resolver over the authenticated channel, and the
-	// system resolver is split-pointed at it for the zone only. Best-effort —
-	// the VPN data path works regardless.
-	if proxy, perr := vpn.StartDNSProxy(vpn.DNSStubAddr, func(c context.Context, q []byte) ([]byte, error) {
-		r, err := api.ResolveDNS(c, &genezav1.DNSQuery{Query: q})
-		if err != nil {
-			return nil, err
-		}
-		return r.GetResponse(), nil
-	}); perr != nil {
-		fmt.Fprintf(os.Stderr, "[vpn] tenant DNS stub not started: %v\n", perr)
-	} else {
-		cleanups = append(cleanups, func() { _ = proxy.Close() })
-		dnsIP, _, _ := net.SplitHostPort(vpn.DNSStubAddr)
-		if revert, rerr := vpn.SetLinkResolver(tun.Name(), dnsIP, dnsZone); rerr != nil {
-			fmt.Fprintf(os.Stderr, "[vpn] tenant DNS not auto-configured: %v\n", rerr)
-		} else {
-			cleanups = append(cleanups, revert)
-			fmt.Fprintf(os.Stderr, "[vpn] tenant DNS: *.%s resolved via the gateway (stub %s)\n", dnsZone, vpn.DNSStubAddr)
-		}
-	}
+	// In-network DNS is resolved LOCALLY from the gateway-pushed per-Network zone
+	// (the agent resolver at 100.64.0.53) — there is no gateway DNS RPC. Wiring the
+	// `geneza vpn` client to run/point at that local resolver is a follow-up
+	// (memory geneza-roadmap-dns-tenancy); the VPN data path works regardless.
 	defer runCleanups(cleanups)
 
 	fmt.Fprintf(os.Stderr, "[vpn %s] up: overlay %s via %s  routes=%v  (Ctrl-C to stop)\n",

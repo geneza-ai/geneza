@@ -21,7 +21,6 @@ import (
 
 	"osie.cloud/geneza/internal/ca"
 	"osie.cloud/geneza/internal/defaults"
-	genezadns "osie.cloud/geneza/internal/dns"
 	genezav1 "osie.cloud/geneza/internal/pb/geneza/v1"
 	"osie.cloud/geneza/internal/policy"
 	"osie.cloud/geneza/internal/types"
@@ -55,8 +54,7 @@ type Server struct {
 	ccVersion int64
 	ccSigned  []byte
 
-	metrics  *metricsStore
-	resolver *genezadns.Resolver // policy-aware DNS for the tenant zone
+	metrics *metricsStore
 
 	// overlays holds one allocator per workspace (per-tenant overlay namespace:
 	// each tenant draws from its own 100.64/24, so two tenants never collide on a
@@ -138,7 +136,6 @@ func New(cfg *Config) (*Server, error) {
 		policyEngines: engines,
 		members:       cfg.Workspaces,
 		overlays:      map[string]*overlayAllocator{},
-		resolver:      genezadns.NewResolver(cfg.dnsZone()),
 	}
 	s.enrollProviders = map[string]EnrollProvider{
 		"token":              &tokenProvider{store: store},

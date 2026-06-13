@@ -152,7 +152,7 @@ message NetworkSpec {
   // dns_records is the policy-filtered name->overlayIP set this node may resolve in
   // this Network (== the peer membership set + self). The agent runs a local
   // resolver at 100.64.0.53 holding the UNION across its Networks. See
-  // docs/dns-coredns-design.md / memory geneza-roadmap-coredns-tenancy.
+  // docs/dns-design.md / memory geneza-roadmap-dns-tenancy.
   string dns_zone = 5;
   repeated DnsRecord dns_records = 6;
 }
@@ -303,21 +303,9 @@ service UserAPI {
   rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse);
   rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
   rpc WhoAmI(Empty) returns (WhoAmIResponse);
-  // ResolveDNS answers a wire-format DNS query against the caller's tenant zone
-  // (machine names -> overlay IPs), gated by policy: a name resolves only if the
-  // caller could reach that machine (denied/unknown -> NXDOMAIN, no enumeration
-  // oracle). The resolver (miekg/dns) runs in the gateway where identity, policy
-  // and the node directory live; the `geneza vpn` client relays its local
-  // stub-resolver's queries here over this already-authenticated mTLS channel.
-  rpc ResolveDNS(DNSQuery) returns (DNSResponse);
-}
-
-message DNSQuery {
-  bytes query = 1;   // wire-format DNS request (RFC 1035)
-}
-
-message DNSResponse {
-  bytes response = 1; // wire-format DNS reply
+  // (DNS is no longer a gateway RPC: in-network DNS is resolved LOCALLY at each
+  // agent from the zone PUSHED in NetworkSpec.dns_records — no per-query gateway
+  // dependency. See NetworkSpec.dns_zone / memory geneza-roadmap-dns-tenancy.)
 }
 
 message LoginRequest {

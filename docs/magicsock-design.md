@@ -1071,7 +1071,7 @@ mechanism** without NAT.
 - **Green**: build/test on linux + darwin (TUN constructors differ; bind is identical). Reuse the
   node reconcile by extracting it behind the existing seam.
 - **Lab proof**: operator laptop (or a VM acting as a client) runs `geneza vpn up`, joins a
-  Network with VM 107, resolves a machine name via the embedded CoreDNS (task #33), and
+  Network with VM 107, resolves a machine name via the the miekg/dns library (task #33), and
   `ssh`/`ping`s over the overlay — floor first, then direct upgrade — with the identical
   magicsock-lite as nodes.
 - **Riskiest**: cross-platform TUN + client-side privilege (utun on macOS, `/dev/net/tun` on

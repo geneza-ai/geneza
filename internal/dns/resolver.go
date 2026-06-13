@@ -1,13 +1,12 @@
-// Package dns is Geneza's embedded, policy-aware resolver. miekg/dns (the engine
-// CoreDNS itself is built on) parses/builds wire-format DNS; the authoritative,
-// policy-filtered answers come from a caller-supplied lookup closure, so this
-// package stays free of gateway/ca/policy imports (no cycle) and a full CoreDNS
-// plugin.Handler can later replace Answer behind this same shape.
+// Package dns is Geneza's embedded, policy-aware resolver. It uses the miekg/dns
+// LIBRARY (github.com/miekg/dns) to parse/build wire-format DNS — NOT the CoreDNS
+// project. The authoritative, policy-filtered answers come from a caller-supplied
+// lookup closure, so this package stays free of gateway/ca/policy imports (no cycle).
 //
-// The resolver runs in the gateway (where identity, policy and the node
-// directory live) — never on the payload-blind relay. The `geneza vpn` client
-// runs a thin local stub that relays its queries here over the authenticated
-// mTLS channel.
+// The resolver runs LOCALLY on each agent (internal/agentd/dnsserver.go), bound at
+// the in-network resolver IP 100.64.0.53, answering from the per-Network zone the
+// gateway PUSHED — never querying the gateway/relay at lookup time (zero-trust,
+// offline-safe). The relay stays payload-blind.
 package dns
 
 import (

@@ -344,11 +344,10 @@ func TestCrossWorkspaceIsolation(t *testing.T) {
 	if status.Code(berr) != codes.NotFound {
 		t.Fatalf("wsA broker to nB = %v, want NotFound", berr)
 	}
-
-	// INV-CP3 (DNS): bravo does not resolve for a wsA caller.
-	if _, _, ok := srv.dnsLookupA(identA)("bravo"); ok {
-		t.Fatal("wsA resolved bravo (a wsB machine) — cross-tenant DNS leak")
-	}
+	// (Cross-tenant DNS isolation is now structural: networkDNS projects only
+	// ListNodes(ws) into a node's pushed zone, and FindNode above already proves a
+	// wsB node is invisible to a wsA read. DNS is resolved locally from the pushed
+	// per-Network zone — no gateway resolver to leak across tenants.)
 }
 
 // TestWorkspaceMembershipLogin proves the Phase-2 config-driven membership

@@ -1,4 +1,4 @@
-# Policy-aware DNS (embedded CoreDNS) — design + phased plan
+# Policy-aware DNS (the miekg/dns library) — design + phased plan
 
 Status: **design approved (2026-06-12), not yet implemented.** Decisional-agent
 output. Goal: resolve **machine names → overlay IPs** inside the VPN (later:
@@ -17,12 +17,11 @@ system's central security claim. Agents are also rejected (they only know
 themselves; a fleet directory + policy on every agent reintroduces the
 confidentiality-SPOF the architecture avoids).
 
-## Embedding: `miekg/dns` behind a `Resolver` interface (CoreDNS as a drop-in upgrade)
-- **Phase 1: `github.com/miekg/dns`** directly (CoreDNS is built on it) — A/AAAA/
-  SRV/PTR over UDP+TCP, CGO-free, lean. Keep a `ServeDNS`-shaped handler so the
-  full **CoreDNS-as-library** (`coredns/core/dnsserver` + a Geneza
-  `plugin.Handler`) is a drop-in upgrade behind the same interface when we want
-  `forward`/`cache`/`dot`/`doh` ("interesting protocols on the encrypted tunnel").
+## Embedding: the `github.com/miekg/dns` LIBRARY behind a `Resolver` interface
+Geneza uses the **miekg/dns library** (the standard Go wire-format DNS package) —
+NOT the CoreDNS project/server. A/AAAA/SRV/PTR over UDP+TCP, CGO-free, lean. The
+`Resolver`/`Answer` interface keeps the door open to richer behavior
+(`forward`/`cache`/`dot`/`doh`) later without adopting CoreDNS-the-project.
   Mirrors how `policy.Engine` is an interface so OPA/Cedar can replace it.
 
 ## Two query paths (both already-authenticated)
@@ -74,12 +73,15 @@ In `runVPN` (`cmd/geneza/vpn.go`), alongside the TUN/route setup + `cleanups`:
   store/registry/policy + `visibleNodes`); `UserAPI.Resolve` RPC; client
   `internal/vpn/resolver_linux.go` + `cmd/geneza/vpn.go`; e2e: `nslookup`
   resolves over VPN, denied machine ⇒ NXDOMAIN, teardown restores resolver.
-- **Phase 1.5 — `100.64.0.53` hairpin:** node DNS intercept in `agentd/vpn.go`;
-  control-channel `DNSQuery`/`DNSResponse`; gateway handles forwarded queries.
+- **IMPLEMENTED instead (supersedes the old "Phase 1.5 hairpin"):** in-network DNS
+  is resolved LOCALLY at each agent — NOT by querying the gateway. The gateway
+  PUSHES each node its policy-filtered per-Network zone in `NetworkSpec.dns_records`;
+  the agent runs the miekg/dns resolver at `100.64.0.53` answering from pushed data
+  (zero per-query gateway dependency, offline-safe). The old per-query
+  `UserAPI.ResolveDNS` RPC + `DNSQuery`/`DNSResponse` were REMOVED. See
+  `internal/agentd/dnsserver.go` + memory `geneza-roadmap-dns-tenancy`.
 - **Phase 2 — services:** SRV + service-A in the resolver; `geneza connect`
   consumes service names.
-- **Phase 2.5 — CoreDNS-as-library:** swap the miekg handler for a CoreDNS
-  `plugin.Handler` behind the same interface (adds forward/cache/dot/doh).
 
 Tenant-shaped from day one: reserve `policy.Input.Workspace` + the zone label now
 so DNS and multitenancy converge without rework. Critical files:

@@ -11,7 +11,7 @@ package agentd
 // pushed records ARE the node's policy-filtered peer set, so it can resolve
 // exactly what it can route to. The 100.64.0.53 socket is bound host-local
 // (SO_BINDTODEVICE=lo on Linux) so a peer cannot query another node's resolver.
-// See memory geneza-roadmap-coredns-tenancy / docs/dns-coredns-design.md.
+// See memory geneza-roadmap-dns-tenancy / docs/dns-design.md.
 
 import (
 	"log/slog"

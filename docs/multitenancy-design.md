@@ -80,8 +80,8 @@ and audit.
   isolation tests.
 - **Phase 3 — console UI + per-tenant DNS/overlay.** Workspace switcher
   (`header.tsx`/`user-menu.tsx`), `/api/v1/me` returns workspaces, pages inherit
-  scope (keep `App.tsx` eager — web-shell note). Per-tenant CoreDNS (see
-  [dns-coredns-design.md]) + per-workspace overlay CIDR; optional store-backed
+  scope (keep `App.tsx` eager — web-shell note). Per-tenant DNS (miekg/dns) (see
+  [dns-design.md]) + per-workspace overlay CIDR; optional store-backed
   editable policy.
 
 ## Riskiest changes / mitigations

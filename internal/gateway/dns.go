@@ -1,12 +1,9 @@
 package gateway
 
-import (
-	"strings"
-	"time"
-
-	"osie.cloud/geneza/internal/ca"
-	"osie.cloud/geneza/internal/policy"
-)
+// dns.go holds the gateway's overlay-IP allocation used to build DNS records. The
+// gateway is NOT a DNS query endpoint: in-network DNS is resolved LOCALLY at each
+// agent from the zone pushed in NetworkSpec.dns_records (see networkpush.go
+// networkDNS) — there is no per-query gateway path (memory geneza-roadmap-dns-tenancy).
 
 // dnsTTL is short on purpose: overlay assignments and fleet membership change.
 const dnsTTL = 15
@@ -48,51 +45,4 @@ func (s *Server) ensureNodeOverlayIP(node *NodeRecord) (string, error) {
 	}
 	node.OverlayIP = ip
 	return ip, nil
-}
-
-// dnsCanReach is the resolver's policy gate: a machine name resolves only if the
-// caller would be allowed SOME way onto it (shell/exec/vpn). DNS is thus a strict
-// projection of policy — the names you can resolve are exactly the ones you can
-// reach. Denied -> the resolver returns NXDOMAIN (no enumeration oracle).
-func (s *Server) dnsCanReach(ident *ca.Identity, node *NodeRecord) bool {
-	eng := s.policyFor(ident.Workspace)
-	for _, action := range []string{"shell", "exec", "vpn"} {
-		d := eng.Evaluate(policy.Input{
-			User:       ident.Name,
-			Roles:      ident.Roles,
-			NodeID:     node.ID,
-			NodeName:   node.Name,
-			NodeLabels: node.Labels,
-			Action:     action,
-			ClientPath: "native",
-			Now:        time.Now(),
-		})
-		if d.Allow {
-			return true
-		}
-	}
-	return false
-}
-
-// dnsLookupA builds the per-caller A-record lookup the resolver calls: resolve a
-// machine label to its stable overlay IP iff the node exists, is approved, and
-// the caller may reach it. Anything else -> ok=false (NXDOMAIN).
-func (s *Server) dnsLookupA(ident *ca.Identity) func(string) (string, uint32, bool) {
-	return func(label string) (string, uint32, bool) {
-		node, err := s.store.FindNode(ident.Workspace, strings.ToLower(label))
-		if err != nil || node == nil {
-			return "", 0, false
-		}
-		if !node.Approved {
-			return "", 0, false
-		}
-		if !s.dnsCanReach(ident, node) {
-			return "", 0, false
-		}
-		ip, err := s.ensureNodeOverlayIP(node)
-		if err != nil || ip == "" {
-			return "", 0, false
-		}
-		return ip, dnsTTL, true
-	}
 }
