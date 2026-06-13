@@ -74,6 +74,14 @@ type peerICE struct {
 	// pair is relayed (or not yet up) ⇒ Send falls back to per-datagram ice.Conn.
 	directAddr atomic.Pointer[netip.AddrPort]
 
+	// lastRX is the unix-nano time of the last inbound datagram from this peer.
+	// Since every peer runs a 25s persistent keepalive, a connected-but-silent peer
+	// for >livenessStale means the path died WITHOUT pion noticing (e.g. a TURN
+	// relay restart, which pion's consent freshness misses) → the liveness watchdog
+	// recreates it. This is the data-plane-level liveness the kernel-handoff audit
+	// recommended, applied to the userspace path.
+	lastRX atomic.Int64
+
 	mu           sync.Mutex
 	conn         *ice.Conn
 	cancel       context.CancelFunc
@@ -186,11 +194,59 @@ func (b *ICEBind) Open(uint16) ([]conn.ReceiveFunc, uint16, error) {
 			b.log.Info("shared GSO data socket up", "addr", gso.LocalAddr().String(), "batch", gso.batchSize())
 		}
 	}
+	go b.livenessWatchdog() // recreates connected-but-silent peers (pion-independent path-death recovery)
 	fns := make([]conn.ReceiveFunc, numDrainers)
 	for i := range fns {
 		fns[i] = b.receive
 	}
 	return fns, 0, nil
+}
+
+// livenessWatchdog recreates any peer that ICE still considers connected but that
+// has gone silent past livenessStale despite its 25s keepalive — i.e. the path
+// died and pion's consent freshness didn't catch it (notably a TURN relay
+// restart). Runs for every bind (relayOnly included — that's exactly the relay
+// floor that needs it). Bounded: one recreate per stale peer, gated by restarting.
+func (b *ICEBind) livenessWatchdog() {
+	const (
+		interval      = 10 * time.Second
+		livenessStale = 45 * time.Second // > 1.8x the 25s keepalive (no false positives on idle-but-live peers)
+	)
+	for {
+		select {
+		case <-b.done:
+			return
+		case <-time.After(interval):
+		}
+		now := time.Now().UnixNano()
+		b.mu.Lock()
+		var stale []*peerICE
+		for _, p := range b.peers {
+			p.mu.Lock()
+			connected := p.iceConnected && !p.restarting
+			p.mu.Unlock()
+			if !connected {
+				continue
+			}
+			if last := p.lastRX.Load(); last != 0 && time.Duration(now-last) > livenessStale {
+				stale = append(stale, p)
+			}
+		}
+		b.mu.Unlock()
+		for _, p := range stale {
+			p.mu.Lock()
+			restart := !p.restarting
+			if restart {
+				p.restarting = true
+			}
+			p.mu.Unlock()
+			if restart {
+				b.log.Info("peer RX stale; recreating (liveness watchdog)", "peer", shortHex(p.wgPub),
+					"idle", time.Duration(now-p.lastRX.Load()).Round(time.Second).String())
+				go b.recreatePeer(p)
+			}
+		}
+	}
 }
 
 // receive blocks for one datagram then opportunistically batches more (up to the
@@ -418,6 +474,7 @@ func (b *ICEBind) ensurePeer(s PeerSetup) {
 		b.log.Info("ice state", "peer", shortHex(s.WGPub), "state", st.String())
 		switch st {
 		case ice.ConnectionStateConnected:
+			p.lastRX.Store(time.Now().UnixNano()) // seed liveness so the watchdog waits a full window
 			p.mu.Lock()
 			p.iceConnected = true
 			p.restarting = false
@@ -687,6 +744,7 @@ func (b *ICEBind) connect(p *peerICE) {
 			buf := bufPool.Get().([]byte)
 			n, rerr := c.Read(buf)
 			if n > 0 {
+				p.lastRX.Store(time.Now().UnixNano()) // liveness (relay path)
 				select {
 				case b.recvCh <- recvMsg{ep: &genezaEndpoint{wgPub: p.wgPub}, buf: buf, n: n}:
 				case <-b.done:
@@ -767,6 +825,7 @@ func (b *ICEBind) readLoop() {
 			if p == nil {
 				continue // unknown WG src; drop (WG retransmits once the pair is selected)
 			}
+			p.lastRX.Store(time.Now().UnixNano()) // liveness
 			buf := bufPool.Get().([]byte)
 			nn := copy(buf, pkt)
 			select {
@@ -821,9 +880,11 @@ func (d *demuxPacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
 	}
 }
 
-func (d *demuxPacketConn) WriteTo(p []byte, addr net.Addr) (int, error) { return d.gso.WriteTo(p, addr) }
-func (d *demuxPacketConn) Close() error                                 { return nil }
-func (d *demuxPacketConn) LocalAddr() net.Addr                          { return d.gso.LocalAddr() }
-func (d *demuxPacketConn) SetDeadline(time.Time) error                  { return nil }
-func (d *demuxPacketConn) SetReadDeadline(time.Time) error              { return nil }
-func (d *demuxPacketConn) SetWriteDeadline(time.Time) error             { return nil }
+func (d *demuxPacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
+	return d.gso.WriteTo(p, addr)
+}
+func (d *demuxPacketConn) Close() error                     { return nil }
+func (d *demuxPacketConn) LocalAddr() net.Addr              { return d.gso.LocalAddr() }
+func (d *demuxPacketConn) SetDeadline(time.Time) error      { return nil }
+func (d *demuxPacketConn) SetReadDeadline(time.Time) error  { return nil }
+func (d *demuxPacketConn) SetWriteDeadline(time.Time) error { return nil }
