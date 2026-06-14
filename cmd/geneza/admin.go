@@ -32,11 +32,14 @@ func newAdminCmd() *cobra.Command {
 	workspaces.AddCommand(newWorkspacesLsCmd())
 	bindings := &cobra.Command{Use: "bindings", Aliases: []string{"binding"}, Short: "Cloud-qualified source bindings (e.g. openstack:project:<svc>:<uuid> -> workspace)"}
 	bindings.AddCommand(newBindingsAddCmd(), newBindingsLsCmd(), newBindingsRmCmd())
+	cert := &cobra.Command{Use: "cert", Short: "Leaf-certificate revocation (kill a node/user/admin cert before its TTL)"}
+	cert.AddCommand(newCertRevokeCmd(), newCertLsCmd())
 	cmd.AddCommand(
 		tokens,
 		nodes,
 		workspaces,
 		bindings,
+		cert,
 		newFleetCmd(),
 		newPublishCmd(),
 		newDesiredCmd(),
@@ -72,6 +75,69 @@ func newNodeRemoveCmd() *cobra.Command {
 			}
 			fmt.Printf("removed %s\n", args[0])
 			return nil
+		},
+	}
+}
+
+// newCertRevokeCmd builds `admin cert revoke SERIAL` — denylist a leaf cert.
+func newCertRevokeCmd() *cobra.Command {
+	var reason string
+	cmd := &cobra.Command{
+		Use:   "revoke SERIAL",
+		Short: "Revoke a leaf cert by hex serial (denied on its next RPC/reconnect)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			e, err := loadEnv()
+			if err != nil {
+				return err
+			}
+			cc, api, err := dialAdmin(e)
+			if err != nil {
+				return err
+			}
+			defer cc.Close()
+			ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
+			defer cancel()
+			if _, err := api.RevokeCert(ctx, &genezav1.RevokeCertRequest{Serial: args[0], Reason: reason}); err != nil {
+				return client.Humanize(err)
+			}
+			fmt.Printf("revoked %s\n", args[0])
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&reason, "reason", "", "reason recorded in the audit log")
+	return cmd
+}
+
+// newCertLsCmd builds `admin cert ls` — list revoked cert serials.
+func newCertLsCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:     "ls",
+		Aliases: []string{"list"},
+		Short:   "List revoked cert serials",
+		Args:    cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			e, err := loadEnv()
+			if err != nil {
+				return err
+			}
+			cc, api, err := dialAdmin(e)
+			if err != nil {
+				return err
+			}
+			defer cc.Close()
+			ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
+			defer cancel()
+			resp, err := api.ListRevokedCerts(ctx, &genezav1.Empty{})
+			if err != nil {
+				return client.Humanize(err)
+			}
+			tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+			fmt.Fprintln(tw, "SERIAL\tBY\tREASON")
+			for _, c := range resp.GetCerts() {
+				fmt.Fprintf(tw, "%s\t%s\t%s\n", c.GetSerial(), c.GetBy(), c.GetReason())
+			}
+			return tw.Flush()
 		},
 	}
 }

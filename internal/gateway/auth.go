@@ -73,6 +73,15 @@ func extractPeer(ctx context.Context) *peerInfo {
 	return &peerInfo{identity: ident, leaf: leaf}
 }
 
+// Geneza role names. platform-admin is the cloud-operator root: it gates
+// hub-graph mutations (bindings, cloud registration) and is issued ONLY
+// out-of-band (break-glass), never derivable from an IdP/policy mapping
+// (security #11). admin is the per-deployment fleet admin (IdP-grantable).
+const (
+	roleAdmin         = "admin"
+	rolePlatformAdmin = "platform-admin"
+)
+
 func hasRole(ident *ca.Identity, role string) bool {
 	for _, r := range ident.Roles {
 		if r == role {
@@ -80,6 +89,30 @@ func hasRole(ident *ca.Identity, role string) bool {
 		}
 	}
 	return false
+}
+
+// stripReservedRoles removes platform-admin from a set of IdP/policy-resolved
+// roles (security #11): platform-admin is the out-of-band cloud-operator root and
+// must NEVER be derivable from a login/policy mapping, no matter how policy is
+// (mis)configured. Break-glass cert issuance is the only path that grants it.
+func stripReservedRoles(roles []string) []string {
+	out := roles[:0:0]
+	for _, r := range roles {
+		if r == rolePlatformAdmin {
+			slog.Warn("policy attempted to grant a reserved role; stripped", "role", r)
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+// serialHex renders a leaf cert's serial as the revocation-denylist key.
+func serialHex(c *x509.Certificate) string {
+	if c == nil || c.SerialNumber == nil {
+		return ""
+	}
+	return c.SerialNumber.Text(16)
 }
 
 // authorize enforces the per-method trust level and returns the context
@@ -122,10 +155,27 @@ func authorize(ctx context.Context, fullMethod string) (context.Context, error) 
 	}
 }
 
-func unaryAuthInterceptor() grpc.UnaryServerInterceptor {
+// checkNotRevoked fails the call if the authenticated peer's leaf cert is on the
+// revocation denylist (security #6). Unauthenticated paths (no peer cert) skip
+// it — they carry no identity to revoke.
+func (s *Server) checkNotRevoked(ctx context.Context) error {
+	_, leaf, ok := identityFrom(ctx)
+	if !ok || leaf == nil {
+		return nil
+	}
+	if s.store.IsCertRevoked(serialHex(leaf)) {
+		return status.Error(codes.PermissionDenied, "credential revoked")
+	}
+	return nil
+}
+
+func (s *Server) unaryAuthInterceptor() grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		ctx, err := authorize(ctx, info.FullMethod)
 		if err != nil {
+			return nil, err
+		}
+		if err := s.checkNotRevoked(ctx); err != nil {
 			return nil, err
 		}
 		return handler(ctx, req)
@@ -139,10 +189,13 @@ type wrappedStream struct {
 
 func (w *wrappedStream) Context() context.Context { return w.ctx }
 
-func streamAuthInterceptor() grpc.StreamServerInterceptor {
+func (s *Server) streamAuthInterceptor() grpc.StreamServerInterceptor {
 	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 		ctx, err := authorize(ss.Context(), info.FullMethod)
 		if err != nil {
+			return err
+		}
+		if err := s.checkNotRevoked(ctx); err != nil {
 			return err
 		}
 		return handler(srv, &wrappedStream{ServerStream: ss, ctx: ctx})

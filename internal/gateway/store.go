@@ -44,6 +44,11 @@ var (
 	// the endpoint ~5x per boot, so the minted join token is recorded here and
 	// re-served atomically rather than minting a fresh token per hit.
 	bucketOSEnroll = []byte("os_enroll")
+	// bucketRevokedCerts is the leaf-cert revocation denylist (security #6):
+	// serial-hex -> RevokedCert. Checked on every authenticated RPC so a leaked
+	// node/user/admin cert can be killed before its TTL without a fleet-wide CA
+	// re-key. Survives restart (persisted), unlike a TTL-only model.
+	bucketRevokedCerts = []byte("revoked_certs")
 )
 
 // Per-workspace child sub-bucket names (under ws/<wsID>/).
@@ -227,7 +232,7 @@ func OpenStore(path string) (*Store, error) {
 		return nil, fmt.Errorf("open state db %s: %w", path, err)
 	}
 	err = db.Update(func(tx *bbolt.Tx) error {
-		for _, b := range [][]byte{bucketWS, bucketWorkspaces, bucketNodeWS, bucketTokens, bucketSettings, bucketArtifact, bucketSrcBindings, bucketOSEnroll} {
+		for _, b := range [][]byte{bucketWS, bucketWorkspaces, bucketNodeWS, bucketTokens, bucketSettings, bucketArtifact, bucketSrcBindings, bucketOSEnroll, bucketRevokedCerts} {
 			if _, err := tx.CreateBucketIfNotExists(b); err != nil {
 				return err
 			}
@@ -815,6 +820,51 @@ func (s *Store) OSMintOnce(key string, now time.Time, dedupeTTL time.Duration, t
 		return nil
 	})
 	return token, reused, err
+}
+
+// --- leaf-cert revocation (security #6) ---
+
+// RevokedCert is one entry in the revocation denylist, keyed by the cert's
+// serial number in lower-case hex (big.Int.Text(16)).
+type RevokedCert struct {
+	Serial      string `json:"serial"`
+	RevokedUnix int64  `json:"revoked_unix"`
+	By          string `json:"by,omitempty"`
+	Reason      string `json:"reason,omitempty"`
+	Subject     string `json:"subject,omitempty"` // best-effort human hint (kind:name)
+}
+
+func (s *Store) RevokeCert(rec *RevokedCert) error {
+	return s.db.Update(func(tx *bbolt.Tx) error { return putJSON(tx, bucketRevokedCerts, rec.Serial, rec) })
+}
+
+// IsCertRevoked reports whether a serial-hex is on the denylist. Hot path: a
+// single bbolt read per authenticated RPC.
+func (s *Store) IsCertRevoked(serialHex string) bool {
+	revoked := false
+	_ = s.db.View(func(tx *bbolt.Tx) error {
+		revoked = tx.Bucket(bucketRevokedCerts).Get([]byte(serialHex)) != nil
+		return nil
+	})
+	return revoked
+}
+
+func (s *Store) ListRevokedCerts() ([]*RevokedCert, error) {
+	var out []*RevokedCert
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		return tx.Bucket(bucketRevokedCerts).ForEach(func(_, v []byte) error {
+			var rec RevokedCert
+			if err := json.Unmarshal(v, &rec); err != nil {
+				return err
+			}
+			out = append(out, &rec)
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // --- sessions (per-workspace) ---

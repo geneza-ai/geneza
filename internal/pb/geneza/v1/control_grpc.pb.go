@@ -608,6 +608,8 @@ const (
 	AdminAPI_BindSource_FullMethodName         = "/geneza.v1.AdminAPI/BindSource"
 	AdminAPI_UnbindSource_FullMethodName       = "/geneza.v1.AdminAPI/UnbindSource"
 	AdminAPI_ListSourceBindings_FullMethodName = "/geneza.v1.AdminAPI/ListSourceBindings"
+	AdminAPI_RevokeCert_FullMethodName         = "/geneza.v1.AdminAPI/RevokeCert"
+	AdminAPI_ListRevokedCerts_FullMethodName   = "/geneza.v1.AdminAPI/ListRevokedCerts"
 )
 
 // AdminAPIClient is the client API for AdminAPI service.
@@ -643,6 +645,10 @@ type AdminAPIClient interface {
 	BindSource(ctx context.Context, in *BindSourceRequest, opts ...grpc.CallOption) (*Empty, error)
 	UnbindSource(ctx context.Context, in *UnbindSourceRequest, opts ...grpc.CallOption) (*Empty, error)
 	ListSourceBindings(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*ListSourceBindingsResponse, error)
+	// Leaf-cert revocation (security #6): denylist a node/user/admin cert by
+	// serial so it stops working before its TTL, without a fleet CA re-key.
+	RevokeCert(ctx context.Context, in *RevokeCertRequest, opts ...grpc.CallOption) (*Empty, error)
+	ListRevokedCerts(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*ListRevokedCertsResponse, error)
 }
 
 type adminAPIClient struct {
@@ -816,6 +822,26 @@ func (c *adminAPIClient) ListSourceBindings(ctx context.Context, in *Empty, opts
 	return out, nil
 }
 
+func (c *adminAPIClient) RevokeCert(ctx context.Context, in *RevokeCertRequest, opts ...grpc.CallOption) (*Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Empty)
+	err := c.cc.Invoke(ctx, AdminAPI_RevokeCert_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *adminAPIClient) ListRevokedCerts(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*ListRevokedCertsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListRevokedCertsResponse)
+	err := c.cc.Invoke(ctx, AdminAPI_ListRevokedCerts_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AdminAPIServer is the server API for AdminAPI service.
 // All implementations must embed UnimplementedAdminAPIServer
 // for forward compatibility.
@@ -849,6 +875,10 @@ type AdminAPIServer interface {
 	BindSource(context.Context, *BindSourceRequest) (*Empty, error)
 	UnbindSource(context.Context, *UnbindSourceRequest) (*Empty, error)
 	ListSourceBindings(context.Context, *Empty) (*ListSourceBindingsResponse, error)
+	// Leaf-cert revocation (security #6): denylist a node/user/admin cert by
+	// serial so it stops working before its TTL, without a fleet CA re-key.
+	RevokeCert(context.Context, *RevokeCertRequest) (*Empty, error)
+	ListRevokedCerts(context.Context, *Empty) (*ListRevokedCertsResponse, error)
 	mustEmbedUnimplementedAdminAPIServer()
 }
 
@@ -906,6 +936,12 @@ func (UnimplementedAdminAPIServer) UnbindSource(context.Context, *UnbindSourceRe
 }
 func (UnimplementedAdminAPIServer) ListSourceBindings(context.Context, *Empty) (*ListSourceBindingsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListSourceBindings not implemented")
+}
+func (UnimplementedAdminAPIServer) RevokeCert(context.Context, *RevokeCertRequest) (*Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method RevokeCert not implemented")
+}
+func (UnimplementedAdminAPIServer) ListRevokedCerts(context.Context, *Empty) (*ListRevokedCertsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListRevokedCerts not implemented")
 }
 func (UnimplementedAdminAPIServer) mustEmbedUnimplementedAdminAPIServer() {}
 func (UnimplementedAdminAPIServer) testEmbeddedByValue()                  {}
@@ -1205,6 +1241,42 @@ func _AdminAPI_ListSourceBindings_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AdminAPI_RevokeCert_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RevokeCertRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminAPIServer).RevokeCert(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminAPI_RevokeCert_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminAPIServer).RevokeCert(ctx, req.(*RevokeCertRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AdminAPI_ListRevokedCerts_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminAPIServer).ListRevokedCerts(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminAPI_ListRevokedCerts_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminAPIServer).ListRevokedCerts(ctx, req.(*Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AdminAPI_ServiceDesc is the grpc.ServiceDesc for AdminAPI service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1271,6 +1343,14 @@ var AdminAPI_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListSourceBindings",
 			Handler:    _AdminAPI_ListSourceBindings_Handler,
+		},
+		{
+			MethodName: "RevokeCert",
+			Handler:    _AdminAPI_RevokeCert_Handler,
+		},
+		{
+			MethodName: "ListRevokedCerts",
+			Handler:    _AdminAPI_ListRevokedCerts_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

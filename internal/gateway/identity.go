@@ -157,7 +157,7 @@ func (s *Server) handleLogin(ctx context.Context, req *genezav1.LoginRequest) (*
 			return &genezav1.LoginResponse{User: user, AvailableWorkspaces: cands}, nil
 		}
 	}
-	roles := s.policyFor(ws).RolesFor(user, groups)
+	roles := stripReservedRoles(s.policyFor(ws).RolesFor(user, groups))
 	if len(roles) == 0 {
 		if aerr := s.audit.Append("login_denied", user, "", "", map[string]string{
 			"provider": provider, "reason": "no roles bound to user/groups",

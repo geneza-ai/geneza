@@ -547,8 +547,8 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	grpcSrv := grpc.NewServer(
 		grpc.Creds(credentials.NewTLS(grpcTLS)),
-		grpc.ChainUnaryInterceptor(unaryAuthInterceptor()),
-		grpc.ChainStreamInterceptor(streamAuthInterceptor()),
+		grpc.ChainUnaryInterceptor(s.unaryAuthInterceptor()),
+		grpc.ChainStreamInterceptor(s.streamAuthInterceptor()),
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
 			MinTime:             10 * time.Second,
 			PermitWithoutStream: true,

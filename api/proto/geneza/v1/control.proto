@@ -449,6 +449,10 @@ service AdminAPI {
   rpc BindSource(BindSourceRequest) returns (Empty);
   rpc UnbindSource(UnbindSourceRequest) returns (Empty);
   rpc ListSourceBindings(Empty) returns (ListSourceBindingsResponse);
+  // Leaf-cert revocation (security #6): denylist a node/user/admin cert by
+  // serial so it stops working before its TTL, without a fleet CA re-key.
+  rpc RevokeCert(RevokeCertRequest) returns (Empty);
+  rpc ListRevokedCerts(Empty) returns (ListRevokedCertsResponse);
 }
 
 message SetNodeModulesRequest {
@@ -537,6 +541,23 @@ message SourceBindingInfo {
 
 message ListSourceBindingsResponse {
   repeated SourceBindingInfo bindings = 1;
+}
+
+message RevokeCertRequest {
+  string serial = 1;   // lower-case hex serial (as shown by `cert ls` / openssl)
+  string reason = 2;
+}
+
+message RevokedCertInfo {
+  string serial = 1;
+  int64 revoked_unix = 2;
+  string by = 3;
+  string reason = 4;
+  string subject = 5;
+}
+
+message ListRevokedCertsResponse {
+  repeated RevokedCertInfo certs = 1;
 }
 
 // First chunk must carry signed_manifest (JSON types.Signed wrapping

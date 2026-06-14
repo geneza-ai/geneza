@@ -125,11 +125,28 @@ func (a *adminAPIService) ApproveNode(ctx context.Context, req *genezav1.Approve
 	return &genezav1.Empty{}, nil
 }
 
+// requirePlatformAdmin gates hub-graph mutations (bindings, cloud registration)
+// on the platform-admin role (security #11): cross-tenant authority that must be
+// strictly above a per-deployment admin and is issued only out-of-band. An IdP/
+// policy-granted admin (tenant fleet admin) is intentionally rejected here.
+func requirePlatformAdmin(ctx context.Context) error {
+	ident, _, ok := identityFrom(ctx)
+	if !ok || ident == nil {
+		return status.Error(codes.Unauthenticated, "platform-admin certificate required")
+	}
+	if !hasRole(ident, rolePlatformAdmin) {
+		return status.Error(codes.PermissionDenied, "platform-admin role required for hub-graph mutations")
+	}
+	return nil
+}
+
 // BindSource binds a cloud-qualified external source (e.g. an OpenStack project)
-// to a workspace — the operator pre-bind path (§6/§9). Admin-gated; the target
-// workspace must exist. (The full platform-admin cert class + cross-tenant
-// guards remain a follow-up, task #42.)
+// to a workspace — the operator pre-bind path (§6/§9). Requires platform-admin
+// (security #11); the target workspace must exist.
 func (a *adminAPIService) BindSource(ctx context.Context, req *genezav1.BindSourceRequest) (*genezav1.Empty, error) {
+	if err := requirePlatformAdmin(ctx); err != nil {
+		return nil, err
+	}
 	s := a.s
 	key := strings.TrimSpace(req.GetKey())
 	ws := strings.TrimSpace(req.GetWorkspaceId())
@@ -156,8 +173,12 @@ func (a *adminAPIService) BindSource(ctx context.Context, req *genezav1.BindSour
 	return &genezav1.Empty{}, nil
 }
 
-// UnbindSource removes a source binding (operator unbind path).
+// UnbindSource removes a source binding (operator unbind path). Requires
+// platform-admin (security #11).
 func (a *adminAPIService) UnbindSource(ctx context.Context, req *genezav1.UnbindSourceRequest) (*genezav1.Empty, error) {
+	if err := requirePlatformAdmin(ctx); err != nil {
+		return nil, err
+	}
 	s := a.s
 	key := strings.TrimSpace(req.GetKey())
 	if key == "" {
@@ -188,6 +209,45 @@ func (a *adminAPIService) ListSourceBindings(_ context.Context, _ *genezav1.Empt
 		})
 	}
 	return &genezav1.ListSourceBindingsResponse{Bindings: out}, nil
+}
+
+// RevokeCert adds a leaf cert's serial to the revocation denylist (security #6):
+// the next authenticated RPC from that cert is denied, killing it before TTL
+// without a fleet CA re-key. Admin-gated (the AdminAPI is already admin-only).
+func (a *adminAPIService) RevokeCert(ctx context.Context, req *genezav1.RevokeCertRequest) (*genezav1.Empty, error) {
+	serial := strings.ToLower(strings.TrimSpace(req.GetSerial()))
+	if serial == "" {
+		return nil, status.Error(codes.InvalidArgument, "serial is required")
+	}
+	by := adminActor(ctx)
+	if err := a.s.store.RevokeCert(&RevokedCert{
+		Serial: serial, RevokedUnix: time.Now().Unix(), By: by, Reason: req.GetReason(),
+	}); err != nil {
+		return nil, status.Errorf(codes.Internal, "revoke cert: %v", err)
+	}
+	if err := a.s.audit.Append("cert_revoke", by, "", "", map[string]string{
+		"serial": serial, "reason": req.GetReason(),
+	}); err != nil {
+		return nil, status.Errorf(codes.Internal, "audit append: %v", err)
+	}
+	// Takes effect on the cert's next authenticated RPC / stream (re)connect.
+	// Immediate teardown of an already-open control stream would need a
+	// serial->node index we don't keep yet — noted as a refinement.
+	return &genezav1.Empty{}, nil
+}
+
+func (a *adminAPIService) ListRevokedCerts(_ context.Context, _ *genezav1.Empty) (*genezav1.ListRevokedCertsResponse, error) {
+	rs, err := a.s.store.ListRevokedCerts()
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "list revoked: %v", err)
+	}
+	out := make([]*genezav1.RevokedCertInfo, 0, len(rs))
+	for _, r := range rs {
+		out = append(out, &genezav1.RevokedCertInfo{
+			Serial: r.Serial, RevokedUnix: r.RevokedUnix, By: r.By, Reason: r.Reason, Subject: r.Subject,
+		})
+	}
+	return &genezav1.ListRevokedCertsResponse{Certs: out}, nil
 }
 
 // ListWorkspaces lists the tenants this gateway hosts (from the store registry).
