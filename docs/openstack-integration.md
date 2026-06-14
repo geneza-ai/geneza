@@ -29,10 +29,14 @@ A real `openstack server create … --config-drive true` in a bound project →
 - kolla1 restored to pristine afterward (nova config reverted, test VMs/project
   removed, user VMs untouched).
 
-**Known follow-ups (data-plane, not enrollment):** the WireGuard *mesh* overlay
-ping between a NAT'd OpenStack VM and a vmbr5 node did not pass (cross double-NAT
-ICE/relay convergence — the data-plane subsystem, tasks #36–#41); `geneza
-exec`/`ssh` + in-network DNS were the proven reach paths.
+**WG mesh over NAT traversal — RESOLVED (2026-06-14).** The OpenStack VM initially
+did not mesh because the agent defaulted to the **kernel** WireGuard backend (no
+NAT traversal). Fixed: the data plane now defaults to **userspace** (pion
+ICE/TURN/STUN), and the installer-generated `agent.yaml` sets `dataplane:
+userspace`. An OpenStack-SNAT'd VM then **hole-punches a DIRECT NAT-traversed WG
+path** to a vmbr5 node (ICE selected `srflx↔host`, `direct=true`, no relay), 0%
+loss both ways, **1.29 Gbit/s** over the overlay on a 1-vCPU VM (CPU-bound — the
+multi-gig-behind-NAT-traversal showcase from a real cloud VM).
 
 The integration has two independent planes; build them separately:
 
@@ -508,6 +512,16 @@ mitigated gaps, 2 judged already-mitigated. The single highest-leverage fix is
 **#1** below — it is the precondition the §6 "auto-provision is safe without a
 whitelist" proof silently assumes, and fixing it collapses #1/#4/#14/#22/#23 and
 half of #21 at once.
+
+> **Implementation status (2026-06-14).** Built + lab-validated: the enrollment-
+> path must-fixes **#1** (Nova-authoritative project), **#2** (stage-1 SHA256 pin),
+> **#3** (TLS via the LE front), **#4** (service-token forced), **#15/#22**
+> (atomic per-(svc,instance) mint), **#18** (no shared Keystone), **#7** (label
+> namespacing); plus **#6** (leaf-cert revocation: `geneza admin cert revoke`) and
+> **#11** (platform-admin role gates hub mutations; never IdP-grantable). Still
+> open (tracked): access-plane token guards **#9/#10** (access plane is design-
+> only), mandatory off-box audit **#13**, break-glass issuance audit **#12**,
+> auto-provision rate limits **#23**, server-authoritative DNS names **#19**.
 
 ### Trust model & assumptions
 
