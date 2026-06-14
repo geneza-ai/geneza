@@ -133,6 +133,10 @@ session_host_socket: /run/geneza/session-host.sock
 spool_dir: /var/lib/geneza/spool
 health_file: /run/geneza/worker.health
 spawn_session_host: true
+# Userspace data plane (pion ICE/TURN/STUN over wireguard-go): NAT-traverses
+# (hole-punch + relay fallback) so a cloud VM behind SNAT can still mesh.
+dataplane: userspace
+dataplane_relay_only: false
 EOF
 
 echo "==> enrolling with the gateway"

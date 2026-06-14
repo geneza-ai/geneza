@@ -182,14 +182,21 @@ func NewWorker(log *slog.Logger, cfg *Config, noSpawnSessionHost bool) (*Worker,
 	w.modules = newModuleManager(log, w.enqueue)
 	if st.HasWG {
 		var backend wgBackend
-		if strings.EqualFold(cfg.Dataplane, "userspace") {
+		// Userspace (pion ICE/TURN/STUN over wireguard-go) is the DEFAULT data
+		// plane: it NAT-traverses (hole-punch + relay fallback) and is cross-
+		// platform, per the exec decision (memory geneza-dataplane-decision). The
+		// kernel-wgctrl backend has no NAT traversal — a peer behind NAT (e.g. an
+		// OpenStack VM) can only mesh on the userspace path. Kernel is opt-in via
+		// `dataplane: kernel` for a same-L2, direct-only deployment.
+		if strings.EqualFold(cfg.Dataplane, "kernel") {
+			backend = realWGBackend{log: log}
+			log.Info("data plane: kernel WireGuard (direct-only, no NAT traversal)")
+		} else {
 			us := newUserspaceWGBackend(log, cfg.DataplaneRelayOnly)
 			us.SetSignalSink(workerSink{enqueue: w.enqueue})
 			w.disco = us
 			backend = us
 			log.Info("data plane: userspace WireGuard over pion ICE/TURN/STUN", "relay_only", cfg.DataplaneRelayOnly)
-		} else {
-			backend = realWGBackend{log: log}
 		}
 		w.networks = newNetworkManager(log, st.WGPriv, backend)
 		// Report each Network's WG listen port up the control stream (kernel path
