@@ -522,12 +522,25 @@ func (b *ICEBind) ensurePeer(s PeerSetup) {
 		}
 	})
 	_ = a.OnSelectedCandidatePairChange(func(local, remote ice.Candidate) {
-		// A DIRECT pair (host/srflx, not relay) ⇒ record the peer's remote UDP
-		// endpoint so Send GSO-batches straight to it on the shared socket, and map
-		// that src→peer for WG RX demux. A relay pair ⇒ clear it (Send falls back to
-		// the per-datagram ice.Conn over TURN).
+		// The discriminator for WG RX/TX routing is the LOCAL candidate type, NOT
+		// whether the pair is "direct":
+		//   • local is host/srflx ⇒ this side's socket IS the shared GSO socket, so
+		//     ALL inbound for this pair (a direct peer addr OR the relay's forwarding
+		//     addr when the REMOTE is a relay candidate) lands in readLoop from
+		//     remote.Address(). Record it so Send GSO-batches there and readLoop
+		//     routes the src→peer. For a host/srflx↔relay pair this means node1 sends
+		//     raw UDP to the peer's relayed-transport-address (the TURN server
+		//     forwards it under the permission pion's check established) and receives
+		//     from that same address — the relay path works AND batches.
+		//   • local is relay ⇒ this side talks via pion's OWN TURN client socket, so
+		//     inbound arrives on the per-peer *ice.Conn (the per-peer reader) and
+		//     Send must use c.Write. Leave directAddr nil.
+		// Previously this gated on "neither is relay", which dropped the
+		// host/srflx↔relay case: node1 received relayed packets from the relay addr,
+		// readLoop had no srcToPeer entry, and silently dropped them (the relay
+		// fallback never carried data).
 		var ap *netip.AddrPort
-		if remote.Type() != ice.CandidateTypeRelay && local.Type() != ice.CandidateTypeRelay {
+		if local.Type() != ice.CandidateTypeRelay {
 			if addr, err := netip.ParseAddr(remote.Address()); err == nil {
 				v := normAP(netip.AddrPortFrom(addr, uint16(remote.Port())))
 				ap = &v
