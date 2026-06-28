@@ -1,10 +1,10 @@
 name: ci
 
 # build/vet/test runs on every push to main and every PR — the always-on gate
-# (nothing is pushed anywhere). The heavier all-targets cross-compile matrix runs
-# only on PRs and manual runs, not on direct main pushes; it guards the
-# platform-specific paths (terminal signals, syscalls) that only fail when GOOS
-# changes — the regression that shipped a non-building Windows client.
+# (nothing is pushed anywhere). The heavier all-targets cross-compile matrix is
+# manual (workflow_dispatch): the release build already cross-compiles the
+# shipping binaries on a tag, so run this on demand when touching platform-
+# specific code (the kind that broke a Windows client build before this existed).
 on:
   push:
     branches: [main]
@@ -32,8 +32,10 @@ jobs:
         run: go test -count=1 ./...
 
   crosscompile:
-    # Skip on a direct push to main; run on PRs and manual runs.
-    if: github.event_name != 'push'
+    # Manual only. The release build (binaries.yml) cross-compiles the shipping
+    # binaries for all targets on a tag, so that is the automated backstop; run
+    # this on demand when touching platform-specific code (syscalls/terminal/TUN).
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
