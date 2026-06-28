@@ -1,14 +1,16 @@
 name: ci
 
-# Build, vet and test on every push/PR to the working branch. The cross-compile
-# job guards the platform-specific paths (terminal signals, syscalls) that only
-# fail when GOOS changes — the regression that shipped a non-building Windows
-# client before this matrix existed.
+# build/vet/test runs on every push to main and every PR — the always-on gate
+# (nothing is pushed anywhere). The heavier all-targets cross-compile matrix runs
+# only on PRs and manual runs, not on direct main pushes; it guards the
+# platform-specific paths (terminal signals, syscalls) that only fail when GOOS
+# changes — the regression that shipped a non-building Windows client.
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -30,6 +32,8 @@ jobs:
         run: go test -count=1 ./...
 
   crosscompile:
+    # Skip on a direct push to main; run on PRs and manual runs.
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
