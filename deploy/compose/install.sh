@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Geneza compose installer — stand up (or upgrade) a Geneza node with one command.
 #
-#   curl -fsSL https://raw.githubusercontent.com/geneza-ai/geneza/wip/deploy/compose/install.sh \
+#   curl -fsSL https://raw.githubusercontent.com/geneza-ai/geneza/main/deploy/compose/install.sh \
 #     | sudo bash
 #
 # It asks what to install, renders a docker-compose.yml + configs under

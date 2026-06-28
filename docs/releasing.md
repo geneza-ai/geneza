@@ -43,7 +43,7 @@ pick **cut-release**, click **Run workflow**, and enter:
 - `prerelease` — optional checkbox. A hyphen in the version already forces a
   pre-release; the checkbox is just there for a clean (no-suffix) pre-release.
 
-It validates the version, refuses to run off `wip`/`main`, refuses to overwrite
+It validates the version, refuses to run off `main`, refuses to overwrite
 an existing tag, then creates and pushes the annotated tag `v<version>` at the
 current commit. That push starts the four workflows above.
 
@@ -53,7 +53,7 @@ current commit. That push starts the four workflows above.
 > the tag is created but the release/build workflows don't fire. The workflow
 > warns if it's missing; just push the tag by hand (option B) in that case.
 
-**B. Push a tag by hand.** From a clean checkout of `wip`:
+**B. Push a tag by hand.** From a clean checkout of `main`:
 
 ```sh
 git tag -a v1.4.0 -m "Geneza v1.4.0"
@@ -67,8 +67,8 @@ is the tag with the leading `v` stripped (`vX.Y.Z` -> `X.Y.Z`). A pre-release
 carries a hyphenated suffix (`v1.4.0-rc1`, `v1.4.0-beta.2`) and is published as a
 GitHub pre-release, so it is never marked "Latest".
 
-Builds off the `wip` branch are stamped `0.0.0-wip+<sha>` and publish **early,
-unsigned** artifacts and images (`wip`/`sha`-tagged) for testing. They are not
+Builds off the `main` branch are stamped `0.0.0-dev+<sha>` and publish **early,
+unsigned** artifacts and images (`main`/`sha`-tagged) for testing. They are not
 releases: no Release object is created, and `SHA256SUMS` is left unsigned because
 the signing key is absent. Only a `v*` tag yields a signed, published release.
 

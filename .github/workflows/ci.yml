@@ -6,9 +6,9 @@ name: ci
 # client before this matrix existed.
 on:
   push:
-    branches: [wip, main]
+    branches: [main]
   pull_request:
-    branches: [wip, main]
+    branches: [main]
 
 permissions:
   contents: read

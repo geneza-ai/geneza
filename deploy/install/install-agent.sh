@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Geneza agent installer — install the node agent as a daemon with one command:
 #
-#   curl -fsSL https://raw.githubusercontent.com/geneza-ai/geneza/wip/deploy/install/install-agent.sh \
+#   curl -fsSL https://raw.githubusercontent.com/geneza-ai/geneza/main/deploy/install/install-agent.sh \
 #     | sudo bash -s -- gzk_XXXX
 #
 # where gzk_XXXX is the one-time enrollment code from `geneza node enroll`.

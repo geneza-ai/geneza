@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Geneza relay installer — install the rendezvous relay as a daemon with one command:
 #
-#   curl -fsSL https://raw.githubusercontent.com/geneza-ai/geneza/wip/deploy/install/install-relay.sh \
+#   curl -fsSL https://raw.githubusercontent.com/geneza-ai/geneza/main/deploy/install/install-relay.sh \
 #     | sudo bash -s -- --controller gw.example.com:7401 \
 #         --cert /tmp/relay.crt --key /tmp/relay.key --ca /tmp/ca-roots.pem --funnel
 #

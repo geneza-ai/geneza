@@ -5,7 +5,7 @@ few questions, renders `docker-compose.yml` + configs under `/opt/geneza`, and
 brings the stack up.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/geneza-ai/geneza/wip/deploy/compose/install.sh \
+curl -fsSL https://raw.githubusercontent.com/geneza-ai/geneza/main/deploy/compose/install.sh \
   | sudo bash
 ```
 

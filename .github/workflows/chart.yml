@@ -1,12 +1,12 @@
 name: chart
 
 # Package the Helm chart(s) and push them to GHCR as OCI artifacts
-# (oci://ghcr.io/geneza-ai/charts/<name>). Runs when the chart changes on wip
-# (a -wip.<sha> prerelease version, so it never clobbers a release), and on tag
+# (oci://ghcr.io/geneza-ai/charts/<name>). Runs when the chart changes on main
+# (a -dev.<sha> prerelease version, so it never clobbers a release), and on tag
 # pushes (v*) which publish the released chart version + appVersion.
 on:
   push:
-    branches: [wip]
+    branches: [main]
     paths:
       - "deploy/helm/**"
       - ".github/workflows/chart.yml"
@@ -42,11 +42,11 @@ jobs:
             ver="${GITHUB_REF_NAME#v}"
             appver="${GITHUB_REF_NAME#v}"
           else
-            # wip: a valid semver prerelease off the chart's own version, so a tag
-            # release (e.g. 0.1.0) is never overwritten by an early wip push.
+            # main: a valid semver prerelease off the chart's own version, so a tag
+            # release (e.g. 0.1.0) is never overwritten by an early main push.
             base="$(grep '^version:' deploy/helm/${{ matrix.chart }}/Chart.yaml | awk '{print $2}')"
-            ver="${base}-wip.$(git rev-parse --short HEAD)"
-            appver="0.0.0-wip+$(git rev-parse --short HEAD)"
+            ver="${base}-dev.$(git rev-parse --short HEAD)"
+            appver="0.0.0-dev+$(git rev-parse --short HEAD)"
           fi
           echo "ver=$ver" >> "$GITHUB_OUTPUT"
           echo "appver=$appver" >> "$GITHUB_OUTPUT"

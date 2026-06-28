@@ -79,7 +79,7 @@ You need Docker with the Compose v2 plugin and a Linux host. This brings up a
 controller and one relay, then enrolls a node.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/geneza-ai/geneza/wip/deploy/compose/install.sh \
+curl -fsSL https://raw.githubusercontent.com/geneza-ai/geneza/main/deploy/compose/install.sh \
   | sudo bash         # choose controller+relay; it prints an admin password
 ```
 
@@ -95,7 +95,7 @@ On any Linux box you want to manage, run the installer with that token (the agen
 dials out — open no ports on it):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/geneza-ai/geneza/wip/deploy/install/install-agent.sh \
+curl -fsSL https://raw.githubusercontent.com/geneza-ai/geneza/main/deploy/install/install-agent.sh \
   | sudo bash -s -- gzk_XXXX --controller <controller-host>:7401 --labels env=lab
 
 geneza --profile admin node approve <name>

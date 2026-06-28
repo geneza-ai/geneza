@@ -64,10 +64,10 @@ jobs:
         run: |
           set -euo pipefail
           # Tags are cut from the canonical line only. main is the default branch
-          # but is currently empty; wip is the active work branch. Allow either.
+          # and the active branch.
           case "${GITHUB_REF_NAME}" in
-            wip|main) echo "Cutting from ${GITHUB_REF_NAME}" ;;
-            *) echo "::error::cut-release must run on 'wip' or 'main' (ran on '${GITHUB_REF_NAME}')"; exit 1 ;;
+            main) echo "Cutting from ${GITHUB_REF_NAME}" ;;
+            *) echo "::error::cut-release must run on 'main' (ran on '${GITHUB_REF_NAME}')"; exit 1 ;;
           esac
 
       - name: Reject existing tag

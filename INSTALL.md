@@ -24,7 +24,7 @@ Two parts:
 ## 1. Run the control plane
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/geneza-ai/geneza/wip/deploy/compose/install.sh \
+curl -fsSL https://raw.githubusercontent.com/geneza-ai/geneza/main/deploy/compose/install.sh \
   | sudo bash
 ```
 
@@ -75,7 +75,7 @@ pre-placed CA bundle, or `--uninstall`)? The same code works there too:
 
 ```sh
 # on the Linux node to enroll:
-curl -fsSL https://raw.githubusercontent.com/geneza-ai/geneza/wip/deploy/install/install-agent.sh \
+curl -fsSL https://raw.githubusercontent.com/geneza-ai/geneza/main/deploy/install/install-agent.sh \
   | sudo bash -s -- gzk_XXXX --controller <host>:7401
 ```
 

@@ -1,12 +1,12 @@
 name: docker
 
 # Build and push the self-hostable controller and relay images to GHCR, multi-arch
-# (linux/amd64 + linux/arm64). Runs on wip (the mutable `wip` tag) for early
+# (linux/amd64 + linux/arm64). Runs on main (the mutable `main` tag) for early
 # images; tag pushes (v*) add semver + latest. To later restrict to releases
-# only, drop the `wip` push trigger.
+# only, drop the `main` push trigger.
 on:
   push:
-    branches: [wip]
+    branches: [main]
     tags: ["v*"]
 
 permissions:
@@ -37,7 +37,7 @@ jobs:
           if [ "${GITHUB_REF_TYPE}" = tag ]; then
             v="${GITHUB_REF_NAME#v}"
           else
-            v="0.0.0-wip+$(git rev-parse --short HEAD)"
+            v="0.0.0-dev+$(git rev-parse --short HEAD)"
           fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
@@ -56,7 +56,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.OWNER }}/geneza-${{ matrix.component }}
           # No per-commit `sha-<sha>` tag: it minted a new immutable image on every
-          # wip push and they piled up in GHCR. The mutable `wip` tag (from
+          # main push and they piled up in GHCR. The mutable `main` tag (from
           # type=ref) covers early/testing images; releases get semver + latest.
           tags: |
             type=ref,event=branch
