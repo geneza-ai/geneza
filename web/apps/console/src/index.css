@@ -1,0 +1,3 @@
+/* The operator console's styles come entirely from the shared Geneza design
+ * system. Add app-specific CSS below the import if ever needed. */
+@import "@geneza/ui/theme.css";

@@ -1,0 +1,104 @@
+name: cut-release
+
+# One-click "ship a release" for maintainers. Run it from the Actions tab with a
+# version (e.g. 1.4.0, no leading v) and it creates+pushes the annotated tag
+# v<version> at the current commit. That tag push is the single trigger that
+# fans out to release.yml (the release object + notes), binaries.yml, docker.yml
+# and desktop.yml (the artifacts). This workflow itself builds and signs nothing.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version WITHOUT the leading v (e.g. 1.4.0 or 1.4.0-rc1)"
+        required: true
+        type: string
+      prerelease:
+        description: "Pre-release (informational; a hyphen in the version also marks it as one)"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write # push the new tag
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # need tags + full history to tag the exact SHA
+          # A tag pushed with the default GITHUB_TOKEN does NOT start other
+          # workflows (Actions' anti-recursion rule). Push with a RELEASE_PAT
+          # (a fine-grained PAT with contents: write) so the tag actually triggers
+          # release.yml / binaries.yml / docker.yml / desktop.yml.
+          token: ${{ secrets.RELEASE_PAT || github.token }}
+
+      - name: Validate inputs
+        env:
+          VERSION: ${{ inputs.version }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          set -euo pipefail
+          # Accept SemVer 2.0.0: MAJOR.MINOR.PATCH with an optional -prerelease and
+          # optional +build. Reject a leading v so the tag name stays canonical.
+          semver='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'
+          if [ "${VERSION#v}" != "$VERSION" ]; then
+            echo "::error::version must NOT start with 'v' — pass '${VERSION#v}', the tag becomes v${VERSION#v}"
+            exit 1
+          fi
+          if ! printf '%s' "$VERSION" | grep -Eq "$semver"; then
+            echo "::error::'$VERSION' is not a valid semver (expected e.g. 1.4.0 or 1.4.0-rc1)"
+            exit 1
+          fi
+          # Flag a mismatch between the explicit checkbox and the version string,
+          # but don't fail on it — the hyphen rule in release.yml is authoritative.
+          case "$VERSION" in
+            *-*) [ "$PRERELEASE" = "true" ] || echo "::warning::'$VERSION' contains a hyphen and will be treated as a pre-release regardless of the prerelease=false input" ;;
+            *)   [ "$PRERELEASE" = "true" ] && echo "::warning::prerelease=true but '$VERSION' has no pre-release suffix — release.yml will mark it as a stable (latest) release" || true ;;
+          esac
+          echo "TAG=v$VERSION" >> "$GITHUB_ENV"
+          echo "Will cut tag v$VERSION at ${GITHUB_SHA}"
+
+      - name: Require a release branch
+        run: |
+          set -euo pipefail
+          # Tags are cut from the canonical line only. main is the default branch
+          # but is currently empty; wip is the active work branch. Allow either.
+          case "${GITHUB_REF_NAME}" in
+            wip|main) echo "Cutting from ${GITHUB_REF_NAME}" ;;
+            *) echo "::error::cut-release must run on 'wip' or 'main' (ran on '${GITHUB_REF_NAME}')"; exit 1 ;;
+          esac
+
+      - name: Reject existing tag
+        run: |
+          set -euo pipefail
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            echo "::error::tag ${TAG} already exists — bump the version"
+            exit 1
+          fi
+          # Also catch a tag that exists on the remote but not in this checkout.
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "::error::tag ${TAG} already exists on origin — bump the version"
+            exit 1
+          fi
+
+      - name: Check the tag will trigger the release
+        env:
+          HAS_PAT: ${{ secrets.RELEASE_PAT != '' }}
+        run: |
+          if [ "$HAS_PAT" != "true" ]; then
+            echo "::warning::RELEASE_PAT is not set. The tag will be pushed with GITHUB_TOKEN, which does NOT auto-trigger release.yml/binaries.yml/docker.yml/desktop.yml. Add a RELEASE_PAT secret (fine-grained PAT with contents: write) for the one-click path, or push the tag by hand from a clean checkout."
+          fi
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Create and push annotated tag
+        run: |
+          set -euo pipefail
+          git tag -a "${TAG}" -m "Geneza ${TAG}" "${GITHUB_SHA}"
+          git push origin "refs/tags/${TAG}"
+          echo "Pushed ${TAG} — release.yml, binaries.yml, docker.yml and desktop.yml will now run (with RELEASE_PAT set)."

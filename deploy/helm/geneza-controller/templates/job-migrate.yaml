@@ -1,0 +1,61 @@
+{{- if .Values.migrate.enabled }}
+{{- /*
+  One-time, offline migration of an existing single-node bbolt store into the
+  SQL backend. Run with the controller STOPPED. Mount the old data_dir (holding
+  state.db) via an existing PVC. This is a Helm hook so it runs before the
+  controller rollout; delete it after success.
+*/}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "geneza-controller.fullname" . }}-migrate-store
+  labels:
+    {{- include "geneza-controller.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        {{- include "geneza-controller.selectorLabels" . | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: migrate
+          image: {{ include "geneza-controller.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # The source data_dir is taken from the mounted PVC; --config points at
+          # a minimal config whose data_dir is the mount.
+          args:
+            - migrate-store
+            - --config
+            - /etc/geneza/skeleton/controller.skeleton.yaml
+            - --to-backend
+            - {{ .Values.database.backend }}
+            - --to-dsn
+            - $(STORE_DSN)
+          env:
+            - name: STORE_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.dsnSecret.name }}
+                  key: {{ .Values.database.dsnSecret.key }}
+          volumeMounts:
+            - name: skeleton
+              mountPath: /etc/geneza/skeleton
+              readOnly: true
+            - name: bbolt
+              mountPath: /var/lib/geneza/data
+      volumes:
+        - name: skeleton
+          configMap:
+            name: {{ include "geneza-controller.fullname" . }}-config
+        - name: bbolt
+          persistentVolumeClaim:
+            claimName: {{ required "migrate.bboltPVC is required when migrate.enabled" .Values.migrate.bboltPVC }}
+{{- end }}

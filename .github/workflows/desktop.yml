@@ -1,0 +1,136 @@
+name: desktop
+
+# Builds the cross-platform Wails desktop client on platform runners (Wails has
+# no cross-compile). Linux is the validated path; macOS/Windows follow the
+# canonical Wails build and SIGN only when the signing secrets are present —
+# unsigned bundles still build so forks/early runs work. On v* tags the bundles
+# attach to the GitHub Release alongside the CLI archives.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  WAILS_VERSION: v2.12.0
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, platform: linux/amd64, name: linux }
+          - { os: macos-latest, platform: darwin/universal, name: macos }
+          - { os: windows-latest, platform: windows/amd64, name: windows }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # tags, for the version stamp
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then v="${GITHUB_REF_NAME#v}"; else v="0.0.0-dev+$(git rev-parse --short HEAD)"; fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Linux webview deps
+        if: matrix.name == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev
+
+      - name: Install Wails CLI
+        if: matrix.name != 'linux'
+        shell: bash
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@${WAILS_VERSION}
+
+      # Linux: the validated build (builds web/, embeds it, go build) -> bare binary.
+      - name: Build (Linux)
+        if: matrix.name == 'linux'
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: ./desktop/build-desktop.sh
+
+      # macOS/Windows: wails build packages the .app/.exe. wails.json's
+      # frontend:build stages web/dist into the embed dir.
+      - name: Build (macOS/Windows)
+        if: matrix.name != 'linux'
+        run: cd desktop && wails build -platform ${{ matrix.platform }} -ldflags "-X geneza.io/internal/version.Version=${{ steps.ver.outputs.version }}"
+
+      # --- macOS: Developer ID sign + notarize + staple (only with secrets) ---
+      - name: Sign + notarize (macOS)
+        if: matrix.name == 'macos' && env.MACOS_CERT_P12 != ''
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          AC_API_KEY_P8: ${{ secrets.AC_API_KEY_P8 }}
+          AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
+          AC_API_ISSUER: ${{ secrets.AC_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN=build.keychain
+          security create-keychain -p actions "$KEYCHAIN"
+          security default-keychain -s "$KEYCHAIN"
+          security unlock-keychain -p actions "$KEYCHAIN"
+          echo "$MACOS_CERT_P12" | base64 -d > cert.p12
+          security import cert.p12 -k "$KEYCHAIN" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k actions "$KEYCHAIN"
+          APP="desktop/build/bin/Geneza.app"
+          codesign --deep --force --options runtime --timestamp --sign "$MACOS_SIGN_IDENTITY" "$APP"
+          DMG="desktop/build/bin/geneza-desktop-${{ steps.ver.outputs.version }}-darwin.dmg"
+          hdiutil create -volname Geneza -srcfolder "$APP" -ov -format UDZO "$DMG"
+          codesign --force --timestamp --sign "$MACOS_SIGN_IDENTITY" "$DMG"
+          echo "$AC_API_KEY_P8" | base64 -d > ac_key.p8
+          xcrun notarytool submit "$DMG" --key ac_key.p8 --key-id "$AC_API_KEY_ID" --issuer "$AC_API_ISSUER" --wait
+          xcrun stapler staple "$DMG"
+          rm -f cert.p12 ac_key.p8
+
+      # --- Windows: Authenticode-sign the exe + installer (only with secrets) ---
+      - name: Sign (Windows)
+        if: matrix.name == 'windows' && env.WINDOWS_CERT_PFX != ''
+        shell: pwsh
+        env:
+          WINDOWS_CERT_PFX: ${{ secrets.WINDOWS_CERT_PFX }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          [IO.File]::WriteAllBytes("cert.pfx", [Convert]::FromBase64String($env:WINDOWS_CERT_PFX))
+          Get-ChildItem desktop/build/bin -Recurse -Include *.exe | ForEach-Object {
+            & signtool sign /fd SHA256 /f cert.pfx /p $env:WINDOWS_CERT_PASSWORD /tr http://timestamp.digicert.com /td SHA256 $_.FullName
+          }
+          Remove-Item cert.pfx
+
+      - name: Stage artifacts
+        shell: bash
+        run: |
+          mkdir -p out
+          case "${{ matrix.name }}" in
+            linux)   tar -C desktop/build/bin -czf "out/geneza-desktop-${{ steps.ver.outputs.version }}-linux-amd64.tar.gz" geneza-desktop ;;
+            macos)   ( shopt -s nullglob; for f in desktop/build/bin/*.dmg desktop/build/bin/*.app; do cp -r "$f" out/ 2>/dev/null || true; done ) ;;
+            windows) cp desktop/build/bin/*.exe out/ 2>/dev/null || true ;;
+          esac
+          ls -la out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.name }}
+          path: out/*
+          if-no-files-found: warn
+
+      - name: Attach to Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: out/*
+          fail_on_unmatched_files: false

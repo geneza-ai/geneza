@@ -1,0 +1,6 @@
+.git
+bin
+web/node_modules
+labs
+*.log
+e2e-logs

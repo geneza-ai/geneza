@@ -1,0 +1,42 @@
+digraph G {
+  rankdir=TB;
+  graph [fontname="Helvetica", fontsize=12, bgcolor="white", nodesep=0.55, ranksep=1.0];
+  node [fontname="Helvetica", fontsize=11, style="filled,rounded", shape=box, penwidth=1.4, margin="0.18,0.12"];
+  edge [fontname="Helvetica", fontsize=9.5];
+
+  /* ================= PANEL A: a CLIENT session ================= */
+  subgraph cluster_client {
+    label="A · A CLIENT SESSION  —  data goes DIRECT peer-to-peer when it can";
+    labelloc="t"; fontsize=14; fontname="Helvetica-Bold";
+    style="rounded"; color="#cccccc"; bgcolor="#f6fbf6";
+
+    cGW    [label="CONTROLLER\n(brokers + signals only —\nNOT in the data path)", fillcolor="#cfe8ff"];
+    cRELAY [label="RELAY\n(blind: punch helper +\nTURN-UDP fallback floor)", fillcolor="#ffe2b8"];
+    cCLIENT[label="CLIENT\n(you · an AI · the CLI ·\npossibly behind NAT)", fillcolor="#ededed"];
+    cAGENT [label="AGENT\n(on a node · behind NAT ·\ndials out only)", fillcolor="#d8f0d8"];
+
+    cCLIENT -> cGW    [label="  1. broker the session (signed grant)\n  + exchange ICE candidates (signaling)", color="#999999", style=dashed];
+    cAGENT  -> cGW    [label="  signaling\n  (via control)", color="#999999", style=dashed];
+    cCLIENT -> cAGENT [label="  2. DIRECT peer-to-peer (NAT hole-punched)\n  — encrypted data flows straight across;\n  the relay is OUT of the path", color="#0b8043", penwidth=3.0, dir=both, fontcolor="#0b6b38"];
+    cCLIENT -> cRELAY [label="  fallback only\n  (punch fails)", color="#d9822b", style=dashed];
+    cRELAY  -> cAGENT [label="  TURN-UDP\n  relay, still blind", color="#d9822b", style=dashed];
+    { rank=same; cCLIENT; cAGENT; }
+  }
+
+  /* ================= PANEL B: the CONTROLLER as app runner ================= */
+  subgraph cluster_runner {
+    label="B · THE CONTROLLER RUNNING exec / shell  —  it reuses the agent's STANDING connection (no fresh punch)";
+    labelloc="t"; fontsize=14; fontname="Helvetica-Bold";
+    style="rounded"; color="#cccccc"; bgcolor="#eef5ff";
+
+    rGW    [label="CONTROLLER\n(control plane + APP RUNNER:\nan AI here issues exec/shell)", fillcolor="#cfe8ff"];
+    rRELAY [label="RELAY\n(blind L4 pipe)", fillcolor="#ffe2b8"];
+    rAGENT [label="AGENT\n(dials out only)", fillcolor="#d8f0d8"];
+
+    rAGENT -> rRELAY [label="  agent's ONE standing connection\n  (dials out)", color="#1a73e8", penwidth=2.6, dir=both, fontcolor="#1a4fa0"];
+    rRELAY -> rGW    [label="  blind forward\n  (agent's mTLS ends on the controller)", color="#1a73e8", penwidth=2.6, dir=both, fontcolor="#1a4fa0"];
+    rGW -> rAGENT    [label="  exec / shell = a NEW multiplexed stream\n  on that SAME standing connection:\n  ~1 RTT, no per-call hole-punch or handshake", color="#0b8043", penwidth=3.0, style=bold, constraint=false, fontcolor="#0b6b38"];
+  }
+
+  cGW -> rGW [style=invis];
+}

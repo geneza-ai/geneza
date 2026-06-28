@@ -1,0 +1,55 @@
+name: release
+
+# Creates the GitHub Release OBJECT for a v* tag and fills it with auto-generated
+# notes (changelog from the commits/PRs since the previous tag). This workflow
+# owns *only* the release shell + notes; it attaches no files of its own.
+#
+# The actual artifacts land on the SAME release from the per-artifact workflows,
+# all of which fire on the same tag push:
+#   - binaries.yml  -> geneza_* CLI archives, geneza-node_* agent, SHA256SUMS(+.sig), root-keys.json
+#   - docker.yml    -> ghcr.io/geneza-ai/geneza-controller + geneza-relay images (not release assets)
+#   - chart.yml     -> oci://ghcr.io/geneza-ai/charts/geneza-controller Helm chart (not a release asset)
+#   - desktop.yml   -> Wails desktop bundles (.dmg/.app/.exe/.tar.gz)
+#
+# softprops/action-gh-release create-or-updates the release for the tag, so
+# whichever job runs first creates it and the rest update it; this job guarantees
+# the release exists with good notes even if an artifact job wins that race.
+#
+# One ordering caveat: the artifact workflows call the same action to attach
+# files and do not pass `prerelease`/`make_latest`, so the action applies its
+# defaults (prerelease=false, make_latest=legacy) on every update. This workflow
+# is therefore the only place that classifies a pre-release; if it loses the race
+# to an artifact attach, re-run it (Actions -> release -> Re-run) to re-stamp the
+# prerelease/latest flags after the assets are in place.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # create/update the Release for the tag
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history so generated notes can diff against the previous tag
+
+      # A tag with a hyphen is a pre-release per semver (v1.2.3-rc1, v1.2.3-beta.2).
+      # Mark the GitHub Release accordingly so it does not show as "Latest".
+      - name: Classify tag
+        id: tag
+        run: |
+          case "${GITHUB_REF_NAME}" in
+            *-*) echo "prerelease=true"  >> "$GITHUB_OUTPUT"; echo "${GITHUB_REF_NAME} is a pre-release" ;;
+            *)   echo "prerelease=false" >> "$GITHUB_OUTPUT"; echo "${GITHUB_REF_NAME} is a stable release" ;;
+          esac
+
+      - name: Create or update Release
+        uses: softprops/action-gh-release@v2
+        with:
+          # No `files:` here — the artifact workflows attach the assets.
+          generate_release_notes: true
+          prerelease: ${{ steps.tag.outputs.prerelease == 'true' }}
+          make_latest: ${{ steps.tag.outputs.prerelease == 'true' && 'false' || 'true' }}

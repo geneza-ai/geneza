@@ -1,0 +1,124 @@
+name: binaries
+
+# Publishes the downloadable Geneza binaries: the operator CLIs (geneza tenant +
+# genezactl cluster) for every platform (geneza_<os>_<arch>), and the Linux agent
+# stack (geneza-node_linux_<arch> =
+# geneza-agent + geneza-bootstrap). The controller and relay ship only as container
+# images (see docker.yml). SHA256SUMS is offline-signed (see the checksums job).
+# Runs on wip for artifacts; tag pushes (v*) attach everything to a GitHub
+# Release. To later restrict to releases only, drop the `wip` push trigger.
+on:
+  push:
+    branches: [wip]
+    tags: ["v*"]
+
+permissions:
+  contents: write # needed to create/attach a Release on tag builds
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {goos: linux, goarch: amd64}
+          - {goos: linux, goarch: arm64}
+          - {goos: darwin, goarch: amd64}
+          - {goos: darwin, goarch: arm64}
+          - {goos: windows, goarch: amd64}
+          - {goos: windows, goarch: arm64}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # tags, for the version stamp
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Resolve version
+        id: ver
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then
+            v="${GITHUB_REF_NAME#v}"
+          else
+            v="0.0.0-wip+$(git rev-parse --short HEAD)"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "Building version $v"
+
+      - name: Build archives
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          VERSION: ${{ steps.ver.outputs.version }}
+          CGO_ENABLED: "0"
+        run: |
+          PACKAGE=client ./deploy/release/build-archive.sh
+          if [ "${{ matrix.goos }}" = linux ]; then
+            PACKAGE=node ./deploy/release/build-archive.sh
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: geneza_${{ matrix.goos }}_${{ matrix.goarch }}
+          path: dist/*
+          if-no-files-found: error
+
+  checksums:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/download-artifact@v4
+        with:
+          path: dl
+          merge-multiple: true
+      - name: Aggregate SHA256SUMS
+        run: |
+          mkdir -p dist
+          cp dl/* dist/
+          ( cd dist && rm -f SHA256SUMS && sha256sum geneza_* geneza-node_* > SHA256SUMS )
+          cat dist/SHA256SUMS
+      - name: Sign SHA256SUMS (offline-signed release chain)
+        env:
+          GENEZA_RELEASE_SIGNING_KEY: ${{ secrets.GENEZA_RELEASE_SIGNING_KEY }}
+        run: |
+          if [ -z "$GENEZA_RELEASE_SIGNING_KEY" ]; then
+            echo "::warning::GENEZA_RELEASE_SIGNING_KEY unset — publishing unsigned SHA256SUMS (integrity-only)"
+            exit 0
+          fi
+          go build -o /tmp/geneza-sign ./cmd/geneza-sign
+          umask 077; printf '%s' "$GENEZA_RELEASE_SIGNING_KEY" > /tmp/signer.key
+          # Bind the signature to this ref (the release tag on v* builds) so it
+          # can't be replayed onto a different release.
+          /tmp/geneza-sign sign-file --key /tmp/signer.key --file dist/SHA256SUMS \
+            --tag "${GITHUB_REF_NAME}" --out dist/SHA256SUMS.sig
+          cp deploy/release/root-keys.json dist/root-keys.json
+          rm -f /tmp/signer.key
+          echo "signed SHA256SUMS:"; ls -la dist/SHA256SUMS.sig dist/root-keys.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SHA256SUMS
+          path: |
+            dist/SHA256SUMS
+            dist/SHA256SUMS.sig
+            dist/root-keys.json
+          if-no-files-found: warn
+
+      - name: Attach to Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/geneza_*
+            dist/geneza-node_*
+            dist/SHA256SUMS
+            dist/SHA256SUMS.sig
+            dist/root-keys.json
+          fail_on_unmatched_files: false

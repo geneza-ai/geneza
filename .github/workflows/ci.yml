@@ -1,0 +1,74 @@
+name: ci
+
+# Build, vet and test on every push/PR to the working branch. The cross-compile
+# job guards the platform-specific paths (terminal signals, syscalls) that only
+# fail when GOOS changes — the regression that shipped a non-building Windows
+# client before this matrix existed.
+on:
+  push:
+    branches: [wip, main]
+  pull_request:
+    branches: [wip, main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: build
+        run: go build ./...
+      - name: vet
+        run: go vet ./...
+      - name: test
+        run: go test -count=1 ./...
+
+  crosscompile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      # Every user-facing/operator binary must keep compiling on every target it
+      # ships for; the agent is Linux-only (kernel TUN, embedded node_exporter).
+      - name: cross-compile (client + operator tools, all targets)
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          set -eux
+          for osarch in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
+            export GOOS="${osarch%/*}" GOARCH="${osarch#*/}"
+            for bin in geneza genezactl geneza-controller geneza-relay geneza-bootstrap geneza-sign geneza-trust; do
+              go build -o /dev/null "./cmd/$bin"
+            done
+          done
+      - name: cross-compile (agent, Linux only)
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          set -eux
+          for arch in amd64 arm64; do
+            GOOS=linux GOARCH="$arch" go build -o /dev/null ./cmd/geneza-agent
+          done
+      # The desktop app (a nested module) is the only place a GUI toolkit + CGO
+      # may live. The CLI and every server binary MUST stay GUI-dependency-free so
+      # headless servers build them statically — fail if a GUI import ever leaks.
+      - name: headless invariant (no GUI deps in CLI/server binaries)
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          set -eu
+          leaked=$(go list -deps ./cmd/geneza ./cmd/genezactl ./cmd/geneza-controller ./cmd/geneza-relay ./cmd/geneza-agent \
+            | grep -iE 'wailsapp/wails|fyne\.io|gioui\.org|webview/webview' || true)
+          if [ -n "$leaked" ]; then
+            echo "::error::GUI dependency leaked into a headless binary:"; echo "$leaked"; exit 1
+          fi
+          echo "ok: CLI + server binaries are GUI-dependency-free"

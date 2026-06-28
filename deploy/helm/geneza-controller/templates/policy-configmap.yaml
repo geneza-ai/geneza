@@ -1,0 +1,11 @@
+{{- if .Values.bootstrapPolicy }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "geneza-controller.fullname" . }}-policy
+  labels:
+    {{- include "geneza-controller.labels" . | nindent 4 }}
+data:
+  policy.yaml: |
+{{ toYaml .Values.bootstrapPolicy | indent 4 }}
+{{- end }}

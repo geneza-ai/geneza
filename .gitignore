@@ -1,0 +1,29 @@
+/bin/
+# stray top-level built binaries (from `go build` without -o)
+/geneza
+/geneza-sign
+/geneza-trust
+/geneza-controller
+/geneza-relay
+/geneza-agent
+/geneza-bootstrap
+*.test
+*.out
+# Never commit private keys or issued material.
+*.key
+!testdata/**/*.key
+ca-roots.pem
+*.crt
+state.db
+audit.jsonl
+/secrets/
+
+# web control panel build artifacts (source is committed; dist is built by CI/deploy)
+web/node_modules/
+web/dist/
+
+# release archives built by deploy/release/build-archive.sh and the binaries workflow
+/dist/
+
+# Claude Code worktrees / tooling state
+.claude/

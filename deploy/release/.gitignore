@@ -1,0 +1,2 @@
+# never commit release signing private keys here
+*.key

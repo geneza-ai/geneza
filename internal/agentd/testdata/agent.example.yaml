@@ -1,0 +1,56 @@
+# Geneza agent configuration (/etc/geneza/agent.yaml).
+#
+# Only controller_grpc_addr is strictly required; everything else has the
+# defaults shown. Values here come from your deployment, never hardcoded.
+
+# Controller control-plane gRPC endpoint (mTLS): enrollment + node control.
+controller_grpc_addr: "controller.example.internal:7401"
+
+# Controller HTTPS endpoint, used at enroll time to fetch the CA roots bundle
+# when state_dir/ca-roots.pem was not pre-placed (TOFU; the fingerprint is
+# logged for out-of-band verification). Derived from controller_grpc_addr host
+# + port 7402 when omitted.
+controller_http_url: "https://controller.example.internal:7402"
+
+# Where enrollment artifacts live: node.key, node.crt, ca-roots.pem,
+# noise.json, node-id, cluster-config.json.
+state_dir: /var/lib/geneza/agent
+
+# Node name requested at enrollment (defaults to the hostname).
+name: web-1
+
+# Labels stamped onto the node; policy rules match on these.
+labels:
+  env: prod
+  role: web
+
+# Unix socket of the session-host gRPC API.
+session_host_socket: /run/geneza/session-host.sock
+
+# Spool directory shared with the session host: finished session recordings
+# (<id>.cast + <id>.done) are picked up here and uploaded to the controller.
+spool_dir: /var/lib/geneza/spool
+
+# Touched every 10s while the worker event loop is alive; the bootstrap's
+# health gate watches it. Written regardless of controller reachability.
+health_file: /run/geneza/worker.health
+
+# Whether the worker spawns and supervises the session host itself. Set to
+# false (or run the worker with --no-spawn-session-host) when the bootstrap
+# supervises the session host directly.
+spawn_session_host: true
+
+# Where the node identity private key is held. Omitted (or backend: file) keeps
+# the key on disk at state_dir/node.key — the default. With backend: pkcs11 the
+# key lives on an HSM/SoftHSM/YubiHSM token and every signature (the mTLS client
+# handshake and recording-manifest attestation) runs ON the token, so the private
+# bytes never enter the agent — a host compromise cannot exfiltrate the identity.
+# The node key is ECDSA P-256, which every PKCS#11 token supports. The key must be
+# provisioned on the token before enrollment; the agent finds it by label/id.
+#
+# node_key_source:
+#   backend: pkcs11
+#   module: /usr/lib/softhsm/libsofthsm2.so
+#   token_label: geneza
+#   pin: "1234"
+#   key_label: geneza-node

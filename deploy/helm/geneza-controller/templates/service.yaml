@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "geneza-controller.fullname" . }}
+  labels:
+    {{- include "geneza-controller.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "geneza-controller.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: grpc-mtls
+      port: 7401
+      targetPort: 7401
+      protocol: TCP
+    - name: https-api
+      port: 7402
+      targetPort: 7402
+      protocol: TCP
+    {{- if .Values.config.console.listen }}
+    - name: console
+      port: 7406
+      targetPort: 7406
+      protocol: TCP
+    {{- end }}
+    {{- if and .Values.config.cluster_console .Values.config.cluster_console.listen }}
+    - name: cluster-console
+      port: 7407
+      targetPort: 7407
+      protocol: TCP
+    {{- end }}

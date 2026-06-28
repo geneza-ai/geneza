@@ -1,0 +1,140 @@
+# Geneza controller configuration (example).
+#
+# Initialize once:   geneza-controller init  --config /etc/geneza/controller.yaml
+# Run the daemon:    geneza-controller serve --config /etc/geneza/controller.yaml
+#
+# Unknown keys are rejected at load time.
+
+# State root: CA, grant signing key, TLS keypairs, bbolt store, audit log,
+# artifact blobs and session recordings all live under here.
+data_dir: /var/lib/geneza/controller
+
+# mTLS gRPC listener (enrollment, node control, user/admin API).
+grpc_listen: ":7401"
+# HTTPS listener (CA roots, auth-config, desired-version, artifact blobs).
+http_listen: ":7402"
+
+# Stamped into CA subject names and server cert identities.
+cluster_name: geneza1
+
+# SANs for the controller and relay TLS server certs issued at init.
+# localhost/127.0.0.1/::1 are always added on top.
+advertise:
+  dns_names:
+    - controller.example.internal
+  ips:
+    - 192.0.2.10
+
+# Relays handed to clients/agents in session grants and cluster config.
+# The first entry is used for new session rendezvous.
+relay_addrs:
+  - 192.0.2.10:7403
+
+# Policy-as-data document (roles, bindings, allow rules). Reloadable at
+# runtime via the admin API without restarting.
+policy_file: /etc/geneza/policy.yaml
+
+# Short-TTL certificate lifetimes: expiry is revocation.
+cert_ttl:
+  node: 24h
+  user: 8h
+
+# How long a signed session grant stays valid — only the window to complete
+# the relay rendezvous and Noise handshake, not the session lifetime.
+grant_ttl: 2m
+
+# Cap applied to sessions when policy does not set a tighter one.
+default_max_session_ttl: 12h
+
+# Human SSO via the customer IdP (optional block; omit to disable OIDC).
+# The CLI runs the browser flow and presents the ID token at Login.
+oidc:
+  issuer: https://idp.example.com/realms/example
+  client_id: geneza-cli
+  username_claim: preferred_username
+  groups_claim: groups
+
+# Local accounts (optional; mainly bootstrap/break-glass). Generate hashes
+# with: geneza-controller hash-password
+local_users:
+  - username: admin
+    password_bcrypt: "$2a$10$replace-me-with-real-hash"
+    groups: [admins]
+
+# Session-host guardrails pushed to every agent in the signed cluster
+# config. Zero values fall back to agent built-in defaults.
+agent_policy:
+  forbid_detach: false
+  max_sessions: 64
+  max_detached: 16
+  ring_buffer_bytes: 262144
+  detached_ttl_sec: 86400
+  idle_reap_sec: 0
+
+# Public half of the OFFLINE artifact signing key (geneza-sign). When set,
+# PublishArtifact refuses manifests that do not verify against it. The
+# private key must never be on the controller.
+artifact_pubkey_file: /etc/geneza/artifact.pub
+
+# Optional off-box, append-only mirror of the hash-chained, HMAC-keyed audit
+# trail (the only tamper-evidence that survives a host able to rewrite the local
+# chain). type: none|file|http. Production: S3 Object-Lock bucket or SIEM intake.
+# audit_sink:
+#   type: http
+#   url: https://siem.example.com/intake/geneza
+
+# Online crown-jewel keys can be held on an HSM/KMS PKCS#11 token instead of on
+# disk, so signing runs on the token and the private bytes never enter the
+# controller. Omitted = on-disk (the default). The CA key is ECDSA P-256 and works
+# on any token; the grant key is Ed25519 and is not yet token-backable (the
+# PKCS#11 binding lacks Edwards support), so leave grant_key_source on file.
+# ca_key_source:
+#   backend: pkcs11
+#   module: /usr/lib/softhsm/libsofthsm2.so
+#   token_label: geneza
+#   pin: "1234"
+#   key_label: geneza-ca
+
+# Cluster-operator (super-admin) read console, on its OWN mTLS listener. It is
+# gated on a break-glass cluster admin cert OR an OIDC login carrying the required
+# cluster-admin group. Omit the block to disable it.
+# cluster_console:
+#   listen: ":7407"
+#   static_dir: /etc/geneza/cluster   # built cluster SPA (web/apps/cluster/dist)
+#   external_url: https://cluster.geneza.example.com  # forms the OIDC redirect_uri
+#   required_group: geneza-cluster-admins  # default; a login without it is 403
+#   oidc:
+#     # issuer defaults to the top-level oidc.issuer when omitted
+#     issuer: https://idp.example.com/realms/example
+#     client_id: geneza-cluster-console   # the console's OWN audience
+#     username_claim: preferred_username
+#     groups_claim: groups
+
+# Managed domain: publicly-trusted TLS for one or more operator-owned public
+# domains. The controller runs an ACME DNS-01 client (no host is ever exposed to the
+# internet) under ONE account, and mints a wildcard per reserved workspace
+# subdomain (*.<label>.<base>) resolvable only on the Geneza VPN resolver.
+# DNS-01 providers are declared once, keyed by name, and referenced per domain —
+# so domains can live on different providers. Omit the block (or list no domains)
+# to disable. Workspace admins reserve up to 3 subdomains each (e.g. via the API).
+# managed_domain:
+#   # account_key_file: <data_dir>/managed-domain/account.key  # auto-generated if absent
+#   # renew_interval: 6h                   # reconcile cadence (renews per cert at ~2/3 life)
+#   acme:
+#     email: ops@example.com
+#     production: false                    # false = Let's Encrypt STAGING (default; flip for real certs)
+#     # directory_url: https://acme-v02.api.letsencrypt.org/directory  # overrides production (ZeroSSL/pebble)
+#     # eab: { kid: "...", hmac: "..." }   # external account binding (e.g. ZeroSSL)
+#   dns_providers:
+#     cf-main:
+#       provider: cloudflare
+#       cloudflare:
+#         api_token: "<zone-scoped DNS:Edit token>"  # scope to the delegated zone only
+#     # cf-eu:
+#     #   provider: cloudflare
+#     #   cloudflare: { api_token: "<token for the eu zone>" }
+#   domains:
+#     - base: geneza.app                   # workspaces reserve <label>.geneza.app
+#       dns_provider: cf-main
+#     # - base: geneza.eu
+#     #   dns_provider: cf-eu

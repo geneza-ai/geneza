@@ -1,0 +1,88 @@
+{{- if .Values.gateway.enabled }}
+{{- $gw := include "geneza-controller.gatewayName" . }}
+{{- $svc := include "geneza-controller.fullname" . }}
+{{- $fullname := include "geneza-controller.fullname" . }}
+# 7401 gRPC mTLS — TLS passthrough to the controller.
+apiVersion: gateway.networking.k8s.io/v1alpha2
+kind: TLSRoute
+metadata:
+  name: {{ $fullname }}-grpc
+  labels:
+    {{- include "geneza-controller.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ $gw }}
+      sectionName: grpc-mtls
+  {{- with .Values.gateway.grpcHostname }}
+  hostnames:
+    - {{ . | quote }}
+  {{- end }}
+  rules:
+    - backendRefs:
+        - name: {{ $svc }}
+          port: 7401
+---
+# 7402 HTTPS API — TLS passthrough to the controller.
+apiVersion: gateway.networking.k8s.io/v1alpha2
+kind: TLSRoute
+metadata:
+  name: {{ $fullname }}-https-api
+  labels:
+    {{- include "geneza-controller.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ $gw }}
+      sectionName: https-api
+  {{- with .Values.gateway.httpsApiHostname }}
+  hostnames:
+    - {{ . | quote }}
+  {{- end }}
+  rules:
+    - backendRefs:
+        - name: {{ $svc }}
+          port: 7402
+{{- if .Values.config.console.listen }}
+---
+# 7406 operator console — HTTP route; the Gateway terminated TLS on :443.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ $fullname }}-console
+  labels:
+    {{- include "geneza-controller.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ $gw }}
+      sectionName: console
+  {{- with .Values.gateway.consoleHostname }}
+  hostnames:
+    - {{ . | quote }}
+  {{- end }}
+  rules:
+    - backendRefs:
+        - name: {{ $svc }}
+          port: 7406
+{{- end }}
+{{- if and .Values.config.cluster_console .Values.config.cluster_console.listen }}
+---
+# 7407 cluster-operator console — TLS passthrough (preserves break-glass cert).
+apiVersion: gateway.networking.k8s.io/v1alpha2
+kind: TLSRoute
+metadata:
+  name: {{ $fullname }}-cluster-console
+  labels:
+    {{- include "geneza-controller.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ $gw }}
+      sectionName: cluster-console
+  {{- with .Values.gateway.clusterConsoleHostname }}
+  hostnames:
+    - {{ . | quote }}
+  {{- end }}
+  rules:
+    - backendRefs:
+        - name: {{ $svc }}
+          port: 7407
+{{- end }}
+{{- end }}

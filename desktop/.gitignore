@@ -1,0 +1,5 @@
+/build/bin/
+/frontend/dist/*
+!/frontend/dist/.gitkeep
+/desktop
+/geneza-desktop

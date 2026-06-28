@@ -1,0 +1,134 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"time"
+)
+
+// config is /etc/geneza/bootstrap.json. Deliberately JSON, not YAML: the
+// bootstrap must stay stdlib-only and fully auditable, so it carries no YAML
+// dependency. Defaults below mirror the documented filesystem layout; only
+// controller_http_url has no usable default.
+type config struct {
+	ControllerHTTPURL string `json:"controller_http_url"`
+	// Product is the worker this bootstrap supervises: "geneza-agent" (default) or
+	// "geneza-relay". It selects the rollout ring polled on the controller
+	// (?product=...), the manifest product the Installer requires (cross-product
+	// binaries are rejected), the on-disk binary name under each version dir, and
+	// the worker argv. The SAME bootstrap binary supervises either; only this knob
+	// and the worker-specific config path differ.
+	Product         string `json:"product"`
+	CARootsFile     string `json:"ca_roots_file"`
+	ArtifactPubFile string `json:"artifact_pub_file"`
+	// RootPubFile pins the PUBLIC half of the offline TUF-lite ROOT key. When set,
+	// the bootstrap runs in root-anchored mode: it requires a root-keys doc from
+	// the controller, verifies it against this pinned root, and trusts manifests
+	// signed by ANY key the root authorizes (rotation-friendly). The pinned root
+	// itself never signs manifests (role separation). Empty = legacy mode, where
+	// artifact_pub_file is the single trusted release-signing key.
+	RootPubFile string `json:"root_pub_file"`
+	VersionsDir string `json:"versions_dir"`
+	StateFile   string `json:"state_file"`
+	NodeIDFile  string `json:"node_id_file"`
+	AgentConfig string `json:"agent_config"`
+	// WorkerConfig is the worker's own config path passed as `--config`. For the
+	// agent it defaults to AgentConfig (back-compat); for the relay it is the
+	// relay.yaml. When unset it falls back to AgentConfig so existing agent
+	// bootstrap configs need no change.
+	WorkerConfig      string `json:"worker_config"`
+	RunDir            string `json:"run_dir"`
+	SpoolDir          string `json:"spool_dir"`
+	SessionHostSocket string `json:"session_host_socket"`
+	PollIntervalSec   int    `json:"poll_interval_sec"`
+	HealthTimeoutSec  int    `json:"health_timeout_sec"`
+	// DrainStatusFile is the file a RELAY worker reports its drain status in
+	// (draining flag + live active count). Before swapping a relay binary the
+	// bootstrap drains the running relay (SIGUSR1) and waits here for the active
+	// count to reach 0 — so the swap never force-closes a session that could have
+	// migrated. Defaults under run_dir; ignored for the agent product (no drain gate).
+	DrainStatusFile string `json:"drain_status_file"`
+	// DrainWindowSec bounds how long the bootstrap waits for a draining relay to clear
+	// before swapping anyway: sessions that cannot migrate (e.g. relay-only, no
+	// signaling channel) take the relay's own force-close at SIGTERM rather than
+	// blocking the rollout forever. Default 30s.
+	DrainWindowSec int `json:"drain_window_sec"`
+}
+
+// product names the supervised worker; geneza-agent is the default so an
+// existing agent bootstrap config (no product key) behaves exactly as before.
+const (
+	productAgent = "geneza-agent"
+	productRelay = "geneza-relay"
+)
+
+func loadConfig(path string) (*config, error) {
+	cfg := &config{
+		ArtifactPubFile:   "/etc/geneza/artifact.pub",
+		VersionsDir:       "/var/lib/geneza/versions",
+		StateFile:         "/var/lib/geneza/bootstrap-state.json",
+		NodeIDFile:        "/var/lib/geneza/agent/node-id",
+		AgentConfig:       "/etc/geneza/agent.yaml",
+		RunDir:            "/run/geneza",
+		SpoolDir:          "/var/lib/geneza/spool",
+		SessionHostSocket: "/run/geneza/session-host.sock",
+		PollIntervalSec:   15,
+		HealthTimeoutSec:  60,
+		DrainWindowSec:    30,
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(b, cfg); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	if cfg.Product == "" {
+		cfg.Product = productAgent
+	}
+	if cfg.Product != productAgent && cfg.Product != productRelay {
+		return nil, fmt.Errorf("%s: product must be %q or %q, got %q", path, productAgent, productRelay, cfg.Product)
+	}
+	// The worker's --config path: the relay.yaml for a relay, else the agent.yaml.
+	if cfg.WorkerConfig == "" {
+		cfg.WorkerConfig = cfg.AgentConfig
+	}
+	if cfg.ControllerHTTPURL == "" {
+		return nil, fmt.Errorf("%s: controller_http_url is required", path)
+	}
+	if cfg.ArtifactPubFile == "" && cfg.RootPubFile == "" {
+		// Without a pinned key there is no trustworthy update path at all;
+		// refusing to start is the only fail-closed option. Either anchor works:
+		// the single artifact key (legacy) or the TUF-lite root (root-anchored).
+		return nil, fmt.Errorf("%s: artifact_pub_file or root_pub_file is required", path)
+	}
+	if cfg.PollIntervalSec <= 0 {
+		cfg.PollIntervalSec = 15
+	}
+	if cfg.HealthTimeoutSec <= 0 {
+		cfg.HealthTimeoutSec = 60
+	}
+	if cfg.DrainWindowSec <= 0 {
+		cfg.DrainWindowSec = 30
+	}
+	// The drained-gate file defaults under run_dir per product so a bootstrap config
+	// need not set it explicitly. For a relay the relay.yaml's drain_status_file must
+	// point at the same path; for an agent the session-host writes it (--drain-status)
+	// and the bootstrap gates a session-host swap on it.
+	if cfg.DrainStatusFile == "" {
+		switch cfg.Product {
+		case productRelay:
+			cfg.DrainStatusFile = filepath.Join(cfg.RunDir, "relay-drain.status")
+		case productAgent:
+			cfg.DrainStatusFile = filepath.Join(cfg.RunDir, "sessionhost-drain.status")
+		}
+	}
+	return cfg, nil
+}
+
+func (c *config) pollInterval() time.Duration { return time.Duration(c.PollIntervalSec) * time.Second }
+func (c *config) healthTimeout() time.Duration {
+	return time.Duration(c.HealthTimeoutSec) * time.Second
+}

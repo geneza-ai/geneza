@@ -1,0 +1,31 @@
+# Geneza rendezvous relay — example configuration (/etc/geneza/relay.yaml).
+#
+# The relay is stateless and payload-blind: it pairs an initiator and a
+# responder that present the same one-time gz- token, then splices ciphertext.
+# It never holds keys or session state, so it is safe on untrusted hosts.
+
+# TCP listen address.
+listen: ":7403"
+
+# TLS for the rendezvous hello (the spliced payload is end-to-end encrypted
+# by the endpoints regardless). Set to false ONLY in unit tests.
+tls: true
+cert_file: /etc/geneza/relay.crt
+key_file: /etc/geneza/relay.key
+
+# How long an unmatched endpoint may wait for its peer before the slot is
+# dropped and the connection closed.
+match_ttl: 60s
+
+# Spliced connections with no traffic in either direction for this long are
+# closed (reaps dead peers that never sent a FIN).
+idle_timeout: 10m
+
+# Cap on simultaneously waiting (unmatched) endpoints; arrivals beyond this
+# are rejected.
+max_pending: 1024
+
+# Optional tuning knobs (defaults shown):
+# hello_timeout: 10s   # TLS handshake + hello frame read budget per conn
+# stats_period: 60s    # interval of the periodic stats log line
+# drain_timeout: 5s    # graceful-shutdown drain window for live splices

@@ -1,0 +1,19 @@
+{
+  "name": "geneza-web",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Geneza web monorepo: operator console, cluster console, and the shared @geneza/ui design system.",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace=@geneza/console && npm run build --workspace=@geneza/cluster",
+    "build:console": "npm run build --workspace=@geneza/console",
+    "build:cluster": "npm run build --workspace=@geneza/cluster",
+    "dev:console": "npm run dev --workspace=@geneza/console",
+    "dev:cluster": "npm run dev --workspace=@geneza/cluster",
+    "lint": "npm run lint --workspace=@geneza/console && npm run lint --workspace=@geneza/cluster"
+  }
+}

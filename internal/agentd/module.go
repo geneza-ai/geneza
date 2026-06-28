@@ -1,0 +1,250 @@
+package agentd
+
+import (
+	"context"
+	"log/slog"
+	"sync"
+	"time"
+
+	genezav1 "geneza.io/internal/pb/geneza/v1"
+)
+
+// Module is a pluggable agent capability that the control plane can toggle and
+// (re)configure in realtime. node-exporter is the first; future exporters or
+// agents implement the same tiny contract and drop into the registry. A module
+// that produces metrics renders them in Prometheus text exposition on Gather();
+// the manager pushes those up the control channel on the module's interval.
+type Module interface {
+	Name() string
+	// Start brings the module up with the given settings. The ctx is cancelled
+	// when the module is disabled or the worker shuts down.
+	Start(ctx context.Context, settings map[string]string) error
+	Stop()
+	// Gather renders current metrics as Prometheus exposition text. Returns
+	// (nil, nil) for modules that expose no metrics.
+	Gather() ([]byte, error)
+}
+
+// ModuleFactory constructs a fresh, un-started module instance.
+type ModuleFactory func(log *slog.Logger) (Module, error)
+
+// Reporter is implemented by a module that pushes its own AgentMsgs up the control
+// stream rather than (or in addition to) producing Prometheus metrics via Gather.
+// The inventory module reports a CycloneDX SBOM, which is large and cold-path and
+// must not ride the capped, uncompressed metrics sink — so it takes the enqueue
+// hook here and ships its own InventoryReport arm. node-exporter does not implement
+// this, so its path is unchanged.
+type Reporter interface {
+	SetReporter(enqueue func(*genezav1.AgentMsg))
+}
+
+const (
+	defaultScrapeInterval = 15 * time.Second
+	minScrapeInterval     = 2 * time.Second
+)
+
+// moduleManager reconciles the agent's running modules against the controller's
+// desired ModuleConfig and pushes each metrics module's exposition up the
+// control stream on its scrape interval. All node-side; nothing listens.
+type moduleManager struct {
+	log       *slog.Logger
+	push      func(*genezav1.AgentMsg) // enqueue an AgentMsg on the control stream
+	factories map[string]ModuleFactory
+
+	mu      sync.Mutex
+	running map[string]*moduleInstance
+	version int64
+}
+
+type moduleInstance struct {
+	mod      Module
+	cancel   context.CancelFunc
+	settings map[string]string
+}
+
+func newModuleManager(log *slog.Logger, push func(*genezav1.AgentMsg)) *moduleManager {
+	return &moduleManager{
+		log:       log.With("component", "modules"),
+		push:      push,
+		factories: builtinModuleFactories(),
+		running:   map[string]*moduleInstance{},
+	}
+}
+
+// reconcile diffs the desired ModuleConfig against the running set and
+// starts/stops/restarts to match. Idempotent and monotonic: a stale (lower
+// version) config is ignored so a reconnect re-push can't regress state.
+func (m *moduleManager) reconcile(cfg *genezav1.ModuleConfig) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if cfg.GetVersion() < m.version {
+		return
+	}
+	m.version = cfg.GetVersion()
+
+	desired := map[string]*genezav1.ModuleSpec{}
+	for _, s := range cfg.GetModules() {
+		if s.GetEnabled() {
+			desired[s.GetName()] = s
+		}
+	}
+
+	// Stop modules no longer desired, or whose settings changed (restart).
+	for name, inst := range m.running {
+		spec, want := desired[name]
+		if !want || settingsChanged(inst.settings, spec.GetSettings()) {
+			m.stopLocked(name)
+		}
+	}
+	// Start modules newly desired (or just restarted above).
+	for name, spec := range desired {
+		if _, up := m.running[name]; up {
+			continue
+		}
+		m.startLocked(name, spec.GetSettings())
+	}
+}
+
+func (m *moduleManager) startLocked(name string, settings map[string]string) {
+	factory, ok := m.factories[name]
+	if !ok {
+		m.log.Warn("unknown module requested; ignoring", "module", name)
+		return
+	}
+	mod, err := factory(m.log)
+	if err != nil {
+		m.log.Error("module construct failed", "module", name, "err", err)
+		return
+	}
+	// A module that ships its own AgentMsgs (the inventory SBOM, off the metrics
+	// path) gets the control-stream enqueue here.
+	if r, ok := mod.(Reporter); ok {
+		r.SetReporter(m.push)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := mod.Start(ctx, settings); err != nil {
+		cancel()
+		m.log.Error("module start failed", "module", name, "err", err)
+		return
+	}
+	m.running[name] = &moduleInstance{mod: mod, cancel: cancel, settings: cloneSettings(settings)}
+	go m.pushLoop(ctx, mod, scrapeInterval(settings))
+	m.log.Info("module started", "module", name, "interval", scrapeInterval(settings).String())
+}
+
+func (m *moduleManager) stopLocked(name string) {
+	inst, ok := m.running[name]
+	if !ok {
+		return
+	}
+	inst.cancel()
+	inst.mod.Stop()
+	delete(m.running, name)
+	m.log.Info("module stopped", "module", name)
+}
+
+// stopAll tears every module down (worker shutdown).
+func (m *moduleManager) stopAll() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for name := range m.running {
+		m.stopLocked(name)
+	}
+}
+
+// inventoryHasher is implemented by a module that holds a current inventory content
+// hash to advertise on the heartbeat (the inventory module).
+type inventoryHasher interface {
+	InventoryHash() ([]byte, bool)
+}
+
+// inventoryHash returns the running inventory module's current SBOM content hash for
+// the heartbeat, or (nil,false) when no such module is running or it has not
+// collected yet. The heartbeat carries this so the controller sees inventory drift
+// without the blob.
+func (m *moduleManager) inventoryHash() ([]byte, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, inst := range m.running {
+		if h, ok := inst.mod.(inventoryHasher); ok {
+			return h.InventoryHash()
+		}
+	}
+	return nil, false
+}
+
+// fullInventoryRequester is implemented by a module that can be told to ship a full
+// SBOM on its next cycle (the inventory module) when the controller lost a delta's base.
+type fullInventoryRequester interface {
+	RequestFull()
+}
+
+// requestFullInventory tells the running inventory module to ship a full SBOM next
+// cycle, after the controller could not apply a delta. A no-op when no such module runs.
+func (m *moduleManager) requestFullInventory() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, inst := range m.running {
+		if r, ok := inst.mod.(fullInventoryRequester); ok {
+			r.RequestFull()
+			return
+		}
+	}
+}
+
+// pushLoop renders + pushes the module's metrics immediately and then every
+// interval until the module's ctx is cancelled.
+func (m *moduleManager) pushLoop(ctx context.Context, mod Module, interval time.Duration) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		m.scrapeAndPush(mod)
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
+}
+
+func (m *moduleManager) scrapeAndPush(mod Module) {
+	msg := &genezav1.MetricsPush{Module: mod.Name(), UnixMs: time.Now().UnixMilli()}
+	if data, err := mod.Gather(); err != nil {
+		msg.Error = err.Error()
+	} else if len(data) > 0 {
+		msg.Exposition = data
+	} else {
+		return // nothing to push this round
+	}
+	m.push(&genezav1.AgentMsg{Msg: &genezav1.AgentMsg_Metrics{Metrics: msg}})
+}
+
+func scrapeInterval(settings map[string]string) time.Duration {
+	if v := settings["scrape_interval_seconds"]; v != "" {
+		if d, err := time.ParseDuration(v + "s"); err == nil && d >= minScrapeInterval {
+			return d
+		}
+	}
+	return defaultScrapeInterval
+}
+
+func settingsChanged(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return true
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return true
+		}
+	}
+	return false
+}
+
+func cloneSettings(s map[string]string) map[string]string {
+	out := make(map[string]string, len(s))
+	for k, v := range s {
+		out[k] = v
+	}
+	return out
+}

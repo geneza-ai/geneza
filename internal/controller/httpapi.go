@@ -1,0 +1,256 @@
+package controller
+
+import (
+	"crypto/ed25519"
+	"encoding/json"
+	"log/slog"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
+
+	"geneza.io/internal/types"
+)
+
+// The HTTPS listener is deliberately unauthenticated: it serves only public
+// material (CA roots, auth bootstrap hints) and signed artifacts whose trust
+// derives from the offline artifact signature, not from who fetched them.
+
+// loadSignedRootKeys reads and decodes the configured root-keys.json (the
+// offline-signed TUF-lite trust root). It is read fresh on every call so a file
+// swap rotates fleet trust without a restart. Any error (unset, missing,
+// unreadable, corrupt) yields nil — the controller then simply omits the doc and
+// agents fall back to their single pinned key; trust is never forged by the
+// controller, so failing open here only foregoes rotation, it cannot weaken trust.
+func (s *Server) loadSignedRootKeys() *types.Signed {
+	if s.cfg.RootKeysFile == "" {
+		return nil
+	}
+	b, err := os.ReadFile(s.cfg.RootKeysFile)
+	if err != nil {
+		return nil
+	}
+	signed, err := types.DecodeSigned(b)
+	if err != nil {
+		return nil
+	}
+	return signed
+}
+
+// publishTrustSet is the controller's DEFENSE-IN-DEPTH publish gate — NOT the trust
+// boundary (agents verify the full chain against their pinned root before
+// installing anything). It accepts a manifest signed by the single pinned
+// artifact key OR by any signing key the locally-configured root-keys doc lists,
+// so rotating the release-signing key does not break `admin publish`. The
+// root-keys payload is read unverified here on purpose: the controller has no root
+// public key (it only serves root-keys), and this gate is a sanity check, not
+// the security decision. Empty set = no key configured (publish accepted with a
+// metadata-only parse, exactly as before).
+func (s *Server) publishTrustSet() map[string]ed25519.PublicKey {
+	set := map[string]ed25519.PublicKey{}
+	if s.artifactPub != nil {
+		set[types.KeyIDFor(s.artifactPub)] = s.artifactPub
+	}
+	if signed := s.loadSignedRootKeys(); signed != nil {
+		var rk types.RootKeys
+		if err := json.Unmarshal(signed.Payload, &rk); err == nil {
+			if m, err := rk.SigningKeys(); err == nil {
+				for id, pub := range m {
+					set[id] = pub
+				}
+			}
+		}
+	}
+	return set
+}
+
+func resolveDesired(stable, canary string, canaryNodes []string, nodeID string) string {
+	if canary != "" {
+		for _, n := range canaryNodes {
+			if n == nodeID {
+				return canary
+			}
+		}
+	}
+	return stable
+}
+
+func (s *Server) httpHandler() http.Handler {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write([]byte("ok"))
+	})
+
+	mux.HandleFunc("GET /v1/ca-roots", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write(s.ca.RootsPEM)
+	})
+
+	// RFC 8628 device grant: the CLI authorizes + polls here (works even with the
+	// web console disabled). Human approval happens in the console.
+	mux.HandleFunc("POST /v1/device/authorize", s.handleDeviceAuthorize)
+	mux.HandleFunc("POST /v1/device/token", s.handleDeviceToken)
+
+	// Bootstrap reconcile loop: which worker version should this node run,
+	// and the signed manifest proving what that version is.
+	mux.HandleFunc("GET /v1/updates/desired", func(w http.ResponseWriter, r *http.Request) {
+		nodeID := r.URL.Query().Get("node")
+		if nodeID == "" {
+			http.Error(w, "missing node parameter", http.StatusBadRequest)
+			return
+		}
+		// product selects the rollout ring. Absent OR "geneza-agent" keeps the
+		// historical agent behaviour byte-for-byte (the agent path is unchanged); a
+		// relay bootstrap passes product=geneza-relay to drive the separate relay ring.
+		product := r.URL.Query().Get("product")
+		if product == "" {
+			product = "geneza-agent"
+		}
+
+		var desired string
+		osName, arch := "linux", "amd64"
+		switch product {
+		case "geneza-agent":
+			stable, err := s.store.StableVersion()
+			if err != nil {
+				http.Error(w, "settings unavailable", http.StatusInternalServerError)
+				return
+			}
+			canary, err := s.store.CanaryVersion()
+			if err != nil {
+				http.Error(w, "settings unavailable", http.StatusInternalServerError)
+				return
+			}
+			canaryNodes, err := s.store.CanaryNodes()
+			if err != nil {
+				http.Error(w, "settings unavailable", http.StatusInternalServerError)
+				return
+			}
+			desired = resolveDesired(stable, canary, canaryNodes, nodeID)
+			// Resolve the artifact for the NODE's own platform, not a hardcoded
+			// linux/amd64 — otherwise self-update silently breaks for macOS and
+			// linux/arm64 nodes (their reconcile loop 404s forever). Unauthenticated
+			// path: no caller identity, so resolve the node's workspace via the global
+			// index, then read its record from that workspace.
+			if ws, werr := s.store.WorkspaceForNode(nodeID); werr == nil {
+				if rec, err := s.store.GetNode(ws, nodeID); err == nil {
+					if rec.Platform.OS != "" {
+						osName = rec.Platform.OS
+					}
+					if rec.Platform.Arch != "" {
+						arch = rec.Platform.Arch
+					}
+				}
+			}
+		case "geneza-relay":
+			stable, err := s.store.RelayStableVersion()
+			if err != nil {
+				http.Error(w, "settings unavailable", http.StatusInternalServerError)
+				return
+			}
+			canary, err := s.store.RelayCanaryVersion()
+			if err != nil {
+				http.Error(w, "settings unavailable", http.StatusInternalServerError)
+				return
+			}
+			canaryNodes, err := s.store.RelayCanaryNodes()
+			if err != nil {
+				http.Error(w, "settings unavailable", http.StatusInternalServerError)
+				return
+			}
+			// The relay id is the rollout-ring key (passed as ?node=). A relay has no
+			// NodeRecord platform; relays are server binaries, so resolve linux with an
+			// optional ?os/?arch override for non-amd64 relay hosts.
+			desired = resolveDesired(stable, canary, canaryNodes, nodeID)
+			if v := r.URL.Query().Get("os"); v != "" {
+				osName = v
+			}
+			if v := r.URL.Query().Get("arch"); v != "" {
+				arch = v
+			}
+		default:
+			http.Error(w, "unknown product "+product, http.StatusBadRequest)
+			return
+		}
+		if desired == "" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		manifestBytes, err := s.store.GetManifest(ManifestKey(product, osName, arch, desired))
+		if err != nil {
+			http.Error(w, "no artifact for desired version "+desired+" ("+osName+"/"+arch+")", http.StatusNotFound)
+			return
+		}
+		signed, err := types.DecodeSigned(manifestBytes)
+		if err != nil {
+			http.Error(w, "stored manifest corrupt", http.StatusInternalServerError)
+			return
+		}
+		resp := types.DesiredVersionResponse{Version: desired, SignedManifest: signed}
+		// Attach the offline-signed root-keys doc (TUF-lite) when configured, so
+		// the agent verifies the manifest against the rotatable signing-key set
+		// anchored to its pinned root. Read per-request: a file swap rotates the
+		// fleet's trust with no controller restart. A missing/corrupt file is not
+		// fatal — we simply omit it and the agent falls back to its single pinned
+		// key (legacy mode); the controller cannot forge trust either way.
+		if rk := s.loadSignedRootKeys(); rk != nil {
+			resp.SignedRootKeys = rk
+		}
+		writeJSON(w, resp)
+	})
+
+	// Artifact blobs are public by design: they are signed binaries the
+	// bootstrap verifies offline. The strict hash check is also the path
+	// sanitizer.
+	mux.HandleFunc("GET /v1/artifacts/{sha256}", func(w http.ResponseWriter, r *http.Request) {
+		sha := r.PathValue("sha256")
+		if !sha256HexRe.MatchString(sha) {
+			http.Error(w, "invalid artifact hash", http.StatusBadRequest)
+			return
+		}
+		path := filepath.Join(s.cfg.ArtifactsDir(), sha)
+		f, err := os.Open(path)
+		if err != nil {
+			http.Error(w, "artifact not found", http.StatusNotFound)
+			return
+		}
+		defer f.Close()
+		st, err := f.Stat()
+		if err != nil {
+			http.Error(w, "artifact not readable", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Length", strconv.FormatInt(st.Size(), 10))
+		http.ServeContent(w, r, sha, st.ModTime(), f)
+	})
+
+	// curl|bash installer (install.sh, root-pubkey, stage-1 binaries).
+	s.registerInstallerRoutes(mux)
+
+	// Mount the REDUCED, cert-only console surface here so the desktop app reaches
+	// the authenticated read/mutation API over mTLS with its `geneza login` user
+	// cert. This is a deliberate slice (no anonymous login, websso, device, web-
+	// shell or SPA) — the browser console keeps its full bearer-authed listener.
+	// The TLS layer (VerifyClientCertIfGiven + ClientCAs) chain-verifies the cert.
+	if s.console != nil {
+		mux.Handle("/api/v1/", s.console.certHandler())
+	}
+
+	// OpenStack vendordata endpoint. Unlike the routes above it is NOT
+	// public: it validates Nova's Keystone token before doing anything, and runs
+	// on this TLS listener so the token + returned cloud-init never cross the wire
+	// in cleartext.
+	s.registerVendordataRoutes(mux)
+
+	return mux
+}
+
+func writeJSON(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		slog.Warn("write json response", "err", err)
+	}
+}

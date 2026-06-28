@@ -1,0 +1,58 @@
+# Self-hostable Geneza controller image: the identity-aware control plane (PDP / CA /
+# session broker). Static, non-root, distroless. Build with the repo root as context:
+#   docker build -f deploy/docker/Dockerfile.controller --build-arg VERSION=$(git describe --tags --always) -t geneza-controller .
+ARG GO_VERSION=1.26
+FROM golang:${GO_VERSION}-bookworm AS build
+ARG VERSION=dev
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+# Pin the offline release root (public) so the controller verifies signed releases
+# when pulling agent binaries, mirroring deploy/release/build-archive.sh.
+RUN set -eux; \
+    ldflags="-s -w -X geneza.io/internal/version.Version=${VERSION}"; \
+    if [ -f deploy/release/root.pub ]; then \
+      ldflags="$ldflags -X geneza.io/internal/releasetrust.rootPubB64=$(base64 -w0 deploy/release/root.pub)"; \
+    fi; \
+    CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o /out/geneza-controller ./cmd/geneza-controller; \
+    # Bake a fallback agent stack (both Linux arches) into the image so the
+    # bootstrap/enrollment flow works out of the box; agent_release.pull layers
+    # newer signed agents on top at runtime.
+    mkdir -p /out/install; \
+    for arch in amd64 arm64; do \
+      for bin in geneza-agent geneza-bootstrap; do \
+        CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -ldflags "$ldflags" \
+          -o "/out/install/${bin}-linux-${arch}" "./cmd/${bin}"; \
+      done; \
+    done
+
+# Build the web consoles (operator + cluster-operator) so the controller serves the
+# browser console from static_dir out of the box — no separate web deploy.
+FROM node:22-slim AS web
+WORKDIR /src
+COPY web/ ./web/
+RUN cd web \
+    && npm ci --no-audit --no-fund \
+    && npm run build:console \
+    && npm run build:cluster
+
+FROM gcr.io/distroless/static-debian12:nonroot
+LABEL org.opencontainers.image.source="https://github.com/geneza-ai/geneza" \
+      org.opencontainers.image.title="geneza-controller" \
+      org.opencontainers.image.description="Geneza controller (control plane, CA, session broker)"
+COPY --from=build /out/geneza-controller /usr/local/bin/geneza-controller
+# Baked agent stack the installer serves (set install_dir: /var/lib/geneza/install);
+# owned by the nonroot uid so an enabled agent_release.pull can refresh it.
+COPY --from=build --chown=65532:65532 /out/install /var/lib/geneza/install
+# Built web consoles. Point console.static_dir at /var/lib/geneza/console-web (and
+# cluster_console.static_dir at the cluster build) to serve the SPA from the image.
+COPY --from=web /src/web/apps/console/dist /var/lib/geneza/console-web
+COPY --from=web /src/web/apps/cluster/dist /var/lib/geneza/cluster-web
+# 7401 gRPC (agent/user mTLS), 7402 HTTPS (enroll/updates/health). 7406 is the web
+# console SPA listener (enable console.listen); 7407 the optional cluster-operator
+# console. Publish whichever the deployment uses.
+EXPOSE 7401 7402 7406 7407
+USER nonroot:nonroot
+ENTRYPOINT ["/usr/local/bin/geneza-controller"]
+CMD ["serve", "--config", "/etc/geneza/controller.yaml"]

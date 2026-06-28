@@ -1,0 +1,243 @@
+# geneza-controller Helm values.
+#
+# The controller reads a single YAML config file and offers NO env-var override
+# (internal/controller/config.go LoadConfig). To keep secrets in EXISTING k8s
+# Secrets (never in this chart or its rendered ConfigMap), the pod assembles its
+# final config at start: a non-secret skeleton (rendered from `.Values.config`
+# into a ConfigMap) plus secret-bearing fields appended by an init container that
+# reads them from the Secrets you reference below. The chart OWNS these keys and
+# strips them from `.Values.config` if present: store, store_dsn, router,
+# controller_id, relay_shared_secret, local_users, storage.
+
+replicaCount: 2
+
+image:
+  repository: ghcr.io/geneza-ai/geneza-controller
+  # Empty uses the chart's appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# A small POSIX-sh image used only by the init container that seeds key material
+# and assembles the final config. Needs sh + cp + cat (busybox suffices).
+initImage:
+  repository: busybox
+  tag: "1.36"
+  pullPolicy: IfNotPresent
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# --- External database (REQUIRED; no embedded DB) ----------------------------
+# The DSN lives in an EXISTING Secret you create from your DB (e.g. CloudNativePG
+# emits one). The chart only references it.
+database:
+  backend: postgres # postgres | mariadb | mysql
+  router: pg # pg = active-active over the shared SQL store (LISTEN/NOTIFY bus)
+  dsnSecret:
+    name: geneza-db-dsn
+    key: dsn
+
+# --- Key / cert material (REQUIRED; HA via a replicated Secret) ---------------
+# A single Secret holding the initialized control-plane key bundle, produced by
+# the one-time `geneza-controller init` Job and re-sealed by you (root CA key
+# REMOVED — keep that offline). Mounted read-only into every replica and copied
+# into the (ephemeral) data_dir at start, so all replicas share one identity.
+# Expected flat keys -> data_dir paths are fixed by the controller and wired in
+# the Deployment: issuing-ca.key, issuing-ca.crt, root-ca.crt, ca-roots.pem,
+# grant.key, grant.keyid, controller.crt, controller.key, relay.crt, relay.key,
+# audit.key (and optionally account.key for managed domains).
+keysSecret:
+  name: geneza-controller-keys
+  # Set true if the Secret also carries managed-domain/account.key.
+  includeAcmeAccountKey: false
+  # Set true to share one audit HMAC key across replicas (Secret key audit.key).
+  # Default false: each pod generates its own; the durable audit is the audit_sink.
+  includeAuditKey: false
+
+# --- Bootstrap local admin (optional but recommended) -------------------------
+# A break-glass console login whose bcrypt hash lives in an EXISTING Secret
+# (generate with `geneza-controller hash-password`). Leave name empty to omit.
+localAdmin:
+  username: admin
+  groups: "geneza-admins" # comma-separated, rendered into a YAML flow list
+  bcryptSecret:
+    name: geneza-local-admin
+    key: password_bcrypt
+
+# --- Relay shared secret (REQUIRED to broker sessions) ------------------------
+# Must match the relay's shared_secret; kept in an EXISTING Secret.
+relaySecret:
+  name: geneza-relay-secret
+  key: shared_secret
+
+# --- Object storage for recordings/artifacts (optional, recommended for HA) ---
+# S3-compatible store so blobs are read-many across replicas (the local default
+# is per-pod). Non-secret fields here; the secret access key from a Secret.
+storage:
+  enabled: false
+  endpoint: "" # host[:port] or http(s)://host (S3, Ceph RGW, MinIO)
+  region: ""
+  bucket: ""
+  prefix: "geneza/"
+  usePathStyle: false
+  accessKeyId: "" # non-secret id may be inline; or leave empty and use the Secret
+  secretAccessKeySecret:
+    name: geneza-s3
+    key: secret_access_key
+  # Optional: source access_key_id from the same Secret instead of inline.
+  accessKeyIdSecret:
+    name: ""
+    key: access_key_id
+
+# --- Gateway API exposure -----------------------------------------------------
+# The chart creates ONE Gateway with four listeners and the matching Routes. The
+# gRPC (7401), HTTPS-API (7402) and cluster-console (7407) listeners are TLS
+# PASSTHROUGH (the controller terminates its own CA-pinned mTLS — a proxy that
+# terminated TLS would strip the client cert). The operator console (7406) is
+# plain HTTP behind an HTTPRoute whose listener terminates a public cert.
+gateway:
+  enabled: true
+  # GatewayClass MUST support TLSRoute (alpha): e.g. Cilium, Istio, Envoy Gateway.
+  className: ""
+  # Create the Gateway (false = reuse an existing one named .gateway.name).
+  create: true
+  name: "" # defaults to the release fullname
+  # Public hostname the operator console is served on (HTTPRoute match + cert).
+  consoleHostname: ""
+  # Hostnames clients/agents reach the passthrough listeners on (SNI match).
+  # MUST also appear in the controller cert SANs (see config.advertise).
+  grpcHostname: "" # e.g. controller.example.com (7401)
+  httpsApiHostname: "" # e.g. controller.example.com (7402); often same as grpc
+  clusterConsoleHostname: "" # 7407, only if clusterConsole.enabled
+  # TLS for the terminating console listener: a cert-manager-issued cert.
+  consoleTLS:
+    # certManager creates a Certificate CR for consoleHostname.
+    certManager:
+      enabled: false
+      issuerName: "" # ClusterIssuer/Issuer name (e.g. letsencrypt-prod)
+      issuerKind: ClusterIssuer
+    # Or reference a pre-existing TLS Secret instead of cert-manager.
+    secretName: "" # defaults to <fullname>-console-tls
+
+# --- Audit sink (recommended) -------------------------------------------------
+# The hash-chained audit log is per-replica on local disk; point this at a SIEM
+# (or S3 Object-Lock intake) for the durable, tamper-evident copy.
+audit:
+  sink:
+    type: "" # "" disables; "http" posts each record
+    url: ""
+
+# --- The controller config skeleton (non-secret fields only) ------------------
+# Rendered verbatim into a ConfigMap as controller.yaml. The chart appends the
+# secret-bearing keys it owns (see top of file). Mirror your environment here;
+# this default is a minimal, valid single-cluster config.
+config:
+  cluster_name: geneza
+  grpc_listen: ":7401"
+  http_listen: ":7402"
+  # data_dir is fixed by the chart to a writable path that does not collide with
+  # the image's baked console/install assets; do not change it here.
+  data_dir: /var/lib/geneza/data
+  advertise:
+    dns_names: [] # MUST include the Gateway hostnames clients use
+    ips: []
+  relay_addrs: [] # e.g. ["controller.example.com:7403"]
+  relay_data_addrs: [] # e.g. ["controller.example.com:7404"]
+  relay_realm: geneza
+  session_p2p: true
+  cert_ttl:
+    node: 24h
+    user: 8h
+  grant_ttl: 2m
+  # Human identity (optional). If present, issuer + client_id are required.
+  oidc:
+    issuer: "" # e.g. https://idp.example.com/realms/geneza
+    client_id: "" # e.g. geneza-cli
+    username_claim: preferred_username
+    groups_claim: groups
+  # Operator web console (SPA baked into the image at /var/lib/geneza/console-web).
+  console:
+    listen: ":7406"
+    static_dir: /var/lib/geneza/console-web
+    external_url: "" # https://geneza.example.com
+    oidc_client_id: geneza-console
+    auth:
+      oidc_enabled: false
+      local_enabled: true
+      session_ttl: 8h
+  # Cluster-operator console (optional; mTLS/OIDC read plane).
+  cluster_console:
+    listen: ":7407"
+    static_dir: /var/lib/geneza/cluster-web
+    external_url: ""
+    required_group: geneza-cluster-admins
+    # oidc block omitted by default; add { issuer, client_id } to enable OIDC.
+
+# --- Bootstrap policy (SEED only; per-tenant policy is managed in the console) -
+# Policy is per-workspace and the source of truth is the controller's HA store: a
+# workspace admin edits their own policy from the console (it persists to the DB
+# and reloads live). This value is ONLY the one-time SEED the controller writes
+# into the store the first time a workspace has no policy yet — the initial
+# starting point each workspace gets before its admin diverges it. The chart does
+# NOT own tenant policy after that. `admin` is the reserved cluster role
+# (break-glass cert only). Set bootstrapPolicy: null to supply the seed file
+# yourself via config.policy_file + your own mount.
+bootstrapPolicy:
+  roles:
+    admin:
+      allow:
+        - actions: ["*"]
+          node_labels: { "*": "*" }
+          record: true
+    ws-admin:
+      allow:
+        - actions: ["*"]
+          node_labels: { "*": "*" }
+          record: true
+  bindings:
+    - role: ws-admin
+      users: [admin] # the local break-glass console admin
+      groups: [geneza-admins] # your IdP admin group
+
+# Pod-level knobs.
+podAnnotations: {}
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+nodeSelector: {}
+tolerations: []
+# Spread replicas across nodes for real HA.
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: geneza-controller
+
+# --- One-time store migration (optional) --------------------------------------
+# Set to migrate an existing single-node bbolt state into the SQL store. Runs a
+# `geneza-controller migrate-store` Job; needs the old bbolt mounted (advanced).
+migrate:
+  enabled: false

@@ -1,0 +1,204 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "geneza-controller.fullname" . }}
+  labels:
+    {{- include "geneza-controller.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "geneza-controller.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "geneza-controller.selectorLabels" . | nindent 8 }}
+      annotations:
+        # Roll pods when the rendered config skeleton changes.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "geneza-controller.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+        - name: assemble-config
+          image: "{{ .Values.initImage.repository }}:{{ .Values.initImage.tag }}"
+          imagePullPolicy: {{ .Values.initImage.pullPolicy }}
+          command: ["/bin/sh", "/etc/geneza/skeleton/assemble.sh"]
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: STORE_BACKEND
+              value: {{ .Values.database.backend | quote }}
+            - name: ROUTER
+              value: {{ .Values.database.router | quote }}
+            - name: STORE_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.dsnSecret.name }}
+                  key: {{ .Values.database.dsnSecret.key }}
+            {{- if .Values.relaySecret.name }}
+            - name: RELAY_SHARED_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.relaySecret.name }}
+                  key: {{ .Values.relaySecret.key }}
+            {{- end }}
+            {{- if .Values.localAdmin.bcryptSecret.name }}
+            - name: ADMIN_USERNAME
+              value: {{ .Values.localAdmin.username | quote }}
+            - name: ADMIN_GROUPS
+              value: {{ .Values.localAdmin.groups | quote }}
+            - name: ADMIN_BCRYPT
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.localAdmin.bcryptSecret.name }}
+                  key: {{ .Values.localAdmin.bcryptSecret.key }}
+            {{- end }}
+            {{- if .Values.storage.enabled }}
+            - name: S3_ENDPOINT
+              value: {{ .Values.storage.endpoint | quote }}
+            - name: S3_REGION
+              value: {{ .Values.storage.region | quote }}
+            - name: S3_BUCKET
+              value: {{ .Values.storage.bucket | quote }}
+            - name: S3_PREFIX
+              value: {{ .Values.storage.prefix | quote }}
+            - name: S3_USE_PATH_STYLE
+              value: {{ .Values.storage.usePathStyle | quote }}
+            {{- if .Values.storage.accessKeyIdSecret.name }}
+            - name: S3_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.storage.accessKeyIdSecret.name }}
+                  key: {{ .Values.storage.accessKeyIdSecret.key }}
+            {{- else }}
+            - name: S3_ACCESS_KEY_ID
+              value: {{ .Values.storage.accessKeyId | quote }}
+            {{- end }}
+            - name: S3_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.storage.secretAccessKeySecret.name }}
+                  key: {{ .Values.storage.secretAccessKeySecret.key }}
+            {{- end }}
+          volumeMounts:
+            - name: keys
+              mountPath: /var/lib/geneza/keys
+              readOnly: true
+            - name: skeleton
+              mountPath: /etc/geneza/skeleton
+              readOnly: true
+            - name: data
+              mountPath: /var/lib/geneza/data
+            - name: run
+              mountPath: /run/geneza
+      containers:
+        - name: controller
+          image: {{ include "geneza-controller.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["serve", "--config", "/run/geneza/controller.yaml"]
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: grpc-mtls
+              containerPort: 7401
+            - name: https-api
+              containerPort: 7402
+            {{- if .Values.config.console.listen }}
+            - name: console
+              containerPort: 7406
+            {{- end }}
+            {{- if and .Values.config.cluster_console .Values.config.cluster_console.listen }}
+            - name: cluster-console
+              containerPort: 7407
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 7402
+              scheme: HTTPS
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 7402
+              scheme: HTTPS
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/geneza/data
+            - name: run
+              mountPath: /run/geneza
+              readOnly: true
+            {{- if .Values.bootstrapPolicy }}
+            - name: policy
+              mountPath: /etc/geneza/policy
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: keys
+          secret:
+            secretName: {{ .Values.keysSecret.name }}
+            defaultMode: 0440
+            items:
+              - { key: issuing-ca.key, path: ca/issuing-ca.key }
+              - { key: issuing-ca.crt, path: ca/issuing-ca.crt }
+              - { key: root-ca.crt, path: ca/root-ca.crt }
+              - { key: ca-roots.pem, path: ca/ca-roots.pem }
+              - { key: grant.key, path: grant.key }
+              - { key: grant.keyid, path: grant.keyid }
+              - { key: controller.crt, path: tls/controller.crt }
+              - { key: controller.key, path: tls/controller.key }
+              - { key: relay.crt, path: tls/relay.crt }
+              - { key: relay.key, path: tls/relay.key }
+              {{- if .Values.keysSecret.includeAuditKey }}
+              # A shared audit HMAC key gives all replicas one consistent local
+              # chain. Omitted by default: the controller generates a per-pod key
+              # (the durable, ordered audit copy is the audit_sink).
+              - { key: audit.key, path: audit.key }
+              {{- end }}
+              {{- if .Values.keysSecret.includeAcmeAccountKey }}
+              - { key: account.key, path: managed-domain/account.key }
+              {{- end }}
+        - name: skeleton
+          configMap:
+            name: {{ include "geneza-controller.fullname" . }}-config
+        {{- if .Values.bootstrapPolicy }}
+        - name: policy
+          configMap:
+            name: {{ include "geneza-controller.fullname" . }}-policy
+        {{- end }}
+        - name: data
+          emptyDir: {}
+        - name: run
+          emptyDir: {}

@@ -1,0 +1,46 @@
+digraph G {
+  rankdir=TB;
+  graph [fontname="Helvetica", fontsize=12, bgcolor="white", nodesep=0.5, ranksep=0.9];
+  node [fontname="Helvetica", fontsize=11, style="filled,rounded", shape=box, penwidth=1.4, margin="0.18,0.12"];
+  edge [fontname="Helvetica", fontsize=9.5];
+
+  /* ---------------- BEFORE ---------------- */
+  subgraph cluster_before {
+    label="BEFORE  —  an agent holds TWO connections";
+    labelloc="t"; fontsize=14; fontname="Helvetica-Bold";
+    style="rounded"; color="#cccccc"; bgcolor="#fafafa";
+
+    bGW    [label="CONTROLLER\n(control plane · few replicas)", fillcolor="#cfe8ff"];
+    bRELAY [label="RELAY\n(blind forwarder · many PoPs)", fillcolor="#ffe2b8"];
+    bAGENT [label="AGENT\n(on a managed node ·\nDIALS OUT ONLY)", fillcolor="#d8f0d8"];
+    bCLIENT[label="CLIENT\n(you · an AI · the CLI · the console)", fillcolor="#ededed"];
+
+    bAGENT  -> bGW    [label="  persistent control\n  mTLS stream", color="#1a73e8", penwidth=2.6, fontcolor="#1a4fa0"];
+    bAGENT  -> bRELAY [label="  per session\n  (ephemeral)", color="#999999", style=dashed];
+    bCLIENT -> bGW    [label="  broker a session\n  (get signed grant)", color="#999999", style=dashed];
+    bCLIENT -> bRELAY [label="  per session\n  (ephemeral)", color="#999999", style=dashed];
+    { rank=same; bAGENT; bCLIENT; }
+  }
+
+  /* ---------------- AFTER ---------------- */
+  subgraph cluster_after {
+    label="AFTER (relay-homed control)  —  the agent holds ONE steady connection";
+    labelloc="t"; fontsize=14; fontname="Helvetica-Bold";
+    style="rounded"; color="#cccccc"; bgcolor="#f6fbf6";
+
+    aGW    [label="CONTROLLER\n(control plane · few replicas)\nauthenticates the agent's cert", fillcolor="#cfe8ff"];
+    aRELAY [label="RELAY\n(blind L4 pipe · many PoPs)\nsees ciphertext + SNI only", fillcolor="#ffe2b8"];
+    aAGENT [label="AGENT\n(on a managed node ·\nDIALS OUT ONLY)", fillcolor="#d8f0d8"];
+    aCLIENT[label="CLIENT\n(you · an AI · the CLI · the console)", fillcolor="#ededed"];
+
+    aAGENT -> aGW    [label="  (1) ONCE at boot:\n  fetch the signed map", color="#999999", style=dashed];
+    aAGENT -> aRELAY [label="  (2) one steady\n  connection", color="#0b8043", penwidth=3.0, fontcolor="#0b6b38"];
+    aRELAY -> aGW    [label="  (3) forwards the control stream, BLIND\n  (agent's own mTLS ends ON the controller)", color="#0b8043", penwidth=3.0, fontcolor="#0b6b38"];
+    aCLIENT -> aGW   [label="  broker a session", color="#999999", style=dashed];
+    aCLIENT -> aRELAY[label="  session data", color="#999999", style=dashed];
+    { rank=same; aAGENT; aCLIENT; }
+  }
+
+  /* keep the two panels apart */
+  bGW -> aGW [style=invis];
+}

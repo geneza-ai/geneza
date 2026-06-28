@@ -1,0 +1,83 @@
+{{- if and .Values.gateway.enabled .Values.gateway.create }}
+{{- if not .Values.gateway.className }}
+{{- fail "gateway.className is required when gateway.create is true (must be a GatewayClass that supports TLSRoute, e.g. cilium / istio / envoy-gateway)" }}
+{{- end }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: {{ include "geneza-controller.gatewayName" . }}
+  labels:
+    {{- include "geneza-controller.labels" . | nindent 4 }}
+spec:
+  gatewayClassName: {{ .Values.gateway.className }}
+  listeners:
+    # 7401 gRPC mTLS — PASSTHROUGH: the controller verifies client certs its own
+    # CA issued; terminating TLS here would strip the cert and make every caller
+    # anonymous.
+    - name: grpc-mtls
+      port: 7401
+      protocol: TLS
+      {{- with .Values.gateway.grpcHostname }}
+      hostname: {{ . | quote }}
+      {{- end }}
+      tls:
+        mode: Passthrough
+      allowedRoutes:
+        kinds:
+          - kind: TLSRoute
+        namespaces:
+          from: Same
+    # 7402 HTTPS API — PASSTHROUGH: serves /v1/ca-roots and the installer that
+    # clients fingerprint-pin against the Geneza CA; a public/LE cert here breaks
+    # first-boot enrollment trust.
+    - name: https-api
+      port: 7402
+      protocol: TLS
+      {{- with .Values.gateway.httpsApiHostname }}
+      hostname: {{ . | quote }}
+      {{- end }}
+      tls:
+        mode: Passthrough
+      allowedRoutes:
+        kinds:
+          - kind: TLSRoute
+        namespaces:
+          from: Same
+    {{- if .Values.config.console.listen }}
+    # 7406 operator console — TERMINATE: the SPA + JSON API are plain HTTP with
+    # Bearer/OIDC auth, so the Gateway terminates a public cert here.
+    - name: console
+      port: 443
+      protocol: HTTPS
+      {{- with .Values.gateway.consoleHostname }}
+      hostname: {{ . | quote }}
+      {{- end }}
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: {{ include "geneza-controller.consoleTLSSecret" . }}
+      allowedRoutes:
+        kinds:
+          - kind: HTTPRoute
+        namespaces:
+          from: Same
+    {{- end }}
+    {{- if and .Values.config.cluster_console .Values.config.cluster_console.listen }}
+    # 7407 cluster-operator console — PASSTHROUGH: preserves the break-glass
+    # client cert (mTLS); OIDC-only deployments may switch this to Terminate.
+    - name: cluster-console
+      port: 7407
+      protocol: TLS
+      {{- with .Values.gateway.clusterConsoleHostname }}
+      hostname: {{ . | quote }}
+      {{- end }}
+      tls:
+        mode: Passthrough
+      allowedRoutes:
+        kinds:
+          - kind: TLSRoute
+        namespaces:
+          from: Same
+    {{- end }}
+{{- end }}

@@ -1,0 +1,1399 @@
+// Geneza control-plane API (controller gRPC over mTLS).
+//
+// Three trust levels share one listener:
+//   - Enrollment: no client cert (one-time token / provider document).
+//   - UserAPI.Login: no client cert (OIDC token or local credentials).
+//   - NodeControl: node mTLS cert required (URI geneza://node/<id>).
+//   - UserAPI (rest) / AdminAPI: user mTLS cert required (URI geneza://user/<name>).
+// Enforcement is per-RPC in the controller auth interceptor.
+syntax = "proto3";
+
+package geneza.v1;
+
+option go_package = "geneza.io/internal/pb/geneza/v1;genezav1";
+
+// ---------------------------------------------------------------------------
+// Enrollment (machine identity bootstrap)
+// ---------------------------------------------------------------------------
+
+service Enrollment {
+  rpc Enroll(EnrollRequest) returns (EnrollResponse);
+}
+
+// RelayRegistry lets a relay register its presence and watch the cluster. The
+// relay authenticates with its own geneza://relay/<name> mTLS cert; the controller
+// health-checks the advertised endpoint, records the heartbeat, assembles the live
+// relays into the signed map, and streams the signed cluster config back so the
+// relay learns the live controller set and can fail over when its controller dies.
+service RelayRegistry {
+  // RegisterAndWatch registers the relay (one heartbeat, the request) and streams
+  // the signed cluster config down (on connect and on every version change). The
+  // open stream is the relay's liveness — kept honest by gRPC keepalive on both
+  // ends — so a black-holed relay is reaped and a black-holed controller is re-homed.
+  rpc RegisterAndWatch(RelayHeartbeat) returns (stream RelayWatch);
+}
+
+message RelayHeartbeat {
+  string region_id = 1;
+  string relay_id = 2;
+  repeated string addrs = 3;        // reachable data endpoint(s), host:port
+  int32  stun_port = 4;
+  int32  turn_port = 5;
+  bytes  relay_cert_pub = 6;        // PKIX/SPKI of the relay's server cert, for the agent-side pin
+  bool   healthy = 7;               // false while the relay is draining: it still serves in-flight flows but refuses NEW ones, so the controller sheds it from selection
+  bool   control_mux = 8;           // this relay accepts persistent agent control muxes (blind forward to a controller)
+  string control_addr = 9;          // the relay's TCP rendezvous host:port (where an agent dials a control mux, and the controller's fleet-aware TCP floor pick dials)
+  string version = 10;              // the relay binary's build version, for the operator fleet view (carried on the unsigned presence row, never the signed map)
+  // active_count is the relay's live splice + control-mux count at heartbeat time:
+  // the drained-gate signal. A draining relay reports it so the controller and a
+  // rollout can observe when the relay has fully cleared (count 0) and the binary is
+  // safe to swap. It is presence telemetry only — never on the signed map.
+  int32  active_count = 11;
+  // seal_pub is the relay's ephemeral X25519 public key (regenerated per process)
+  // the controller seals this relay's funnel certs to, so the key material is opaque
+  // even on this authenticated stream and in the relay's memory. Sent over mTLS,
+  // so the controller trusts it came from this relay; never on the signed map.
+  bytes  seal_pub = 12;
+  // funnel_ip is the relay's PUBLIC IP that funnel hostnames resolve to (the
+  // address the public funnel TLS listener is reachable at). Empty unless this
+  // relay serves funnel. The controller's funnel-DNS reconciler publishes A records
+  // pointing funnel hostnames at the healthy relays' funnel_ips.
+  string funnel_ip = 13;
+}
+
+// RelayWatch carries the signed cluster config to a registered relay. The relay
+// reads ControllerEndpoints to maintain its controller failover set; it never needs the
+// rest of the map (it is a blind packet forwarder).
+message RelayWatch {
+  bytes cluster_config = 1;          // JSON types.Signed wrapping types.ClusterConfig
+  int32 heartbeat_interval_secs = 2; // advisory, first message only
+  // funnel_certs are the narrow leaf certs this relay terminates public TLS for,
+  // each age-sealed to this relay's seal_pub. Declarative full set; re-sent when
+  // it changes. Empty unless the relay serves funnels. Reuses the SealedCert shape
+  // the agent cert push uses.
+  repeated SealedCert funnel_certs = 5;
+  // Split-mode trust documents, carried ALONGSIDE the legacy cluster_config so an
+  // un-upgraded relay keeps verifying the legacy envelope while a pinned relay
+  // verifies the split pair. Both empty on an un-split (legacy) cluster, so the
+  // wire is byte-for-byte unchanged there.
+  bytes trust_anchors = 3;           // JSON types.MultiSigned wrapping types.TrustAnchors
+  bytes routine_map = 4;             // JSON types.Signed wrapping types.RoutineMap
+}
+
+message EnrollRequest {
+  // Enrollment provider: "token" today; "openstack-metadata" (instance
+  // identity document) is the reserved seam for the OpenStack PoC.
+  string provider = 1;
+  string token = 2;                  // provider=token: one-time join token
+  bytes provider_document = 3;       // provider-specific identity document
+  string requested_name = 4;
+  bytes csr_pem = 5;                 // PKCS10 CSR for the node key (P-256)
+  bytes noise_static_pub = 6;        // 32-byte Curve25519 static public key
+  map<string, string> labels = 7;
+  PlatformInfo platform = 8;
+  bytes wg_static_pub = 9;           // 32-byte Curve25519 WireGuard data-plane static public key
+}
+
+message PlatformInfo {
+  string os = 1;
+  string arch = 2;
+  string hostname = 3;
+  string agent_version = 4;
+  // Cross-platform OS identity, probed at enroll. distro is a normalized id used
+  // for iconography/grouping (e.g. "ubuntu", "debian", "macos", "windows",
+  // "freebsd"); distro_version is its release ("22.04", "14.5", "11", "13.2");
+  // os_pretty is the human label ("Ubuntu 22.04.4 LTS", "macOS 14.5",
+  // "Windows 11 Pro"). Empty when the platform can't be determined.
+  string distro = 5;
+  string distro_version = 6;
+  string os_pretty = 7;
+  // host_uuid is the machine's stable hardware identifier (DMI product UUID on
+  // Linux, empty when unreadable / unprivileged / unsupported). It is the one host
+  // attribute stable across an OS re-image, so the controller pins it to anchor the
+  // quarantine re-enroll gate: a quarantined host that wipes its state and re-enrolls
+  // with a fresh node id is recognized and held PENDING for admin review instead of
+  // laundering its quarantine away. Advisory only — a clone copies it trivially, so
+  // it never proves single-host residency.
+  string host_uuid = 8;
+}
+
+message EnrollResponse {
+  string node_id = 1;
+  bytes node_cert_pem = 2;
+  bytes ca_roots_pem = 3;
+  bytes signed_cluster_config = 4;   // JSON types.Signed wrapping types.ClusterConfig
+  // Split-mode trust documents delivered at enrollment ALONGSIDE the legacy
+  // config: a node that receives them pins the anchors' TrustKeys (TOFU over the
+  // mTLS-authenticated enrollment channel) and verifies the split pair thereafter.
+  // Both empty on an un-split cluster, so enrollment is byte-for-byte unchanged.
+  bytes trust_anchors = 5;           // JSON types.MultiSigned wrapping types.TrustAnchors
+  bytes routine_map = 6;             // JSON types.Signed wrapping types.RoutineMap
+}
+
+// ---------------------------------------------------------------------------
+// NodeControl (persistent agent control channel; node mTLS)
+// ---------------------------------------------------------------------------
+
+service NodeControl {
+  // Persistent bidirectional control channel. First AgentMsg MUST be hello.
+  rpc Stream(stream AgentMsg) returns (stream ControllerMsg);
+  rpc RenewCert(RenewCertRequest) returns (RenewCertResponse);
+  // Upload an asciicast v2 session recording (recorded at the agent).
+  rpc UploadRecording(stream RecordingChunk) returns (UploadAck);
+  // FetchClusterConfig returns the current signed cluster map (controller set,
+  // relay fleet, trust keys) so an agent can refresh its fleet view with a cheap
+  // unary call WITHOUT holding the persistent Stream — the discovery half that
+  // lets the agent seed from a controller and then home its long-lived control
+  // socket elsewhere. The controller replies with an empty config when the agent's
+  // have_version is already current (a 304-equivalent), so a steady-state probe
+  // costs one round trip and no payload.
+  rpc FetchClusterConfig(MapRequest) returns (MapResponse);
+}
+
+// MapRequest carries the cluster-config version the agent currently holds; the
+// controller returns a newer signed map or nothing.
+message MapRequest {
+  int64 have_version = 1;
+}
+
+// MapResponse carries the signed cluster map, or an empty cluster_config when
+// the caller's have_version is already current. The agent verifies it against
+// its pinned trust keys exactly like a pushed config — the bytes are the same
+// JSON types.Signed envelope the Stream and enrollment already carry.
+message MapResponse {
+  bytes cluster_config = 1;
+  // Split-mode trust documents carried ALONGSIDE the legacy cluster_config; the
+  // agent verifies the split pair against its pinned trust keys when present and
+  // pinned, otherwise falls back to the legacy config. Both empty on an un-split
+  // cluster, so a steady-state refresh is byte-for-byte unchanged.
+  bytes trust_anchors = 2;           // JSON types.MultiSigned wrapping types.TrustAnchors
+  bytes routine_map = 3;             // JSON types.Signed wrapping types.RoutineMap
+}
+
+message AgentMsg {
+  oneof msg {
+    AgentHello hello = 1;
+    Heartbeat heartbeat = 2;
+    SessionEvent session_event = 3;
+    SessionOfferAck offer_ack = 4;
+    MetricsPush metrics = 5;          // agent module metrics over the control channel
+    NetworkEndpoints network_endpoints = 6; // agent's per-Network WG listen ports (for direct-path endpoint discovery)
+    DiscoMsg disco = 7;               // magicsock NAT-traversal signaling (candidate exchange + punch)
+    InventoryReport inventory = 8;    // node software inventory (CycloneDX SBOM) for affectedness matching
+  }
+}
+
+// InventoryReport carries a node's software inventory for affectedness matching.
+// It rides its OWN control-stream arm, never the metrics path: the metrics sink is
+// capped and uncompressed, while an SBOM is large and cold-path. content_hash is
+// the agent's SHA-256 over the UNCOMPRESSED canonical CycloneDX document for the
+// node's WHOLE current component set — the same value the heartbeat carries, so the
+// controller only ingests when the hash it holds differs (or it holds none). The
+// controller binds the report to the authenticated (workspace, node) of the stream;
+// the node_id here is advisory. format is the SBOM media type
+// ("application/vnd.cyclonedx+json").
+//
+// A report is either FULL or a DELTA:
+//   - full: full=true and sbom carries the whole zstd CycloneDX document. The first
+//     report after enroll is always full, and a delta whose base the controller cannot
+//     match falls back to a full on the next cycle.
+//   - delta: full=false and base_hash names the content_hash the delta applies on
+//     top of (the agent's last controller-held set). added/removed carry only the
+//     components that changed since that base. The controller applies them to the set
+//     it holds under base_hash and checks the result hashes to content_hash; if it
+//     holds a different base it rejects the delta and asks for a full (see
+//     InventoryControl). sbom is empty on a delta.
+message InventoryReport {
+  string format = 1;
+  bytes content_hash = 2;            // SHA-256 over the uncompressed CycloneDX document of the WHOLE resulting set
+  bytes sbom = 3;                    // zstd-compressed CycloneDX JSON (full reports only)
+  int64 collected_unix = 4;
+  string node_id = 5;                // advisory; the controller uses the cert identity
+  bool full = 6;                     // true: sbom is the whole set; false: a delta against base_hash
+  bytes base_hash = 7;               // delta: the content_hash this delta applies on top of
+  repeated InventoryComponent added = 8;   // delta: components present now but not at base
+  repeated InventoryComponent removed = 9; // delta: components present at base but not now
+}
+
+// InventoryComponent is one package in a delta's added/removed set: the same flat
+// view the controller's component index and matcher join against, so a delta updates
+// the stored set without shipping or reparsing the whole CycloneDX document. purl is
+// the component identity; ecosystem/distro carry the matcher's backport context.
+message InventoryComponent {
+  string purl = 1;
+  string name = 2;
+  string version = 3;
+  string ecosystem = 4;              // OSV ecosystem (e.g. "Ubuntu:22.04", "npm")
+  string distro = 5;                 // distro identifier for OS packages (e.g. "ubuntu:22.04")
+  string source = 6;                 // collection origin ("os", "kernel", "lang", ...)
+}
+
+// DiscoMsg carries magicsock NAT-traversal coordination over the (dial-out, mTLS,
+// overlay-independent) control stream. Reachability tests (ping/pong) go DIRECT
+// over UDP; only coordination rides this. VNI-scoped so candidates never cross
+// Networks. See docs/magicsock-design.md.
+message DiscoMsg {
+  uint32 vni        = 1;            // which Network this concerns (0 for a session p2p path)
+  bytes  peer_wgpub = 2;            // the OTHER endpoint (controller fills on relay)
+  // session_id routes a session's p2p ICE signaling (per-session, not per-Network):
+  // when set (vni=0), the controller forwards between the two grant-named principals
+  // via the sessionSignalBroker, NEVER the wgpub/overlay path.
+  string session_id = 7;
+  oneof body {
+    CallMeMaybe    call_me_maybe = 3; // gw->ep: the peer's ICE candidate string(s)
+    PunchAt        punch_at      = 4; // gw->ep: "re-run ICE now" (agent.Restart) trigger
+    EndpointUpdate endpoints     = 5; // ep->gw: our ICE candidate string(s) for the peer
+    IceCreds       ice_creds     = 6; // both ways: ICE ufrag/pwd for Dial/Accept
+    RehomeRequest  rehome_request = 8; // ep->gw: "my relay died, re-issue this session onto a survivor"
+    SessionRehome  rehome         = 9; // gw->ep (agent): the fresh signed grant + relay coordinates
+    DrainNotice    drain_notice   = 10; // gw->ep (agent): "the relay carrying this session is draining; re-home off it NOW"
+  }
+}
+
+// DrainNotice is the controller's PROACTIVE "your relay is draining, re-home now" hint
+// for ONE live session. It carries the id of the relay being drained; the endpoint
+// re-homes IMMEDIATELY (the existing RehomeRequest -> re-issue path) when that relay
+// is the one it is currently using, and ignores the notice otherwise. This migrates a
+// session the instant a relay is marked draining instead of waiting for the relay to
+// force-close its splice at the drain deadline. The endpoint knows its current relay
+// (the grant's floor head), so the controller need not track per-session relay state.
+message DrainNotice {
+  string session_id      = 1;
+  string draining_relay_id = 2; // the relay being drained (RelayCandidate.relay_id / fleet relay id)
+  // draining_relay_addr is the relay's TCP rendezvous addr (ControlAddr). A session
+  // on the relay-TCP floor (session p2p off) knows its relay only by addr — the floor
+  // head — not by id, so the endpoint matches on EITHER the id or the addr.
+  string draining_relay_addr = 3;
+}
+
+// RehomeRequest asks the controller to re-issue a LIVE session onto a surviving
+// relay after the one it was using drained or died. It carries the session id,
+// the relay the endpoint is abandoning (so the controller excludes it), and the
+// highest re-home epoch the endpoint has already applied (so a stale repeat is
+// ignored). The controller mints at most one fresh grant per epoch bump and fans it
+// to BOTH ends; the Noise+grant gate re-runs end-to-end, so this never extends a
+// revoked session — a lapsed lease still tears down independently.
+message RehomeRequest {
+  string session_id     = 1;
+  string dead_relay_id  = 2; // the abandoned relay's id (RelayCandidate.relay_id); may be empty
+  string dead_relay_addr = 3; // its TCP rendezvous addr, to drop from RelayFloor; may be empty
+  int64  applied_epoch  = 4; // highest rehome epoch already applied by this endpoint
+}
+
+// SessionRehome carries a freshly-minted grant for an EXISTING session id so both
+// ends re-rendezvous on a surviving relay without a new controller session. The
+// session record, lease, continuous-authz, audit, and recording continue
+// uninterrupted; only the rendezvous-scoped fields (relay floor + single-use
+// token + ephemeral TURN creds) are re-minted, and the epoch advances so a
+// duplicate or out-of-order push is dropped. It is the re-home counterpart of the
+// relevant CreateSessionResponse fields.
+message SessionRehome {
+  int64    epoch          = 1; // strictly-increasing rehome generation
+  bytes    signed_grant   = 2; // fresh signed grant under the SAME session_id
+  string   relay_addr     = 3; // first healthy fleet pick
+  repeated string relay_floor = 4; // ordered healthy relay-TCP rendezvous set
+  string   relay_token    = 5; // FRESH single-use rendezvous token
+  TurnCreds turn          = 6; // fresh ephemeral TURN creds + ICE role (this endpoint's view)
+  repeated RelayCandidate relay_candidates = 7; // region-tagged options
+}
+
+message CallMeMaybe {                // controller -> endpoint: the peer's ICE candidates
+  repeated string candidates = 1;    // pion ice.Candidate.Marshal() strings
+  uint32 nat_class = 2;              // reserved/unused in the pion path (ICE classifies internally)
+}
+message PunchAt {                    // controller -> endpoint: re-run ICE (late-upgrade / roam)
+  int64  t0_unix_ms = 1;
+  uint32 attempt    = 2;
+}
+message EndpointUpdate {             // endpoint -> controller: our ICE candidates for a peer
+  uint32 vni        = 1;
+  repeated string local_addrs = 2;   // pion ice.Candidate.Marshal() strings
+  string  reflexive = 3;            // reserved/unused in the pion path
+  uint32  nat_class = 4;            // reserved/unused in the pion path
+}
+message IceCreds {                   // ICE short-term credentials for Dial/Accept
+  string ufrag = 1;
+  string pwd   = 2;
+}
+
+// NetworkEndpoints reports the kernel-assigned WireGuard listen port for each
+// of the agent's live Network interfaces. The controller pairs each port with the
+// observed source IP of THIS control stream to derive a direct endpoint for the
+// node, then hands it to co-members. Dial-out preserved: the controller never dials
+// in; it only learns where to TELL peers to send.
+message NetworkEndpoints {
+  repeated NetworkEndpoint endpoints = 1;
+}
+message NetworkEndpoint {
+  uint32 vni = 1;
+  uint32 listen_port = 2;
+}
+
+message ControllerMsg {
+  oneof msg {
+    SessionOffer session_offer = 1;
+    bytes cluster_config = 2;        // JSON types.Signed wrapping types.ClusterConfig
+    Ping ping = 3;
+    SessionRevoke session_revoke = 4; // continuous authz: tear down a live session
+    ModuleConfig module_config = 5;   // pluggable per-node agent modules (monitoring, ...)
+    NetworkConfig network_config = 6; // per-Network WireGuard data plane (desired set)
+    DiscoMsg disco = 7;               // magicsock/ICE signaling relayed to a co-member
+    SessionPolicyDelta session_policy_delta = 8; // realtime session authz (p2p) (lease/caps)
+    SessionLease session_lease = 9;   // fail-closed data-path lease refresh (re-pushed every sweep tick)
+    // FleetState is the split-mode config push: it carries the legacy config (for a
+    // node that has not yet pinned the anchors) AND the split trust-anchor + routine
+    // -map documents in one message. An un-split cluster keeps using the cluster_config
+    // arm above, so its wire is byte-for-byte unchanged; the controller only sends this
+    // arm once an offline anchor is established.
+    FleetState fleet_state = 10;
+    InventoryControl inventory_control = 11; // ask the inventory module for a full SBOM (delta base mismatch)
+    CertBundle cert_bundle = 12;      // managed-domain wildcard certs, sealed to this node's key (desired set)
+    FunnelServe funnel_serve = 13;    // funnel routes this node serves (register with the relay pool, proxy to local target)
+  }
+}
+
+// FunnelServe is the desired set of public funnel routes this node hosts. The
+// agent dials OUT to each route's relays and registers to serve the hostname,
+// then proxies funnel traffic to the local target. Declarative — full set,
+// re-pushed on (re)connect and on change.
+message FunnelServe {
+  repeated FunnelRoute routes = 1;
+}
+
+message FunnelRoute {
+  string hostname = 1;             // public FQDN this node serves
+  string target   = 2;            // LOCAL host:port the agent proxies funnel traffic to
+  string mode     = 3;            // "http" | "tcp"
+  repeated string relay_addrs = 4; // relay rendezvous endpoints to register with (the pool)
+  string reg_token = 5;            // controller-minted secret the agent presents to authorize its registration
+}
+
+// CertBundle is the desired set of managed-domain certificates for one node: the
+// wildcards of every subdomain its workspace has reserved. It is declarative — a
+// full set, re-pushed on (re)connect and on any cert change — so the agent
+// reconciles to it (adds new/renewed, drops released). Each entry's key material
+// is age-sealed to the node's Noise static key, so it is opaque on the wire and
+// at rest to anyone but this node.
+message CertBundle {
+  int64 version = 1;                  // controller monotonic, for observability/debounce
+  repeated SealedCert certs = 2;
+}
+
+message SealedCert {
+  string zone      = 1;               // "<label>.<domain>"; the cert covers *.zone and the apex
+  bytes  sealed    = 2;               // age ciphertext of the PEM bundle (private key + chain)
+  int64  epoch     = 3;               // per-cert monotonic; bumped on renewal
+  string sha256    = 4;               // hex over the chain, for change detection
+  int64  not_after = 5;
+  // reg_token authorizes funnel registration: for a funnel leaf pushed to a
+  // relay, only an agent presenting this exact token (controller-minted per binding,
+  // delivered only to the authorized agent) may register to serve the hostname.
+  // Empty for workspace wildcards pushed to agents.
+  string reg_token = 6;
+}
+
+// InventoryControl steers the node's inventory module. request_full tells it to send
+// a FULL SBOM on its next cycle instead of a delta: the controller sends this when it
+// cannot apply a delta (it holds no SBOM for the node, or a different base than the
+// delta named), so the node and controller re-converge on a known-good full set.
+message InventoryControl {
+  bool request_full = 1;
+}
+
+// FleetState bundles the legacy and split config documents for one push so a mixed
+// fleet (some nodes pinned, some not) converges off a single message: a pinned node
+// verifies trust_anchors+routine_map, an un-pinned node falls back to cluster_config.
+message FleetState {
+  bytes cluster_config = 1;          // JSON types.Signed wrapping types.ClusterConfig (legacy fallback)
+  bytes trust_anchors = 2;           // JSON types.MultiSigned wrapping types.TrustAnchors
+  bytes routine_map = 3;             // JSON types.Signed wrapping types.RoutineMap
+}
+
+// NetworkConfig is the controller's desired set of overlay Networks for THIS
+// principal (node or VPN client), pushed in realtime over the control stream.
+// Each NetworkSpec maps to ONE kernel-WireGuard interface at the agent; a VNI
+// absent from a later push means "tear that interface down". Membership is
+// tag-gated server-side (policy.LabelsMatch), so a principal only ever sees the
+// Networks it is allowed into — the relay never parses the WG payload.
+message NetworkConfig {
+  int64 version = 1;                 // monotonic per principal; agent ignores stale
+  repeated NetworkSpec networks = 2; // desired set; a VNI absent => tear it down
+  // dns_zones are extra DNS-only zones the agent's local resolver serves on top
+  // of the per-Network zones — the managed-domain reservations (<label>.<base>)
+  // resolving to the same overlay IPs as the workspace's default zone. They carry
+  // no WireGuard interface; they only widen what names resolve on the VPN.
+  repeated DnsZoneSpec dns_zones = 3;
+}
+
+message DnsZoneSpec {
+  string suffix = 1;                 // zone fqdn, e.g. "acme.geneza.app"
+  repeated DnsRecord records = 2;    // name->overlayIP set (same shape as NetworkSpec.dns_records)
+}
+
+message NetworkSpec {
+  uint32 vni = 1;                    // 24-bit; ONE wg interface at the agent
+  string name = 2;
+  string overlay_cidr = 3;           // THIS principal's overlay IP/CIDR on this Network
+  repeated WGPeer peers = 4;
+  // In-network DNS (pushed, resolved LOCALLY at the agent — never queried back):
+  // dns_zone is THIS Network's zone suffix / search domain (e.g. "prod.acme.geneza");
+  // dns_records is the policy-filtered name->overlayIP set this node may resolve in
+  // this Network (== the peer membership set + self). The agent runs a local
+  // resolver at 100.64.0.53 holding the UNION across its Networks. See
+  // docs/dns-design.md / memory geneza-roadmap-dns-tenancy.
+  string dns_zone = 5;
+  repeated DnsRecord dns_records = 6;
+}
+
+message DnsRecord {
+  string name = 1;                   // bare machine label (DNS-safe), zone-relative
+  string ip   = 2;                   // overlay IPv4 (A record)
+  uint32 ttl  = 3;                   // seconds
+}
+
+message WGPeer {
+  reserved 4;                        // was rendezvous_token (kernel-WG era); superseded by relay
+  reserved "rendezvous_token";
+  bytes  wg_pubkey = 1;              // peer WireGuard static (Curve25519, 32 bytes)
+  string endpoint = 2;              // direct host:port HINT (LAN-only under NAT); may be empty
+  repeated string allowed_ips = 3;   // peer overlay /32 (+ subnet-route CIDRs later)
+  TurnCreds turn = 5;                // controller-minted ephemeral TURN creds (was RelayPath; pion data plane)
+  repeated RelayCandidate relay_candidates = 6; // region-tagged relay options; turn = candidates[0] (home)
+}
+
+// TurnCreds are the controller-minted, coturn-style ephemeral TURN REST credentials
+// for an endpoint's view of a peer flow: the agent's pion/ice agent uses them to
+// allocate a relay candidate on the blind TURN relay. The relay validates them
+// against a shared secret (no stored per-user state); the username embeds an
+// expiry + an opaque session id (no durable principal). See docs/dataplane-libs-plan.md.
+message TurnCreds {
+  string turn_url    = 1;            // "turn:geneza-core:7404?transport=udp"
+  string username    = 2;            // "<expiry-unix>:<opaque session id>"
+  string password    = 3;            // base64(HMAC-SHA1(shared secret, username))
+  string realm       = 4;            // "geneza"
+  bool   controlling = 5;            // controller-assigned ICE role (lo of the pair Dials)
+}
+
+// RelayCandidate is one region-tagged relay option in a session's signed
+// candidate list. The client/agent STUN-probe the candidates and let pion pick
+// the lowest-latency working one, re-picking past a blackholed relay. The
+// controlling ICE role is on the enclosing message (it is per peer-pair, not per
+// relay). The list rides inside the signed grant, so a tampered entry fails
+// verification.
+message RelayCandidate {
+  string region_id = 1;
+  string turn_url  = 2;              // "turn:<host>:<port>?transport=udp"
+  string username  = 3;              // "<expiry>:<region>:<id>"
+  string password  = 4;
+  string realm     = 5;
+  string relay_id  = 6;
+}
+
+// ModuleConfig is the controller's desired set of agent modules for THIS node,
+// pushed in realtime over the control stream. Generic + pluggable: monitoring
+// (node-exporter) is the first module; future exporters/agents reconcile the
+// same way. The agent diffs against what it's running and starts/stops to match.
+message ModuleConfig {
+  int64 version = 1;                 // monotonic per node; agent ignores stale
+  repeated ModuleSpec modules = 2;   // desired-enabled modules (absent = disabled)
+}
+
+message ModuleSpec {
+  string name = 1;                   // "node-exporter" (future: process-exporter, ...)
+  bool enabled = 2;
+  map<string, string> settings = 3;  // module knobs, e.g. scrape_interval_seconds, collectors
+}
+
+// MetricsPush carries one module's Prometheus exposition (text format) up the
+// control channel. The agent renders + pushes on the module's scrape interval;
+// no listener is opened, so only the controller ever sees these.
+message MetricsPush {
+  string module = 1;
+  bytes exposition = 2;              // Prometheus text exposition format
+  int64 unix_ms = 3;
+  string error = 4;                  // non-empty if the module failed to gather
+}
+
+// SessionRevoke tells the agent to immediately terminate a live session: the
+// controller re-evaluated it and access is no longer permitted (policy change,
+// time-window expiry, explicit admin revoke).
+message SessionRevoke {
+  string session_id = 1;
+  string reason = 2;
+  // epoch + sig harden revoke for direct p2p sessions: on a DIRECT path the
+  // controller is off the data path, so the agent verifies the revoke is signed by
+  // a trusted grant key and the epoch strictly increases (anti-replay/rollback).
+  int64  epoch = 3;
+  bytes  sig   = 4;
+}
+
+// SessionCaps is the downgrade-only capability set for a live session; the agent
+// verifies it is a SUBSET of the standing grant before applying.
+message SessionCaps {
+  bool allow              = 1; // false = full cut
+  bool allow_pty          = 2;
+  bool allow_input        = 3; // false = read-only shell
+  repeated string forward_targets = 4; // allowed forward host:port targets
+  bool allow_sftp_write   = 5;
+  bool allow_new_channels = 6;
+}
+
+// SessionPolicyDelta is a realtime authorization update for ONE live session,
+// pushed over the control stream. Downgrade-only; signed + monotonic-epoch'd.
+message SessionPolicyDelta {
+  string session_id = 1;
+  int64  epoch      = 2;
+  string op         = 3;  // cut|restrict|revoke_forward|downgrade
+  string target     = 4;  // e.g. a forward host:port for revoke_forward
+  SessionCaps caps  = 5;
+  int64  lease_expiry_unix_ms = 6;
+  string reason     = 7;
+  bytes  sig        = 8;
+}
+
+// SessionLease is the fail-closed data-path lease for ONE live direct session.
+// On a DIRECT (p2p) path the controller is off the data path, so a revoke or a
+// partition could otherwise leave the conduit up until maxAgentSessionTTL. The
+// controller re-pushes a fresh, signed, monotonic-epoch'd lease every reauth sweep
+// tick; the agent forwards only while the lease is fresh and self-tears the
+// CONDUIT (not a detached PTY) when it starves. sig carries the full
+// types.Signed envelope (payload+sig+key_id) under the session-policy context.
+message SessionLease {
+  string session_id          = 1;
+  int64  epoch               = 2; // strictly increasing per session; agent rejects non-increase
+  int64  lease_expiry_unix_ms = 3;
+  bytes  sig                 = 4;
+}
+
+// ServiceAdvert is one service a node exposes (declared in agent config or
+// implicit). kind: shell|exec|sftp|tcp|rdp|vnc|http|postgres|mysql|
+// subnet-route|exit-node. addr is host:port for forwarded services, a CIDR for
+// subnet-route, or empty for exit-node / implicit host services.
+message ServiceAdvert {
+  string name = 1;
+  string kind = 2;
+  string addr = 3;
+  map<string, string> labels = 4;
+}
+
+message AgentHello {
+  string node_id = 1;
+  string version = 2;
+  map<string, string> labels = 3;
+  repeated string capabilities = 4;  // e.g. "shell","exec","sftp","forward","attach","vpn"
+  int64 cluster_config_version = 5;  // version agent currently holds
+  repeated ServiceAdvert services = 6;
+  string home_region = 7;            // STUN-RTT closest region the agent measured (advisory)
+}
+
+message Heartbeat {
+  int64 unix_ms = 1;
+  uint32 active_sessions = 2;
+  uint32 detached_sessions = 3;
+  string version = 4;
+  bool healthy = 5;
+  // inventory_hash is the 32-byte SHA-256 of the node's current CycloneDX SBOM
+  // (empty when the inventory module is not running). The controller compares it to
+  // the hash it has stored: a mismatch (or a first report) is the only trigger for
+  // the agent to ship the full SBOM, so steady state is a 32-byte heartbeat field.
+  bytes inventory_hash = 6;
+  // binary_hash is the 32-byte SHA-256 the agent measures over its own running
+  // executable (the kernel-authoritative /proc/self/exe on Linux, os.Executable
+  // elsewhere) every heartbeat. The controller pins the first measurement reported
+  // after a node is approved and quarantines the node if a later measurement
+  // differs — so swapping the agent binary on disk and restarting trips drift
+  // detection. HONEST LIMIT: a fully root-compromised agent can replay a known
+  // -good hash from patched measuring code; this is software posture detection,
+  // not hardware-measured integrity. Empty from agents that predate the field.
+  bytes binary_hash = 7;
+}
+
+// signed_grant is a JSON types.Signed wrapping types.SessionGrant; it contains
+// everything the agent needs (relay addr+token, client noise key, scope).
+message SessionOffer {
+  bytes signed_grant = 1;
+  TurnCreds turn = 2;  // p2p: the agent's session ICE coordinates (controlling inside)
+  repeated RelayCandidate relay_candidates = 3; // region-tagged options; turn = candidates[0]
+}
+
+message SessionOfferAck {
+  string session_id = 1;
+  bool accepted = 2;
+  string reason = 3;
+}
+
+// Session p2p ICE signaling (client <-> controller <-> agent), keyed by session_id.
+message ClientSignal {
+  string session_id = 1;
+  IceCreds ice_creds = 2;          // the client's ufrag/pwd (first message)
+  repeated string candidates = 3;  // pion ice.Candidate.Marshal() strings (trickled)
+  RehomeRequest rehome_request = 4; // "my relay died, re-issue this session onto a survivor"
+}
+message ControllerSignal {
+  IceCreds ice_creds = 1;          // the agent's ufrag/pwd
+  repeated string candidates = 2;  // the agent's candidates, forwarded
+  bool controlling = 3;            // the client's controller-assigned ICE role
+  SessionRehome rehome = 4;        // fresh grant + relay coordinates for an in-session re-home
+  DrainNotice drain_notice = 5;    // "the relay carrying this session is draining; re-home off it NOW"
+}
+
+// Session lifecycle events for the audit trail (emitted by the agent).
+// event: offered|established|attached|detached|ended|rejected
+message SessionEvent {
+  string session_id = 1;
+  string event = 2;
+  string detail = 3;
+  int64 unix_ms = 4;
+  string host_session_id = 5;
+  int32 exit_code = 6;
+  // First-class audit fields (off the data path): the selected transport class
+  // and the live session's authz epoch, so the controller ledger records them
+  // without parsing the free-form detail string.
+  string path_class = 7; // "direct" | "relayed"
+  int64  epoch      = 8;
+}
+
+message RecordingChunk {
+  string session_id = 1;
+  bytes data = 2;          // ciphertext bytes (age-encrypted at the agent)
+  bool eof = 3;
+  // manifest attests the uploaded bytes. It rides the FIRST and the eof chunk;
+  // the controller verifies the streamed ciphertext against it (sha256 + size) and
+  // checks node_sig against the authenticated stream's node certificate. The
+  // controller never decrypts — it stores opaque ciphertext plus this attestation.
+  RecordingManifest manifest = 4;
+}
+
+// RecordingManifest is the node-signed attestation over an uploaded recording.
+// node_sig is an ECDSA-P256 signature by the node's identity key over a canonical
+// digest of (session_id, sha256, size_bytes, ended_unix); the controller verifies it
+// against the public key of the node cert authenticating the upload stream.
+message RecordingManifest {
+  bytes  sha256 = 1;        // SHA-256 over the ciphertext
+  int64  size_bytes = 2;
+  bytes  node_sig = 3;      // ECDSA-P256 ASN.1 signature over the canonical digest
+  string audit_key_id = 4;  // recipient/key the cast was encrypted to (audit key rotation)
+  int64  started_unix = 5;
+  int64  ended_unix = 6;
+  string principal = 7;     // durable subject (provider:subject), for the index row
+  string node_id = 8;
+  string action = 9;
+  bool   truncated = 10;    // the cast was capped mid-session but is still valid
+}
+
+message UploadAck {
+  bool ok = 1;
+}
+
+message RenewCertRequest {
+  bytes csr_pem = 1;
+}
+
+message RenewCertResponse {
+  bytes node_cert_pem = 1;
+  bytes ca_roots_pem = 2;
+}
+
+message Ping {
+  int64 unix_ms = 1;
+}
+
+// ---------------------------------------------------------------------------
+// UserAPI (operator-facing; Login is cert-less, the rest require user mTLS)
+// ---------------------------------------------------------------------------
+
+service UserAPI {
+  rpc ListNodes(ListNodesRequest) returns (ListNodesResponse);
+  rpc ListServices(ListServicesRequest) returns (ListServicesResponse);
+  rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse);
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
+  rpc WhoAmI(Empty) returns (WhoAmIResponse);
+  // SessionSignal is the ephemeral client's session p2p ICE signaling channel,
+  // bidi-streamed and mTLS-bound to a just-issued session_id. The controller is a
+  // stateless forwarder between this stream and the agent's NodeControl stream
+  // (keyed by session_id) — never the wgpub/overlay disco path.
+  rpc SessionSignal(stream ClientSignal) returns (stream ControllerSignal);
+  // SessionControl is the client's belt-and-suspenders enforcement channel for a
+  // DIRECT p2p session: the client streams keepalives and the controller pushes the
+  // same signed revoke / lease-expiry it pushes to the agent, so EITHER honest
+  // end closes the conduit even if the other (e.g. a compromised agent) ignores
+  // the cut. The agent remains the primary gate; this is a bounded residual.
+  rpc SessionControl(stream ClientControl) returns (stream ControllerEnforcement);
+  // Heartbeat re-asserts continuous PRESENCE for a presence-required session: the
+  // client proves a human factor (software stub now, WebAuthn/FIDO2 later) every
+  // heartbeat_interval; the controller stamps last-presence and rotates the single-use
+  // challenge. When beats stop, presence goes stale and the continuous sweep drops
+  // the session (the fail-closed lease is the actual kill).
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  // (DNS is no longer a controller RPC: in-network DNS is resolved LOCALLY at each
+  // agent from the zone PUSHED in NetworkSpec.dns_records — no per-query controller
+  // dependency. See NetworkSpec.dns_zone / memory geneza-roadmap-dns-tenancy.)
+  // ListRecordings returns the recording index rows for the workspace. GetRecording
+  // streams the opaque CIPHERTEXT blob plus its node-signed manifest; the controller
+  // never decrypts — the auditor supplies the workspace audit key. Both require the
+  // audit/replay capability, and GetRecording emits a per-fetch audit event.
+  rpc ListRecordings(ListRecordingsRequest) returns (ListRecordingsResponse);
+  rpc GetRecording(GetRecordingRequest) returns (stream RecordingBlobChunk);
+  // Vulnerability query surface (workspace-scoped, read-only). ListNodeCVEs is the
+  // "what CVEs affect node N?" view; ListNodesAffectedByCVE is the inverse "what
+  // nodes does CVE-X affect?" fleet view; ListNodeComponents returns a node's
+  // resolved software inventory. The workspace is taken from the caller's cert, so
+  // no request carries a workspace and one tenant's exploitable surface stays
+  // invisible to another. All three need at least workspace-member standing.
+  rpc ListNodeCVEs(ListNodeCVEsRequest) returns (ListNodeCVEsResponse);
+  rpc ListNodesAffectedByCVE(ListNodesAffectedByCVERequest) returns (ListNodesAffectedByCVEResponse);
+  rpc ListNodeComponents(ListNodeComponentsRequest) returns (ListNodeComponentsResponse);
+  // ListWorkspaceCVEs is the fleet-wide rollup: every CVE affecting any node in the
+  // caller's workspace, with the representative severity/status, the count and list
+  // of distinct affected nodes (host and container-image verdicts unioned), and a
+  // fixing version. Same cert-scoped tenancy and ws-member gate as the others.
+  rpc ListWorkspaceCVEs(ListWorkspaceCVEsRequest) returns (ListWorkspaceCVEsResponse);
+}
+
+message RecordingInfo {
+  string session_id = 1;
+  string node_id = 2;
+  string principal = 3;     // durable subject the recording is attributed to
+  string action = 4;
+  int64 started_unix = 5;
+  int64 ended_unix = 6;
+  int64 size_bytes = 7;     // ciphertext size
+  string sha256 = 8;        // hex, over the ciphertext
+  string audit_key_id = 9;  // which audit key decrypts the cast (authoritative)
+  bool truncated = 10;      // the cast was capped mid-session but is still valid
+}
+
+message ListRecordingsRequest {
+  // principal optionally filters to one durable subject (provider:subject).
+  string principal = 1;
+  int32 limit = 2;  // 0 = server default; capped server-side
+  int32 offset = 3;
+}
+
+message ListRecordingsResponse {
+  repeated RecordingInfo recordings = 1;
+  int32 total = 2;
+}
+
+message GetRecordingRequest {
+  string session_id = 1;
+}
+
+// RecordingBlobChunk streams a recording back to an authorized auditor. The first
+// chunk carries the manifest (sha256 over the ciphertext, size, the signed node
+// attestation, audit_key_id) so the auditor can verify integrity before decrypting;
+// every chunk carries opaque age ciphertext. The controller never decrypts.
+message RecordingBlobChunk {
+  bytes data = 1;                 // ciphertext bytes
+  bool eof = 2;
+  RecordingManifest manifest = 3; // rides the first chunk only
+}
+
+// PresenceAttestation is one beat's factor proof, bound to its session. The
+// software stub echoes the issued challenge + a monotonic counter; a real factor
+// (WebAuthn) fills signature/counter from the authenticator. session_id binding
+// makes a beat non-replayable onto another session.
+message PresenceAttestation {
+  string kind        = 1; // "software" | "webauthn" | "fido2"
+  bytes  signature   = 2;
+  uint32 counter     = 3;
+  bytes  client_data = 4; // must echo the issued single-use challenge
+  bytes  challenge_id = 5;
+  string session_id  = 6;
+}
+message HeartbeatRequest {
+  string session_id = 1;
+  PresenceAttestation attestation = 2;
+}
+message HeartbeatResponse {
+  bytes  next_challenge        = 1; // rotated single-use challenge for the next beat
+  int64  presence_ttl_seconds  = 2;
+  bool   ok                    = 3;
+  string reason                = 4; // non-empty on a denied/failed beat (not a gRPC error)
+}
+
+// ClientControl is the client's keepalive on its SessionControl stream; the
+// first message names the session_id (mTLS-bound, authorized like SessionSignal).
+message ClientControl {
+  string session_id = 1;
+}
+// ControllerEnforcement carries an enforcement push to the client end of a direct
+// session. Each payload is the byte-identical signed message also sent to the
+// agent (same epoch + sig), so the client verifies it the same way.
+message ControllerEnforcement {
+  oneof msg {
+    SessionRevoke session_revoke = 1;
+    SessionPolicyDelta session_policy_delta = 2;
+    SessionLease session_lease = 3;
+  }
+}
+
+message NodeSummary {
+  string node_id = 1;
+  string name = 2;
+  map<string, string> labels = 3;
+  bool online = 4;
+  string version = 5;
+  string os = 6;
+  string arch = 7;
+  int64 last_seen_unix = 8;
+  uint32 active_sessions = 9;
+  uint32 detached_sessions = 10;
+  bool approved = 11;   // false = pending admin approval (no sessions allowed)
+  string overlay_ip = 12; // stable overlay address (DNS A record), if assigned
+  string distro = 13;          // normalized OS/distro id for iconography (e.g. "ubuntu")
+  string distro_version = 14;  // distro release ("22.04", "14.5", "11")
+  string os_pretty = 15;       // human OS label ("Ubuntu 22.04.4 LTS")
+  // quarantine_reason is non-empty when the node is under an active drift
+  // quarantine: "binary_tamper" | "identity_clone" | "manual" | ... It always
+  // implies approved=false. Empty for a healthy node or one merely pending its
+  // first approval (which is approved=false with no quarantine).
+  string quarantine_reason = 16;
+}
+
+message ListNodesRequest {
+  int32 limit = 1;  // 0 = server default; capped server-side
+  int32 offset = 2;
+}
+
+message ListNodesResponse {
+  repeated NodeSummary nodes = 1;
+  int32 total = 2;  // total matching nodes (for paging)
+}
+
+message CreateSessionRequest {
+  string node = 1;             // node id or name
+  string action = 2;           // shell|exec|sftp|forward|attach|connect|vpn
+  string command = 3;          // action=exec
+  bool want_pty = 4;
+  bool want_detachable = 5;
+  string attach_session_id = 6; // action=attach: host session id to reattach
+  string forward_target = 7;    // action=forward: host:port on the node side
+  bytes client_noise_pub = 8;   // 32-byte Curve25519 static public key
+  string client_path = 9;       // "native" | "web"
+  string service = 10;          // action=connect|vpn: named service on the node
+  string home_region = 11;      // STUN-RTT closest region the client measured (advisory)
+}
+
+message CreateSessionResponse {
+  bytes signed_grant = 1;      // JSON types.Signed wrapping types.SessionGrant
+  string relay_addr = 2;       // relay-TCP floor: the first healthy fleet pick (always present)
+  // relay_floor is the ordered healthy relay-TCP rendezvous set the floor dials,
+  // first entry == relay_addr. The client/agent try them in order so a relay that
+  // refuses (draining) does not pin the floor to a swapping relay. Single-entry on a
+  // single-node deploy. The same one-time relay_token rendezvous pairs on whichever answers.
+  repeated string relay_floor = 12;
+  string relay_token = 3;
+  bytes agent_noise_pub = 4;
+  string session_id = 5;
+  TurnCreds turn = 6;          // p2p: session-scoped TURN creds + ICE role (nil = relay only)
+  // Continuous-presence: when present_required, the client must
+  // re-assert presence via UserAPI.Heartbeat every heartbeat_interval or the
+  // session is dropped after presence_ttl. presence_challenge is the first
+  // single-use challenge to echo (the server rotates it on every beat).
+  bool  present_required          = 7;
+  int64 heartbeat_interval_millis = 8;
+  bytes presence_challenge        = 9;
+  repeated RelayCandidate relay_candidates = 10; // region-tagged options; turn = candidates[0]
+  // When set, the target agent's control stream is held by another controller: the
+  // client must re-dial one of the redirect addrs and retry CreateSession there
+  // exactly once. All other fields are empty in a redirect response.
+  ControllerRedirect controller_redirect = 11;
+}
+
+// ControllerRedirect names the controller that owns the target agent's control stream
+// plus its signed reachable addresses, so the client can broker the session on the
+// controller that can actually push the offer. addrs come from the signed cluster
+// config (not the raw affinity row), so a redirect cannot be steered to an
+// unattested endpoint.
+message ControllerRedirect {
+  string controller_id = 1;
+  repeated string addrs = 2;
+}
+
+message SessionInfo {
+  string session_id = 1;
+  string node_id = 2;
+  string node_name = 3;
+  string user = 4;
+  string action = 5;
+  string state = 6;            // pending|active|detached|ended|revoked
+  int64 started_unix = 7;
+  string host_session_id = 8;
+  bool detachable = 9;
+  string service = 10;
+  bool recorded = 11;          // an encrypted recording was stored for this session
+}
+
+message ServiceInfo {
+  string name = 1;
+  string kind = 2;
+  string addr = 3;
+  string node_id = 4;
+  string node_name = 5;
+  map<string, string> labels = 6;
+  bool online = 7;
+}
+
+message ListServicesRequest {
+  string node = 1; // optional: filter to one node (id or name)
+}
+
+message ListServicesResponse {
+  repeated ServiceInfo services = 1;
+}
+
+message ListSessionsRequest {
+  bool mine_only = 1;
+  int32 limit = 2;  // 0 = server default; capped server-side
+  int32 offset = 3;
+}
+
+message ListSessionsResponse {
+  repeated SessionInfo sessions = 1;
+  int32 total = 2;  // total matching sessions (for paging)
+}
+
+message WhoAmIResponse {
+  string user = 1;
+  repeated string roles = 2;
+  int64 cert_expires_unix = 3;
+  string workspace = 4; // the tenant this cert is scoped to
+}
+
+// NodeCVEInfo is one (node, package, cve) verdict row, flattened for a list view.
+// FixedVersion is the distro's patched version; kev/epss/severity are the
+// prioritization signals carried alongside so the caller needs no second lookup.
+message NodeCVEInfo {
+  string node_id = 1;
+  string cve = 2;
+  string purl = 3;             // the affected package (package-url)
+  string status = 4;           // affected | not_affected | fixed | under_investigation
+  string severity = 5;
+  bool kev = 6;                // on CISA's Known-Exploited-Vulnerabilities list
+  double epss = 7;             // exploit-prediction score (0..1)
+  string fixed_version = 8;    // the distro's patched version, if any
+  string vex_justification = 9;
+  int64 matched_unix = 10;
+}
+
+message ListNodeCVEsRequest {
+  string node_id = 1;          // the node whose CVEs to list (id or name)
+  bool affected_only = 2;      // when set, return only status="affected" rows
+  int32 limit = 3;             // 0 = server default; capped server-side
+  int32 offset = 4;
+}
+
+message ListNodeCVEsResponse {
+  repeated NodeCVEInfo cves = 1;
+  int32 total = 2;             // total matching rows (for paging)
+}
+
+message ListNodesAffectedByCVERequest {
+  string cve = 1;              // the CVE id to resolve across the workspace fleet
+  int32 limit = 2;             // 0 = server default; capped server-side
+  int32 offset = 3;
+}
+
+message ListNodesAffectedByCVEResponse {
+  repeated NodeCVEInfo nodes = 1;
+  int32 total = 2;             // total matching rows (for paging)
+}
+
+// ComponentInfo is one resolved software-inventory entry of a node.
+message ComponentInfo {
+  string purl = 1;
+  string source = 2;           // e.g. "os" or "image:<digest>"
+  string ecosystem = 3;
+  string name = 4;
+  string version = 5;
+  string distro = 6;
+}
+
+message ListNodeComponentsRequest {
+  string node_id = 1;          // the node whose components to list (id or name)
+  int32 limit = 2;             // 0 = server default; capped server-side
+  int32 offset = 3;
+}
+
+message ListNodeComponentsResponse {
+  repeated ComponentInfo components = 1;
+  int32 total = 2;             // total matching rows (for paging)
+}
+
+// WorkspaceCVEInfo is one fleet-wide rollup row: a CVE affecting the workspace, the
+// representative severity/status, the version that fixes it, and the distinct nodes
+// it touches (host and image verdicts unioned, each node counted once).
+message WorkspaceCVEInfo {
+  string cve = 1;
+  string severity = 2;
+  string status = 3;           // the most actionable status across the affected nodes
+  string fixed_version = 4;    // the version that resolves the finding, if any
+  int32 node_count = 5;        // distinct affected nodes
+  repeated string nodes = 6;   // the distinct affected node ids
+}
+
+message ListWorkspaceCVEsRequest {
+  string cve = 1;              // optional case-insensitive substring filter on the CVE id
+  int32 limit = 2;             // 0 = server default; capped server-side
+  int32 offset = 3;
+}
+
+message ListWorkspaceCVEsResponse {
+  repeated WorkspaceCVEInfo cves = 1;
+  int32 total = 2;             // total matching rollup rows (for paging)
+}
+
+// ---------------------------------------------------------------------------
+// AdminAPI (requires user mTLS with role "admin")
+// ---------------------------------------------------------------------------
+
+service AdminAPI {
+  rpc CreateJoinToken(CreateJoinTokenRequest) returns (CreateJoinTokenResponse);
+  // ApproveNode flips a node's pending-approval gate (zero-trust admission
+  // control): an unapproved node has an identity but no session can be brokered
+  // to it until an admin approves. approve=false re-quarantines a node.
+  rpc ApproveNode(ApproveNodeRequest) returns (Empty);
+  // ListWorkspaces lists the tenants this controller hosts.
+  rpc ListWorkspaces(Empty) returns (ListWorkspacesResponse);
+  // RemoveNode decommissions a machine: deletes its record so it no longer
+  // appears in the fleet and must re-enroll (and re-be-approved) to return.
+  rpc RemoveNode(RemoveNodeRequest) returns (Empty);
+  rpc PublishArtifact(stream ArtifactChunk) returns (PublishArtifactResponse);
+  rpc SetDesiredVersion(SetDesiredVersionRequest) returns (Empty);
+  // Staggered rollout control: drive a product (agent/relay) through percentage
+  // waves automatically. StartRollout/Pause/Resume/Abort mutate the rollout;
+  // GetRolloutStatus reads it; SetAutoUpdate toggles auto-rollout-on-publish.
+  rpc StartRollout(StartRolloutRequest) returns (RolloutStatusResponse);
+  rpc GetRolloutStatus(RolloutControlRequest) returns (RolloutStatusResponse);
+  rpc PauseRollout(RolloutControlRequest) returns (RolloutStatusResponse);
+  rpc ResumeRollout(RolloutControlRequest) returns (RolloutStatusResponse);
+  rpc AbortRollout(RolloutControlRequest) returns (RolloutStatusResponse);
+  rpc SetAutoUpdate(SetAutoUpdateRequest) returns (Empty);
+  rpc GetFleetStatus(Empty) returns (FleetStatus);
+  rpc ReloadPolicy(Empty) returns (Empty);
+  rpc QueryAudit(QueryAuditRequest) returns (QueryAuditResponse);
+  // RevokeSession force-terminates a live session (admin "kick"). RevokeUser
+  // revokes all of a user's sessions.
+  rpc RevokeSession(RevokeSessionRequest) returns (Empty);
+  rpc RevokeUser(RevokeUserRequest) returns (RevokeCountResponse);
+  // Authorization (separate from authentication): SuspendPrincipal revokes a
+  // principal's authorization even while their token/cert stays valid — nukes
+  // their live tunnel + browser sessions and DENIES new ones (login, broker,
+  // cert-issuance, sweep) until LiftSuspension. Sticky across re-login.
+  rpc SuspendPrincipal(SuspendPrincipalRequest) returns (Empty);
+  rpc LiftSuspension(SuspendPrincipalRequest) returns (Empty);
+  rpc ListSuspensions(Empty) returns (ListSuspensionsResponse);
+  // Per-node agent modules (enable/disable monitoring & future exporters). The
+  // controller persists the desired set and pushes it to the node in realtime.
+  rpc SetNodeModules(SetNodeModulesRequest) returns (Empty);
+  rpc GetNodeModules(GetNodeModulesRequest) returns (NodeModulesResponse);
+  // Cloud-qualified SOURCE bindings (workspace-as-hub): bind an external
+  // identity source (e.g. openstack:project:<svc>:<uuid>, idp:group:<realm>:<g>)
+  // to a workspace so its VMs/users enroll/land there. Operator pre-bind path.
+  rpc BindSource(BindSourceRequest) returns (Empty);
+  rpc UnbindSource(UnbindSourceRequest) returns (Empty);
+  rpc ListSourceBindings(Empty) returns (ListSourceBindingsResponse);
+  // Leaf-cert revocation: denylist a node/user/admin cert by serial so it stops
+  // being accepted before its TTL expires, without a fleet CA re-key.
+  rpc RevokeCert(RevokeCertRequest) returns (Empty);
+  rpc ListRevokedCerts(Empty) returns (ListRevokedCertsResponse);
+  // InstallTrustAnchors ingests an offline/threshold-signed TrustAnchors envelope
+  // (assembled by geneza-trust) and CASes it into the store, flipping the cluster
+  // into split mode. The controller holds NO trust key: it only stores the
+  // operator-supplied anchor and re-pins the routine map to it; it can never author
+  // or alter the anchor. Cluster-admin gated like the rest of the AdminAPI.
+  rpc InstallTrustAnchors(InstallTrustAnchorsRequest) returns (InstallTrustAnchorsResponse);
+  // Managed-domain subdomain reservations (ws-admin scoped to the caller's
+  // workspace): claim a subdomain label on a configured managed domain, list the
+  // workspace's reservations + claimable domains, release one. The cert manager
+  // issues a wildcard per reservation.
+  rpc ReserveSubdomain(ReserveSubdomainRequest) returns (SubdomainReservationInfo);
+  rpc ListSubdomains(Empty) returns (ListSubdomainsResponse);
+  rpc ReleaseSubdomain(ReleaseSubdomainRequest) returns (Empty);
+  // Funnel: expose a workspace service to the PUBLIC internet at a hostname under
+  // one of the workspace's reservations. The controller mints a narrow leaf and a
+  // relay pool terminates public TLS + reverse-proxies into the overlay.
+  rpc CreateFunnel(CreateFunnelRequest) returns (FunnelInfo);
+  rpc ListFunnels(Empty) returns (ListFunnelsResponse);
+  rpc DeleteFunnel(DeleteFunnelRequest) returns (Empty);
+}
+
+message CreateFunnelRequest {
+  string hostname = 1;               // public FQDN under a reservation
+  string node     = 2;               // target node id
+  string target   = 3;               // host:port reachable on the overlay
+  string mode     = 4;               // "http" | "tcp" (default http)
+}
+
+message DeleteFunnelRequest {
+  string hostname = 1;
+}
+
+message FunnelInfo {
+  string hostname     = 1;
+  string node         = 2;
+  string target       = 3;
+  string mode         = 4;
+  int64  created_unix = 5;
+  string created_by   = 6;
+}
+
+message ListFunnelsResponse {
+  repeated FunnelInfo funnels = 1;
+}
+
+message ReserveSubdomainRequest {
+  string domain = 1;                 // a configured managed base domain
+  string label  = 2;                 // chosen label; empty = derived default
+}
+
+message ReleaseSubdomainRequest {
+  string domain = 1;
+  string label  = 2;
+}
+
+message SubdomainReservationInfo {
+  string domain       = 1;
+  string label        = 2;
+  string zone         = 3;           // "<label>.<domain>"
+  int64  created_unix = 4;
+  string created_by   = 5;
+}
+
+message ListSubdomainsResponse {
+  bool   enabled                                 = 1; // managed_domain configured
+  repeated string domains                        = 2; // claimable base domains
+  int32  max                                     = 3; // per-workspace cap
+  repeated SubdomainReservationInfo reservations = 4;
+}
+
+// InstallTrustAnchorsRequest carries the assembled MultiSigned TrustAnchors bytes.
+message InstallTrustAnchorsRequest {
+  bytes trust_anchors = 1;           // JSON types.MultiSigned wrapping types.TrustAnchors
+}
+
+message InstallTrustAnchorsResponse {
+  int64 anchor_version = 1;          // the AnchorVersion now in force
+  int64 config_version = 2;          // the routine-map ConfigVersion re-pinned to it
+}
+
+message SuspendPrincipalRequest {
+  string workspace = 1;              // tenant (default "default")
+  string provider  = 2;             // keystone|oidc|local (optional; resolved if empty)
+  string subject   = 3;             // stable provider id (optional; resolved from username/sessions)
+  string username  = 4;             // display name — used to RESOLVE the principal when subject is empty
+  string reason    = 5;
+}
+
+message Suspension {
+  string workspace = 1;
+  string provider  = 2;
+  string subject   = 3;
+  string username  = 4;
+  string reason    = 5;
+  string suspended_by = 6;
+  int64  suspended_unix = 7;
+}
+message ListSuspensionsResponse { repeated Suspension suspensions = 1; }
+
+message SetNodeModulesRequest {
+  string node = 1;                   // node id or name
+  repeated ModuleSpec modules = 2;
+}
+
+message GetNodeModulesRequest {
+  string node = 1;
+}
+
+message NodeModulesResponse {
+  repeated ModuleSpec modules = 1;
+}
+
+message RevokeSessionRequest {
+  string session_id = 1;
+  string reason = 2;
+}
+
+message RevokeUserRequest {
+  string user = 1;
+  string reason = 2;
+}
+
+message RevokeCountResponse {
+  int32 revoked = 1;
+}
+
+message CreateJoinTokenRequest {
+  int64 ttl_seconds = 1;            // default 3600
+  map<string, string> labels = 2;   // labels stamped onto the enrolling node
+  int32 max_uses = 3;               // default 1
+  // auto_approve: enrolled nodes are usable immediately instead of landing in
+  // the pending-approval state. Convenience for automation/low-sensitivity
+  // fleets; relies on token secrecy. Default false = zero-trust (an admin must
+  // approve the machine before any session can be brokered to it).
+  bool auto_approve = 4;
+}
+
+message CreateJoinTokenResponse {
+  string token = 1;
+  int64 expires_unix = 2;
+  // root_fingerprint is sha256 of the controller's served TUF-lite root public key
+  // (empty if the controller serves no root). The CLI bakes it into the curl|bash
+  // one-liner as --root-fp so the new machine verifies the trust anchor it
+  // fetches at bootstrap (defeats a controller-MITM swapping the root key).
+  string root_fingerprint = 3;
+}
+
+message ApproveNodeRequest {
+  string node = 1;      // node id or name
+  bool approve = 2;     // true=approve, false=revoke approval (quarantine)
+  // reason is the human justification recorded verbatim in the hash-chained
+  // audit log. It is mandatory when re-approving a node the system auto-
+  // quarantined for drift (binary tamper / identity clone), so a recovery is
+  // never a bare unexplained click. Optional for a first approval of a pending
+  // node.
+  string reason = 3;
+}
+
+message RemoveNodeRequest {
+  string node = 1;      // node id or name
+}
+
+message WorkspaceInfo {
+  string id = 1;
+  string name = 2;
+  string overlay_cidr = 3;
+}
+
+message ListWorkspacesResponse {
+  repeated WorkspaceInfo workspaces = 1;
+}
+
+message BindSourceRequest {
+  string key = 1;          // cloud-qualified binding, e.g. openstack:project:kolla1:<uuid>
+  string workspace_id = 2; // target workspace (must exist)
+}
+
+message UnbindSourceRequest {
+  string key = 1;
+}
+
+message SourceBindingInfo {
+  string key = 1;
+  string workspace_id = 2;
+  int64 created_unix = 3;
+  string created_by = 4;
+  bool auto_provisioned = 5;
+}
+
+message ListSourceBindingsResponse {
+  repeated SourceBindingInfo bindings = 1;
+}
+
+message RevokeCertRequest {
+  string serial = 1;   // lower-case hex serial (as shown by `cert ls` / openssl)
+  string reason = 2;
+}
+
+message RevokedCertInfo {
+  string serial = 1;
+  int64 revoked_unix = 2;
+  string by = 3;
+  string reason = 4;
+  string subject = 5;
+}
+
+message ListRevokedCertsResponse {
+  repeated RevokedCertInfo certs = 1;
+}
+
+// First chunk must carry signed_manifest (JSON types.Signed wrapping
+// types.Manifest, signed OFFLINE by the artifact key); the controller verifies
+// the blob hash against the manifest before accepting. The controller does NOT
+// hold the artifact signing key.
+message ArtifactChunk {
+  bytes signed_manifest = 1;
+  bytes data = 2;
+  bool eof = 3;
+}
+
+message PublishArtifactResponse {
+  string version = 1;
+  string sha256 = 2;
+}
+
+message SetDesiredVersionRequest {
+  string ring = 1;     // "canary" | "stable"
+  string version = 2;
+  repeated string canary_nodes = 3; // optional: set the canary ring membership
+  // product selects the rollout ring: "" or "geneza-agent" drives the agent ring
+  // (unchanged); "geneza-relay" drives the separate relay ring.
+  string product = 4;
+}
+
+message StartRolloutRequest {
+  string product = 1;                 // "" or "geneza-agent" | "geneza-relay"
+  string version = 2;                 // target version (must be published, != stable)
+  repeated int32 waves = 3;           // cumulative percentages, ascending, last 100 (default 10,50,100)
+  int64 soak_seconds = 4;             // continuous-health dwell per wave (0 = default)
+  int64 wave_timeout_seconds = 5;     // halt/abort if a wave doesn't go healthy in time (0 = default)
+}
+
+message RolloutControlRequest {
+  string product = 1;
+}
+
+message SetAutoUpdateRequest {
+  string product = 1;
+  bool enabled = 2;
+}
+
+// RolloutStatusResponse is the observable state of one product's rollout.
+message RolloutStatusResponse {
+  bool present = 1;                   // false = no rollout record for this product
+  string product = 2;
+  string target = 3;
+  repeated int32 waves = 4;
+  int32 wave_idx = 5;
+  string state = 6;                   // active|paused|halted|done|aborted
+  string trigger = 7;                 // admin|auto
+  int32 eligible_count = 8;
+  int32 wave_members = 9;             // members of the current wave
+  int32 wave_healthy = 10;            // of those, how many are healthy on target
+  int64 soak_seconds = 11;
+  int64 soak_remaining_seconds = 12;
+  int64 wave_timeout_seconds = 13;
+  repeated string blockers = 14;
+  string halt_reason = 15;
+  bool auto_update = 16;              // is auto-rollout-on-publish enabled
+}
+
+message FleetStatus {
+  repeated NodeSummary nodes = 1;
+  string stable_version = 2;
+  string canary_version = 3;
+  repeated string canary_nodes = 4;
+  // Relay rollout ring (independent of the agent ring above), so an operator can
+  // read the relay fleet's desired versions alongside the agents'.
+  string relay_stable_version = 5;
+  string relay_canary_version = 6;
+  repeated string relay_canary_nodes = 7;
+}
+
+message QueryAuditRequest {
+  int64 since_unix = 1;
+  string type_filter = 2;
+  int32 limit = 3;       // default 100
+}
+
+message AuditRecord {
+  bytes json = 1;        // raw audit record (hash-chained JSONL line)
+}
+
+message QueryAuditResponse {
+  repeated AuditRecord records = 1;
+  bool chain_ok = 2;
+}
+
+message Empty {}

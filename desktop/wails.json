@@ -1,0 +1,14 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "geneza",
+  "outputfilename": "geneza-desktop",
+  "frontend:dir": "../web",
+  "frontend:install": "npm install",
+  "frontend:build": "npm run build:console && rm -rf ../desktop/frontend/dist && mkdir -p ../desktop/frontend/dist && cp -r apps/console/dist/. ../desktop/frontend/dist/",
+  "frontend:dev:watcher": "npm run dev:console",
+  "frontend:dev:serverUrl": "auto",
+  "info": {
+    "productName": "Geneza",
+    "comments": "Geneza desktop client"
+  }
+}

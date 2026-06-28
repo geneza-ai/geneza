@@ -1,0 +1,49 @@
+// Geneza — one-glance architecture. Render: dot -Tpng -Gdpi=150 docs/architecture.dot -o docs/architecture.png
+digraph geneza {
+  rankdir=TB;
+  graph [fontname="Helvetica", fontsize=12, bgcolor="white", nodesep=0.6, ranksep=1.0, pad=0.3];
+  node  [fontname="Helvetica", fontsize=11, style="filled,rounded", shape=box, penwidth=1.4, margin="0.22,0.14"];
+  edge  [fontname="Helvetica", fontsize=10];
+
+  // --- row 1: who drives it + identity ---
+  CLIENT [label="YOU\nCLI · web console · AI", fillcolor="#ededed"];
+  IDP    [label="IdP\nOIDC · OpenStack Keystone", fillcolor="#f3e8ff", color="#9a6fd0"];
+  { rank=same; CLIENT; IDP; }
+
+  // --- row 2: control plane (self-hosted) ---
+  subgraph cluster_cp {
+    label="CONTROL PLANE  ·  self-hosted (Docker)";
+    labelloc="t"; fontname="Helvetica-Bold"; fontsize=13;
+    style="rounded"; color="#bcd6f5"; bgcolor="#f5f9ff";
+    RELAY [label="RELAY\npayload-blind rendezvous\n+ NAT-traversal floor", fillcolor="#ffe2b8"];
+    GW    [label="CONTROLLER\nidentity broker · policy\nsession broker · CA", fillcolor="#cfe8ff"];
+    { rank=same; RELAY; GW; }
+    RELAY -> GW [style=invis]; // order relay left, controller right
+  }
+
+  // --- row 3: the fleet — agents dial OUT, no inbound ports ---
+  subgraph cluster_fleet {
+    label="YOUR MACHINES  ·  the agent DIALS OUT — open no inbound ports";
+    labelloc="b"; fontname="Helvetica-Bold"; fontsize=12;
+    style="rounded"; color="#cbe6cb"; bgcolor="#f6fbf6";
+    A1 [label="agent\nbare-metal / cloud VM", fillcolor="#d8f0d8"];
+    A2 [label="agent\nbehind NAT / firewall", fillcolor="#d8f0d8"];
+    A3 [label="agent\nOpenStack VM\nauto-enrolls at boot", fillcolor="#d8f0d8"];
+    { rank=same; A1; A2; A3; }
+    A1 -> A2 -> A3 [style=invis]; // order left -> right
+  }
+
+  // identity: federated human login (purple, dashed)
+  CLIENT -> IDP [label="login", style=dashed, color="#9a6fd0", fontcolor="#6b3fa0", constraint=false];
+  IDP    -> GW  [label="federate", style=dashed, color="#9a6fd0", fontcolor="#6b3fa0"];
+
+  // data: end-to-end encrypted session DOWN through the blind relay (left side)
+  CLIENT -> RELAY [label="end-to-end encrypted\nSSH · exec · forward · VPN", color="#0b8a3c", penwidth=2.8, fontcolor="#0b6a2e"];
+  RELAY  -> A2    [label="relay sees only ciphertext", color="#0b8a3c", penwidth=2.8, fontcolor="#0b6a2e"];
+
+  // control: client brokers a session; agents dial OUT and UP to the controller (overlay, no rank effect)
+  CLIENT -> GW [label="broker a session\n(signed grant)", style=dashed, color="#8a8a8a", fontcolor="#6f6f6f", constraint=false];
+  A1 -> GW [color="#1a73e8", penwidth=2.6, constraint=false];
+  A2 -> GW [label="control mTLS · DIALS OUT", color="#1a73e8", penwidth=2.6, fontcolor="#1a4fa0", constraint=false];
+  A3 -> GW [color="#1a73e8", penwidth=2.6, constraint=false];
+}

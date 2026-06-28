@@ -1,0 +1,67 @@
+{{- /*
+  The non-secret config skeleton + the assembly script. The init container
+  combines this skeleton with the secret-bearing keys (sourced from existing
+  Secrets via env) into the final controller.yaml on an emptyDir, and seeds the
+  key material into the writable data_dir. Chart-owned keys are stripped from
+  the operator's `config` so they cannot be set in two places.
+*/}}
+{{- $cfg := omit .Values.config "store" "store_dsn" "router" "controller_id" "relay_shared_secret" "local_users" "storage" }}
+{{- $_ := set $cfg "data_dir" "/var/lib/geneza/data" }}
+{{- if .Values.bootstrapPolicy }}
+{{- $_ := set $cfg "policy_file" "/etc/geneza/policy/policy.yaml" }}
+{{- end }}
+{{- /* The controller rejects an oidc block with an empty issuer; omit it unless configured. */}}
+{{- if not (and .Values.config.oidc .Values.config.oidc.issuer) }}
+{{- $cfg = omit $cfg "oidc" }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "geneza-controller.fullname" . }}-config
+  labels:
+    {{- include "geneza-controller.labels" . | nindent 4 }}
+data:
+  controller.skeleton.yaml: |
+{{ toYaml $cfg | indent 4 }}
+  assemble.sh: |
+    #!/bin/sh
+    # Seed key material into the writable data_dir and append the secret-bearing
+    # config keys the chart owns. Runs in the init container as the nonroot uid.
+    set -eu
+    DATA=/var/lib/geneza/data
+    RUN=/run/geneza
+    KEYS=/var/lib/geneza/keys
+    mkdir -p "$DATA" "$RUN"
+    # Copy the mounted key bundle (laid out under KEYS at its data_dir-relative
+    # paths) into the writable data_dir so every replica shares one identity.
+    cp -a "$KEYS"/. "$DATA"/
+    # Start from the operator skeleton, then append the keys the chart owns.
+    cat /etc/geneza/skeleton/controller.skeleton.yaml > "$RUN/controller.yaml"
+    {
+      echo ""
+      echo "store: ${STORE_BACKEND}"
+      echo "store_dsn: \"${STORE_DSN}\""
+      echo "router: ${ROUTER}"
+      echo "controller_id: \"${POD_NAME}\""
+      if [ -n "${RELAY_SHARED_SECRET:-}" ]; then
+        echo "relay_shared_secret: \"${RELAY_SHARED_SECRET}\""
+      fi
+      if [ -n "${ADMIN_BCRYPT:-}" ]; then
+        echo "local_users:"
+        echo "  - username: \"${ADMIN_USERNAME}\""
+        echo "    password_bcrypt: \"${ADMIN_BCRYPT}\""
+        echo "    groups: [${ADMIN_GROUPS}]"
+      fi
+      if [ -n "${S3_BUCKET:-}" ]; then
+        echo "storage:"
+        echo "  backend: s3"
+        echo "  s3:"
+        echo "    endpoint: \"${S3_ENDPOINT}\""
+        echo "    region: \"${S3_REGION}\""
+        echo "    bucket: \"${S3_BUCKET}\""
+        echo "    prefix: \"${S3_PREFIX}\""
+        echo "    access_key_id: \"${S3_ACCESS_KEY_ID}\""
+        echo "    secret_access_key: \"${S3_SECRET_ACCESS_KEY}\""
+        echo "    use_path_style: ${S3_USE_PATH_STYLE}"
+      fi
+    } >> "$RUN/controller.yaml"

@@ -1,0 +1,22 @@
+apiVersion: v2
+name: geneza-controller
+description: |
+  Geneza controller (control plane / CA / session broker) for Kubernetes.
+  External SQL database (no embedded DB), HA cert/key material via a Secret,
+  and the Kubernetes Gateway API for the consoles and the mTLS gRPC port.
+type: application
+# Chart version is independent of the app; bump on chart changes.
+version: 0.1.0
+# Tracks the controller image; "" in values defaults appVersion to the chart's.
+appVersion: "0.1.0"
+keywords:
+  - geneza
+  - zero-trust
+  - remote-access
+  - control-plane
+home: https://github.com/geneza-ai/geneza
+sources:
+  - https://github.com/geneza-ai/geneza
+maintainers:
+  - name: geneza
+    url: https://github.com/geneza-ai/geneza

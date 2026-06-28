@@ -1,0 +1,71 @@
+name: chart
+
+# Package the Helm chart(s) and push them to GHCR as OCI artifacts
+# (oci://ghcr.io/geneza-ai/charts/<name>). Runs when the chart changes on wip
+# (a -wip.<sha> prerelease version, so it never clobbers a release), and on tag
+# pushes (v*) which publish the released chart version + appVersion.
+on:
+  push:
+    branches: [wip]
+    paths:
+      - "deploy/helm/**"
+      - ".github/workflows/chart.yml"
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write # push to ghcr.io
+
+env:
+  REGISTRY: ghcr.io
+  OWNER: geneza-ai
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        chart: [geneza-controller]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+
+      - name: Resolve chart + app version
+        id: ver
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then
+            ver="${GITHUB_REF_NAME#v}"
+            appver="${GITHUB_REF_NAME#v}"
+          else
+            # wip: a valid semver prerelease off the chart's own version, so a tag
+            # release (e.g. 0.1.0) is never overwritten by an early wip push.
+            base="$(grep '^version:' deploy/helm/${{ matrix.chart }}/Chart.yaml | awk '{print $2}')"
+            ver="${base}-wip.$(git rev-parse --short HEAD)"
+            appver="0.0.0-wip+$(git rev-parse --short HEAD)"
+          fi
+          echo "ver=$ver" >> "$GITHUB_OUTPUT"
+          echo "appver=$appver" >> "$GITHUB_OUTPUT"
+
+      - name: Lint
+        run: helm lint deploy/helm/${{ matrix.chart }}
+
+      - name: Package
+        run: |
+          helm package deploy/helm/${{ matrix.chart }} \
+            --version "${{ steps.ver.outputs.ver }}" \
+            --app-version "${{ steps.ver.outputs.appver }}" \
+            --destination /tmp/charts
+
+      - name: Login to GHCR
+        run: helm registry login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin <<<"${{ secrets.GITHUB_TOKEN }}"
+
+      - name: Push (OCI)
+        run: |
+          helm push "/tmp/charts/${{ matrix.chart }}-${{ steps.ver.outputs.ver }}.tgz" \
+            "oci://${{ env.REGISTRY }}/${{ env.OWNER }}/charts"
+          echo "Pushed oci://${{ env.REGISTRY }}/${{ env.OWNER }}/charts/${{ matrix.chart }}:${{ steps.ver.outputs.ver }}"

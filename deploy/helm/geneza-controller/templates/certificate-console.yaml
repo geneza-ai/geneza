@@ -1,0 +1,21 @@
+{{- if and .Values.gateway.enabled .Values.config.console.listen .Values.gateway.consoleTLS.certManager.enabled }}
+{{- if not .Values.gateway.consoleHostname }}
+{{- fail "gateway.consoleHostname is required when consoleTLS.certManager is enabled" }}
+{{- end }}
+# cert-manager issues the PUBLIC cert the Gateway terminates for the operator
+# console (7406). This is the ONLY cert-manager-managed cert: the 7401/7402/7407
+# listeners are passthrough and present the controller's own Geneza-CA cert.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "geneza-controller.consoleTLSSecret" . }}
+  labels:
+    {{- include "geneza-controller.labels" . | nindent 4 }}
+spec:
+  secretName: {{ include "geneza-controller.consoleTLSSecret" . }}
+  dnsNames:
+    - {{ .Values.gateway.consoleHostname | quote }}
+  issuerRef:
+    name: {{ .Values.gateway.consoleTLS.certManager.issuerName }}
+    kind: {{ .Values.gateway.consoleTLS.certManager.issuerKind }}
+{{- end }}

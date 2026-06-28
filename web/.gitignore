@@ -1,0 +1,9 @@
+# npm workspaces hoist a single node_modules at the monorepo root.
+node_modules/
+
+# per-app Vite build output
+dist/
+
+# editor / tooling
+*.tsbuildinfo
+.DS_Store

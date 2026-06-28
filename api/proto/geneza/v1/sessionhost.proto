@@ -1,0 +1,188 @@
+// Agent-internal session host API (gRPC over a unix socket).
+//
+// The session host is a small, stable, separately-supervised process that
+// owns live PTYs and their buffers so that worker restarts (binary updates)
+// never kill live sessions. The worker bridges tunnel channels to this API.
+syntax = "proto3";
+
+package geneza.v1;
+
+option go_package = "geneza.io/internal/pb/geneza/v1;genezav1";
+
+service SessionHost {
+  rpc Create(HostCreateRequest) returns (HostCreateResponse);
+  // Attach a client to a session. First ClientToHost MUST be open.
+  // The host immediately replies with Snapshot (pty mode) carrying the
+  // current screen state + the seq it corresponds to, then streams Output.
+  rpc Attach(stream ClientToHost) returns (stream HostToClient);
+  rpc List(HostListRequest) returns (HostListResponse);
+  rpc Kill(HostKillRequest) returns (HostEmpty);
+  rpc Health(HostEmpty) returns (HostHealthResponse);
+  // ApplyPolicy pushes agent policy knobs (caps, TTLs) from cluster config.
+  rpc ApplyPolicy(HostPolicy) returns (HostEmpty);
+  // SetCaps applies a downgrade to a live session at the HOST (authoritative):
+  // a read-only flip is honored even for a DETACHED PTY with no agent bridge,
+  // and persists across worker restarts (the session realtime PEP). Reattach
+  // re-reads host caps and never re-widens from the static grant.
+  rpc SetCaps(HostSetCapsRequest) returns (HostEmpty);
+}
+
+message HostSetCapsRequest {
+  string host_session_id = 1;
+  bool read_only = 2;             // drop stdin writes to the PTY
+  bool allow_new_channels = 3;
+  bool allow_sftp_write = 4;
+  repeated string allowed_forwards = 5;
+}
+
+message HostCreateRequest {
+  string session_id = 1;      // controller session id (for audit correlation)
+  string user = 2;            // geneza user identity (audit)
+  string action = 3;          // shell|exec
+  string command = 4;         // empty = login shell
+  bool pty = 5;
+  uint32 cols = 6;
+  uint32 rows = 7;
+  map<string, string> env = 8;
+  bool detachable = 9;
+  bool record = 10;           // write asciicast v2 to the spool dir
+  string os_user = 11;        // OS account to run as (v1: agent's own user)
+  // audit_recipient is the per-workspace age X25519 recipient the cast is
+  // encrypted to when record is set. The host holds only the public recipient;
+  // only a holder of the matching private key can ever decrypt the stored cast.
+  // Empty with record set means recording is requested but no audit key is
+  // configured — the host declines to record rather than spool plaintext.
+  string audit_recipient = 12;
+  // workspace_id / provider / subject are the durable audit principal stamped
+  // into the cast's self-describing header (display name is not the audit key).
+  string workspace_id = 13;
+  string provider = 14;
+  string subject = 15;
+  // audit_recipients is the full set of age X25519 recipients the cast is sealed
+  // to, so losing one custodian's key does not orphan the recording — any one of
+  // the listed identities decrypts it. When set it supersedes the single
+  // audit_recipient; when empty the single audit_recipient is used alone, so an
+  // older controller that sends only audit_recipient behaves exactly as before.
+  repeated string audit_recipients = 16;
+}
+
+message HostCreateResponse {
+  string host_session_id = 1;
+}
+
+message ClientToHost {
+  oneof msg {
+    AttachOpen open = 1;
+    Input input = 2;
+    Resize resize = 3;
+    Signal signal = 4;
+    Detach detach = 5;
+    Stdin_EOF stdin_eof = 6;
+  }
+}
+
+message AttachOpen {
+  string host_session_id = 1;
+  // Last output seq the client has rendered. 0 = fresh attach (full snapshot).
+  uint64 last_seen_seq = 2;
+}
+
+// Input is sequence-numbered so a reconnecting client never double-applies
+// or drops keystrokes: the host ignores any input with seq <= last applied.
+message Input {
+  uint64 seq = 1;
+  bytes data = 2;
+}
+
+message Resize {
+  uint32 cols = 1;
+  uint32 rows = 2;
+}
+
+message Signal {
+  string name = 1; // INT, TERM, HUP, ...
+}
+
+message Detach {}
+
+message Stdin_EOF {}
+
+message HostToClient {
+  oneof msg {
+    Snapshot snapshot = 1;
+    Output output = 2;
+    Stderr stderr = 3;
+    Exit exit = 4;
+    InputAck input_ack = 5;
+  }
+}
+
+// Snapshot carries an ANSI repaint of the current screen (vt10x render) and
+// the output seq it is consistent with; subsequent Output frames continue
+// from seq+1. cols/rows are the session's current size.
+message Snapshot {
+  bytes data = 1;
+  uint64 seq = 2;
+  uint32 cols = 3;
+  uint32 rows = 4;
+}
+
+message Output {
+  uint64 seq = 1;
+  bytes data = 2;
+}
+
+message Stderr {
+  uint64 seq = 1;
+  bytes data = 2;
+}
+
+message Exit {
+  int32 code = 1;
+  string reason = 2; // "exited" | "signaled:<sig>" | "killed" | "reaped"
+}
+
+message InputAck {
+  uint64 seq = 1;
+}
+
+message HostSessionInfo {
+  string host_session_id = 1;
+  string session_id = 2;
+  string user = 3;
+  string action = 4;
+  string state = 5;          // attached|detached|exited
+  bool detachable = 6;
+  int64 started_unix = 7;
+  int64 last_activity_unix = 8;
+  uint32 cols = 9;
+  uint32 rows = 10;
+}
+
+message HostListRequest {}
+
+message HostListResponse {
+  repeated HostSessionInfo sessions = 1;
+}
+
+message HostKillRequest {
+  string host_session_id = 1;
+}
+
+message HostHealthResponse {
+  bool ok = 1;
+  uint32 active = 2;
+  uint32 detached = 3;
+  string version = 4;
+}
+
+message HostPolicy {
+  bool forbid_detach = 1;
+  uint32 max_sessions = 2;
+  uint32 max_detached = 3;
+  uint32 ring_buffer_bytes = 4;
+  uint32 detached_ttl_sec = 5;
+  uint32 idle_reap_sec = 6;
+}
+
+message HostEmpty {}

@@ -1,0 +1,37 @@
+geneza-controller {{ .Chart.AppVersion }} installed as {{ .Release.Name }}.
+
+Replicas:        {{ .Values.replicaCount }}  (router: {{ .Values.database.router }}, store: {{ .Values.database.backend }})
+Keys Secret:     {{ .Values.keysSecret.name }}
+DB DSN Secret:   {{ .Values.database.dsnSecret.name }}/{{ .Values.database.dsnSecret.key }}
+
+Check rollout:
+  kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "geneza-controller.fullname" . }}
+
+{{- if .Values.gateway.enabled }}
+
+Gateway API exposure ({{ include "geneza-controller.gatewayName" . }}):
+  7401 gRPC mTLS        -> TLSRoute (Passthrough){{ with .Values.gateway.grpcHostname }}  SNI {{ . }}{{ end }}
+  7402 HTTPS API        -> TLSRoute (Passthrough){{ with .Values.gateway.httpsApiHostname }}  SNI {{ . }}{{ end }}
+{{- if .Values.config.console.listen }}
+  7406 operator console -> HTTPRoute (Terminate :443){{ with .Values.gateway.consoleHostname }}  https://{{ . }}{{ end }}
+{{- end }}
+{{- if and .Values.config.cluster_console .Values.config.cluster_console.listen }}
+  7407 cluster console  -> TLSRoute (Passthrough){{ with .Values.gateway.clusterConsoleHostname }}  SNI {{ . }}{{ end }}
+{{- end }}
+
+  Gateway address:
+    kubectl -n {{ .Release.Namespace }} get gateway {{ include "geneza-controller.gatewayName" . }} -o jsonpath='{.status.addresses[0].value}{"\n"}'
+
+  Reminder: the controller's own cert SANs (config.advertise.dns_names / ips)
+  MUST include the hostnames/IPs clients reach the passthrough listeners on, or
+  agent mTLS will fail. Re-issue with the reissue-tls subcommand if they change.
+{{- else }}
+
+Gateway disabled — expose the Service ({{ include "geneza-controller.fullname" . }}) yourself
+(ports 7401/7402/7406/7407). 7401/7402/7407 need raw-TCP / TLS passthrough.
+{{- end }}
+
+Day-0: issue a break-glass admin cert (offline escape hatch independent of OIDC):
+  kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "geneza-controller.fullname" . }} -c controller -- \
+    geneza-controller issue-user-cert --config /run/geneza/controller.yaml \
+    --name breakglass --roles admin,platform-admin --ttl 24h
