@@ -1,10 +1,11 @@
 name: ci
 
-# build/vet/test runs on every push to main and every PR — the always-on gate
-# (nothing is pushed anywhere). The heavier all-targets cross-compile matrix is
-# manual (workflow_dispatch): the release build already cross-compiles the
-# shipping binaries on a tag, so run this on demand when touching platform-
-# specific code (the kind that broke a Windows client build before this existed).
+# Build, vet, test, and cross-compile every shipping target on each push to main
+# and every PR. All of it is compile/test only — nothing is pushed to a registry
+# (the image/artifact builds live in docker.yml/binaries.yml/chart.yml, which run
+# only on a release tag or a manual run). The cross-compile job guards the
+# platform-specific paths (terminal signals, syscalls) that only fail when GOOS
+# changes — the regression that shipped a non-building Windows client.
 on:
   push:
     branches: [main]
@@ -32,10 +33,6 @@ jobs:
         run: go test -count=1 ./...
 
   crosscompile:
-    # Manual only. The release build (binaries.yml) cross-compiles the shipping
-    # binaries for all targets on a tag, so that is the automated backstop; run
-    # this on demand when touching platform-specific code (syscalls/terminal/TUN).
-    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
