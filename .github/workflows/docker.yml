@@ -76,3 +76,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           push: true
           provenance: false
+          # Reuse layers across runs (per component) so unchanged go.mod/deps and
+          # the web build don't recompile every push.
+          cache-from: type=gha,scope=${{ matrix.component }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.component }}
