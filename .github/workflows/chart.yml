@@ -1,15 +1,12 @@
 name: chart
 
 # Package the Helm chart(s) and push them to GHCR as OCI artifacts
-# (oci://ghcr.io/geneza-ai/charts/<name>). Runs when the chart changes on main
-# (a -dev.<sha> prerelease version, so it never clobbers a release), and on tag
-# pushes (v*) which publish the released chart version + appVersion.
+# (oci://ghcr.io/geneza-ai/charts/<name>). Builds are opt-in: a manual run
+# (workflow_dispatch) publishes a -dev.<sha> prerelease (never clobbers a
+# release); a release tag (v*) publishes the chart version + appVersion. Not on
+# every push.
 on:
   push:
-    branches: [main]
-    paths:
-      - "deploy/helm/**"
-      - ".github/workflows/chart.yml"
     tags: ["v*"]
   workflow_dispatch:
 
@@ -42,8 +39,8 @@ jobs:
             ver="${GITHUB_REF_NAME#v}"
             appver="${GITHUB_REF_NAME#v}"
           else
-            # main: a valid semver prerelease off the chart's own version, so a tag
-            # release (e.g. 0.1.0) is never overwritten by an early main push.
+            # A valid semver prerelease off the chart's own version, so a tag
+            # release (e.g. 0.1.0) is never overwritten by a dispatch build.
             base="$(grep '^version:' deploy/helm/${{ matrix.chart }}/Chart.yaml | awk '{print $2}')"
             ver="${base}-dev.$(git rev-parse --short HEAD)"
             appver="0.0.0-dev+$(git rev-parse --short HEAD)"

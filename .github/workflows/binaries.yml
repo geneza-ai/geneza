@@ -5,12 +5,13 @@ name: binaries
 # stack (geneza-node_linux_<arch> =
 # geneza-agent + geneza-bootstrap). The controller and relay ship only as container
 # images (see docker.yml). SHA256SUMS is offline-signed (see the checksums job).
-# Runs on main for artifacts; tag pushes (v*) attach everything to a GitHub
-# Release. To later restrict to releases only, drop the `main` push trigger.
+# Builds are opt-in: a manual run (workflow_dispatch) uploads the archives as
+# workflow artifacts for testing; a release tag (v*) attaches them to the GitHub
+# Release. Not on every push.
 on:
   push:
-    branches: [main]
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write # needed to create/attach a Release on tag builds

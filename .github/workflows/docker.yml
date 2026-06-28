@@ -1,13 +1,14 @@
 name: docker
 
 # Build and push the self-hostable controller and relay images to GHCR, multi-arch
-# (linux/amd64 + linux/arm64). Runs on main (the mutable `main` tag) for early
-# images; tag pushes (v*) add semver + latest. To later restrict to releases
-# only, drop the `main` push trigger.
+# (linux/amd64 + linux/arm64). NOT on every push — only:
+#   - manual run (workflow_dispatch): a mutable `main` tag + an immutable
+#     `sha-<sha>` tag, to test a specific commit;
+#   - a release tag (v*): semver + `latest`.
 on:
   push:
-    branches: [main]
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -55,11 +56,12 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.OWNER }}/geneza-${{ matrix.component }}
-          # No per-commit `sha-<sha>` tag: it minted a new immutable image on every
-          # main push and they piled up in GHCR. The mutable `main` tag (from
-          # type=ref) covers early/testing images; releases get semver + latest.
+          # A manual run tags both a mutable branch name (`main`) and an immutable
+          # `sha-<sha>` (so a specific commit is pinnable). Because builds are
+          # opt-in now, sha tags no longer pile up. Release tags get semver + latest.
           tags: |
             type=ref,event=branch
+            type=sha,enable=${{ github.ref_type != 'tag' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
