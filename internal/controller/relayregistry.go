@@ -99,6 +99,39 @@ func (r *relayRegistryService) validateAndUpsertRelay(ctx context.Context, hb *g
 	return rec, nil
 }
 
+// maybeRenewRelayCert signs a relay's renewal CSR (nil cert when there's no CSR or
+// signing fails — non-fatal, the relay keeps its still-valid cert and retries). The
+// identity and SANs come from the relay's authenticated mTLS leaf, NOT the CSR, so a
+// relay can only renew its own cert — the CSR contributes only its (unchanged) key.
+func (r *relayRegistryService) maybeRenewRelayCert(ctx context.Context, rec *RelayRecord, csrPEM []byte) (cert, caRoots []byte) {
+	if len(csrPEM) == 0 {
+		return nil, nil
+	}
+	ident, leaf, ok := identityFrom(ctx)
+	if !ok || leaf == nil || ident.Kind != ca.KindRelay {
+		return nil, nil
+	}
+	// Only sign a genuine near-expiry renewal — the relay gates this too, so a relay
+	// that asks early (or a buggy/hostile cert holder spamming reconnects) doesn't
+	// churn the serial on every connect.
+	if !ca.NeedsRenewal(leaf.NotBefore, leaf.NotAfter, time.Now()) {
+		return nil, nil
+	}
+	certPEM, err := r.s.ca.IssueFromCSR(csrPEM, ca.Profile{
+		Kind: ca.KindRelay, Name: ident.Name, TTL: serverCertTTL,
+		DNSNames: leaf.DNSNames, IPs: leaf.IPAddresses,
+	})
+	if err != nil {
+		slog.Warn("relay cert renewal failed", "relay", rec.RelayID, "err", err)
+		return nil, nil
+	}
+	if err := r.s.audit.Append("relay_cert_renew", "system", rec.RelayID, "", nil); err != nil {
+		slog.Error("audit append failed", "type", "relay_cert_renew", "err", err)
+	}
+	slog.Info("relay cert renewed", "relay", rec.RelayID)
+	return certPEM, r.s.ca.RootsPEM
+}
+
 func relayHeartbeatPort(hb *genezav1.RelayHeartbeat) int {
 	if p := int(hb.GetTurnPort()); p != 0 {
 		return p
@@ -123,12 +156,17 @@ func (r *relayRegistryService) RegisterAndWatch(hb *genezav1.RelayHeartbeat, str
 	}
 	slog.Debug("relay registered", "region", rec.RegionID, "relay", rec.RelayID, "addr", rec.Addrs[0])
 
+	// A renewal CSR rides the fresh cert + CA roots back on this first watch message.
+	renewedCert, caRoots := r.maybeRenewRelayCert(ctx, rec, hb.GetRenewCsr())
+
 	ver, legacy, anchors, routineMap := r.s.fleetWire()
 	funnel, funnelDig := r.s.buildRelayFunnelCerts(rec)
 	if err := stream.Send(&genezav1.RelayWatch{
 		ClusterConfig: legacy, TrustAnchors: anchors, RoutineMap: routineMap,
 		HeartbeatIntervalSecs: int32(relayHeartbeatInterval.Seconds()),
 		FunnelCerts:           funnel,
+		RenewedRelayCert:      renewedCert,
+		CaRoots:               caRoots,
 	}); err != nil {
 		return err
 	}

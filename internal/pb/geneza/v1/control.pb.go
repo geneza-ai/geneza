@@ -56,7 +56,10 @@ type RelayHeartbeat struct {
 	// address the public funnel TLS listener is reachable at). Empty unless this
 	// relay serves funnel. The controller's funnel-DNS reconciler publishes A records
 	// pointing funnel hostnames at the healthy relays' funnel_ips.
-	FunnelIp      string `protobuf:"bytes,13,opt,name=funnel_ip,json=funnelIp,proto3" json:"funnel_ip,omitempty"`
+	FunnelIp string `protobuf:"bytes,13,opt,name=funnel_ip,json=funnelIp,proto3" json:"funnel_ip,omitempty"`
+	// renew_csr renews the relay's identity cert (over its existing key) when it nears
+	// expiry. Signed bound to the relay's authenticated identity, not the CSR subject.
+	RenewCsr      []byte `protobuf:"bytes,14,opt,name=renew_csr,json=renewCsr,proto3" json:"renew_csr,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -182,6 +185,13 @@ func (x *RelayHeartbeat) GetFunnelIp() string {
 	return ""
 }
 
+func (x *RelayHeartbeat) GetRenewCsr() []byte {
+	if x != nil {
+		return x.RenewCsr
+	}
+	return nil
+}
+
 // RelayWatch carries the signed cluster config to a registered relay. The relay
 // reads ControllerEndpoints to maintain its controller failover set; it never needs the
 // rest of the map (it is a blind packet forwarder).
@@ -189,6 +199,10 @@ type RelayWatch struct {
 	state                 protoimpl.MessageState `protogen:"open.v1"`
 	ClusterConfig         []byte                 `protobuf:"bytes,1,opt,name=cluster_config,json=clusterConfig,proto3" json:"cluster_config,omitempty"`                            // JSON types.Signed wrapping types.ClusterConfig
 	HeartbeatIntervalSecs int32                  `protobuf:"varint,2,opt,name=heartbeat_interval_secs,json=heartbeatIntervalSecs,proto3" json:"heartbeat_interval_secs,omitempty"` // advisory, first message only
+	// renewed_relay_cert answers a renew_csr: the signed cert (PEM, unsealed) plus the
+	// CA roots to pin. Both empty unless a renewal happened on this connect.
+	RenewedRelayCert []byte `protobuf:"bytes,6,opt,name=renewed_relay_cert,json=renewedRelayCert,proto3" json:"renewed_relay_cert,omitempty"`
+	CaRoots          []byte `protobuf:"bytes,7,opt,name=ca_roots,json=caRoots,proto3" json:"ca_roots,omitempty"`
 	// funnel_certs are the narrow leaf certs this relay terminates public TLS for,
 	// each age-sealed to this relay's seal_pub. Declarative full set; re-sent when
 	// it changes. Empty unless the relay serves funnels. Reuses the SealedCert shape
@@ -246,6 +260,20 @@ func (x *RelayWatch) GetHeartbeatIntervalSecs() int32 {
 		return x.HeartbeatIntervalSecs
 	}
 	return 0
+}
+
+func (x *RelayWatch) GetRenewedRelayCert() []byte {
+	if x != nil {
+		return x.RenewedRelayCert
+	}
+	return nil
+}
+
+func (x *RelayWatch) GetCaRoots() []byte {
+	if x != nil {
+		return x.CaRoots
+	}
+	return nil
 }
 
 func (x *RelayWatch) GetFunnelCerts() []*SealedCert {
@@ -9706,7 +9734,7 @@ var File_geneza_v1_control_proto protoreflect.FileDescriptor
 
 const file_geneza_v1_control_proto_rawDesc = "" +
 	"\n" +
-	"\x17geneza/v1/control.proto\x12\tgeneza.v1\"\x91\x03\n" +
+	"\x17geneza/v1/control.proto\x12\tgeneza.v1\"\xae\x03\n" +
 	"\x0eRelayHeartbeat\x12\x1b\n" +
 	"\tregion_id\x18\x01 \x01(\tR\bregionId\x12\x19\n" +
 	"\brelay_id\x18\x02 \x01(\tR\arelayId\x12\x14\n" +
@@ -9722,11 +9750,14 @@ const file_geneza_v1_control_proto_rawDesc = "" +
 	" \x01(\tR\aversion\x12!\n" +
 	"\factive_count\x18\v \x01(\x05R\vactiveCount\x12\x19\n" +
 	"\bseal_pub\x18\f \x01(\fR\asealPub\x12\x1b\n" +
-	"\tfunnel_ip\x18\r \x01(\tR\bfunnelIp\"\xeb\x01\n" +
+	"\tfunnel_ip\x18\r \x01(\tR\bfunnelIp\x12\x1b\n" +
+	"\trenew_csr\x18\x0e \x01(\fR\brenewCsr\"\xb4\x02\n" +
 	"\n" +
 	"RelayWatch\x12%\n" +
 	"\x0ecluster_config\x18\x01 \x01(\fR\rclusterConfig\x126\n" +
-	"\x17heartbeat_interval_secs\x18\x02 \x01(\x05R\x15heartbeatIntervalSecs\x128\n" +
+	"\x17heartbeat_interval_secs\x18\x02 \x01(\x05R\x15heartbeatIntervalSecs\x12,\n" +
+	"\x12renewed_relay_cert\x18\x06 \x01(\fR\x10renewedRelayCert\x12\x19\n" +
+	"\bca_roots\x18\a \x01(\fR\acaRoots\x128\n" +
 	"\ffunnel_certs\x18\x05 \x03(\v2\x15.geneza.v1.SealedCertR\vfunnelCerts\x12#\n" +
 	"\rtrust_anchors\x18\x03 \x01(\fR\ftrustAnchors\x12\x1f\n" +
 	"\vroutine_map\x18\x04 \x01(\fR\n" +

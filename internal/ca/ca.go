@@ -39,10 +39,10 @@ import (
 var OIDRolesExt = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 57534, 1}
 
 const (
-	KindNode    = "node"
-	KindUser    = "user"
+	KindNode       = "node"
+	KindUser       = "user"
 	KindController = "controller"
-	KindRelay   = "relay"
+	KindRelay      = "relay"
 )
 
 // Identity is what a verified peer certificate asserts.
@@ -454,4 +454,14 @@ func MakeCSR(key crypto.Signer, cn string) ([]byte, error) {
 		return nil, err
 	}
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der}), nil
+}
+
+// NeedsRenewal reports whether less than 1/3 of a certificate's lifetime remains.
+// Shared by the agent and relay renewal paths.
+func NeedsRenewal(notBefore, notAfter, now time.Time) bool {
+	ttl := notAfter.Sub(notBefore)
+	if ttl <= 0 {
+		return true
+	}
+	return now.After(notAfter.Add(-ttl / 3))
 }

@@ -59,6 +59,9 @@ message RelayHeartbeat {
   // relay serves funnel. The controller's funnel-DNS reconciler publishes A records
   // pointing funnel hostnames at the healthy relays' funnel_ips.
   string funnel_ip = 13;
+  // renew_csr renews the relay's identity cert (over its existing key) when it nears
+  // expiry. Signed bound to the relay's authenticated identity, not the CSR subject.
+  bytes renew_csr = 14;
 }
 
 // RelayWatch carries the signed cluster config to a registered relay. The relay
@@ -67,6 +70,10 @@ message RelayHeartbeat {
 message RelayWatch {
   bytes cluster_config = 1;          // JSON types.Signed wrapping types.ClusterConfig
   int32 heartbeat_interval_secs = 2; // advisory, first message only
+  // renewed_relay_cert answers a renew_csr: the signed cert (PEM, unsealed) plus the
+  // CA roots to pin. Both empty unless a renewal happened on this connect.
+  bytes renewed_relay_cert = 6;
+  bytes ca_roots = 7;
   // funnel_certs are the narrow leaf certs this relay terminates public TLS for,
   // each age-sealed to this relay's seal_pub. Declarative full set; re-sent when
   // it changes. Empty unless the relay serves funnels. Reuses the SealedCert shape

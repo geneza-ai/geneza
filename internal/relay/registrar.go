@@ -29,6 +29,11 @@ import (
 // registration). Healthy relays hold one long-lived watch and never use this.
 const drainReregister = 2 * time.Second
 
+// renewCheckInterval is how often a long-lived watch re-checks whether its identity
+// cert has entered the renewal window. The window is months wide (1/3 of a 2y TTL),
+// so hourly is ample and the check is a cheap time comparison.
+const renewCheckInterval = time.Hour
+
 // RunRegistrar registers this relay's presence with a controller and watches the
 // signed cluster config until ctx is cancelled. It dials the configured seed
 // controller, learns the live controller set from the streamed config, and FAILS OVER to
@@ -41,7 +46,10 @@ func RunRegistrar(ctx context.Context, cfg Config, log *slog.Logger, r *Relay) {
 	if cfg.RegistrarAddr == "" {
 		return
 	}
-	tlsCfg, certPub, err := registrarTLS(cfg)
+	if r == nil {
+		return
+	}
+	tlsCfg, certPub, err := r.registrarTLS(cfg)
 	if err != nil {
 		log.Error("relay registrar: tls setup", "err", err)
 		return
@@ -78,6 +86,9 @@ func RunRegistrar(ctx context.Context, cfg Config, log *slog.Logger, r *Relay) {
 		// declaratively (full set each push), independent of the control-mux role.
 		if r != nil && r.funnel != nil {
 			r.funnel.apply(watch.GetFunnelCerts())
+		}
+		if r != nil && len(watch.GetRenewedRelayCert()) > 0 {
+			r.installRenewedCert(watch.GetRenewedRelayCert(), watch.GetCaRoots())
 		}
 		if !cfg.ControlMux || r == nil {
 			return
@@ -117,6 +128,7 @@ func RunRegistrar(ctx context.Context, cfg Config, log *slog.Logger, r *Relay) {
 		hb.Healthy = r == nil || !r.Draining()
 		if r != nil {
 			hb.ActiveCount = int32(r.Active())
+			hb.RenewCsr = r.renewalCSR() // nil unless the cert is near expiry
 		}
 		cands := relayCandidates(cfg.RegistrarAddr, discovered)
 		addr := cands[idx%len(cands)]
@@ -129,7 +141,7 @@ func RunRegistrar(ctx context.Context, cfg Config, log *slog.Logger, r *Relay) {
 		if r != nil && r.Draining() {
 			watchCh, maxLife = nil, drainReregister // already draining: drainCh stays closed, so cap by time
 		}
-		lived, learned := relayWatchOnce(ctx, addr, hb, creds, kp, log, onConfig, watchCh, maxLife)
+		lived, learned := relayWatchOnce(ctx, addr, hb, creds, kp, log, onConfig, watchCh, maxLife, r.renewalDue)
 		if len(learned) > 0 {
 			discovered = learned
 		}
@@ -163,7 +175,7 @@ func RunRegistrar(ctx context.Context, cfg Config, log *slog.Logger, r *Relay) {
 // the stream ends. It returns how long the stream lived (to reset backoff after a
 // healthy run) and the controller control-addresses discovered from the last config.
 func relayWatchOnce(ctx context.Context, addr string, hb *genezav1.RelayHeartbeat,
-	creds credentials.TransportCredentials, kp grpc.DialOption, log *slog.Logger, onConfig func(*genezav1.RelayWatch), drainCh <-chan struct{}, maxLife time.Duration) (time.Duration, []string) {
+	creds credentials.TransportCredentials, kp grpc.DialOption, log *slog.Logger, onConfig func(*genezav1.RelayWatch), drainCh <-chan struct{}, maxLife time.Duration, renewalDue func() bool) (time.Duration, []string) {
 	start := time.Now()
 	// A drain that fires mid-stream cancels this watch so the outer loop re-registers
 	// with healthy=false at once (the heartbeat is sent only at registration). maxLife,
@@ -183,6 +195,26 @@ func relayWatchOnce(ctx context.Context, addr string, hb *genezav1.RelayHeartbea
 	if maxLife > 0 {
 		timer := time.AfterFunc(maxLife, cancel)
 		defer timer.Stop()
+	}
+	// A healthy relay holds one long-lived watch, so without this it would never
+	// re-register to send a renewal CSR. Break the watch once the cert enters the
+	// renewal window; the outer loop reconnects and the fresh heartbeat carries the CSR.
+	if renewalDue != nil {
+		t := time.NewTicker(renewCheckInterval)
+		defer t.Stop()
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					if renewalDue() {
+						cancel()
+						return
+					}
+				}
+			}
+		}()
 	}
 	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(creds), kp)
 	if err != nil {
@@ -397,10 +429,13 @@ func relayCandidates(seed string, discovered []string) []string {
 // registrarTLS builds the mTLS config the relay uses to reach the controller
 // (its own cert for client auth, the controller CA to verify the server) and
 // returns the SPKI of the relay's own leaf for the signed-map pin.
-func registrarTLS(cfg Config) (*tls.Config, []byte, error) {
-	cert, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
-	if err != nil {
-		return nil, nil, fmt.Errorf("relay cert: %w", err)
+func (r *Relay) registrarTLS(cfg Config) (*tls.Config, []byte, error) {
+	if err := r.ensureIDCert(); err != nil {
+		return nil, nil, err
+	}
+	cert := r.idCert.Load()
+	if cert == nil || cert.Leaf == nil {
+		return nil, nil, fmt.Errorf("relay cert: not loaded")
 	}
 	pool := x509.NewCertPool()
 	if cfg.ControllerCAFile != "" {
@@ -410,19 +445,17 @@ func registrarTLS(cfg Config) (*tls.Config, []byte, error) {
 		}
 		pool.AppendCertsFromPEM(pem)
 	}
-	leaf, err := x509.ParseCertificate(cert.Certificate[0])
-	if err != nil {
-		return nil, nil, err
-	}
-	spki, err := x509.MarshalPKIXPublicKey(leaf.PublicKey)
+	// SPKI for the signed-map pin; stable across renewals (the key never changes).
+	spki, err := x509.MarshalPKIXPublicKey(cert.Leaf.PublicKey)
 	if err != nil {
 		return nil, nil, err
 	}
 	return &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		RootCAs:      pool,
-		ServerName:   cfg.ControllerServerName,
-		MinVersion:   tls.VersionTLS12,
+		// Per-dial, so a reconnect after a renewal presents the new cert.
+		GetClientCertificate: r.getClientCert,
+		RootCAs:              pool,
+		ServerName:           cfg.ControllerServerName,
+		MinVersion:           tls.VersionTLS13, // internal link, both Geneza binaries
 	}, spki, nil
 }
 

@@ -71,6 +71,13 @@ type Relay struct {
 
 	turn *turnRelay // embedded pion/turn server: the overlay relay floor (nil if disabled)
 
+	// idCert is the relay's identity keypair — its rendezvous server cert and its
+	// registrar client cert, one leaf. Held atomically so a renewal hot-swaps it with
+	// no restart. nil in TLS-disabled test mode.
+	idCert      atomic.Pointer[tls.Certificate]
+	certOnce    sync.Once
+	certLoadErr error
+
 	// funnel holds the narrow leaf certs this relay terminates public TLS for,
 	// pushed (sealed) by the controller over the registrar watch stream. nil only if
 	// key generation failed at startup.
@@ -135,14 +142,12 @@ func (r *Relay) ListenAndServe() error {
 	var ln net.Listener
 	var err error
 	if r.cfg.TLS {
-		var cert tls.Certificate
-		cert, err = tls.LoadX509KeyPair(r.cfg.CertFile, r.cfg.KeyFile)
-		if err != nil {
-			return fmt.Errorf("relay: load TLS keypair: %w", err)
+		if err = r.ensureIDCert(); err != nil {
+			return err
 		}
 		ln, err = tls.Listen("tcp", r.cfg.Listen, &tls.Config{
-			Certificates: []tls.Certificate{cert},
-			MinVersion:   tls.VersionTLS13, // only Geneza's own Go binaries dial in
+			GetCertificate: r.getServerCert,  // per-handshake, so a renewal hot-swaps live
+			MinVersion:     tls.VersionTLS13, // only Geneza's own Go binaries dial in
 		})
 	} else {
 		r.log.Warn("relay: TLS disabled — test mode only")

@@ -1354,13 +1354,9 @@ func (w *Worker) handleFleetState(ctx context.Context, anchorRaw, mapRaw []byte)
 // ---------------------------------------------------------------------------
 
 // needsRenewal reports whether less than 1/3 of the certificate lifetime
-// remains. Pure for tests.
+// remains. Delegates to the shared policy so agent and relay renew alike.
 func needsRenewal(notBefore, notAfter, now time.Time) bool {
-	ttl := notAfter.Sub(notBefore)
-	if ttl <= 0 {
-		return true
-	}
-	return now.After(notAfter.Add(-ttl / 3))
+	return ca.NeedsRenewal(notBefore, notAfter, now)
 }
 
 func (w *Worker) maybeRenewCert(ctx context.Context, client genezav1.NodeControlClient) (bool, error) {
