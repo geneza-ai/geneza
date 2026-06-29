@@ -30,6 +30,7 @@ CONTROLLER_ID=""                            # stable per-controller id (REQUIRED
 IMAGE_TAG="${GENEZA_IMAGE_TAG:-latest}"  # image tag for controller/relay
 REGISTRY="${GENEZA_REGISTRY:-ghcr.io/geneza-ai}"
 # relay-only:
+RELAY_ID=""                              # relay identity; MUST match issue-relay-cert --name (default: derived from the cert)
 CONTROLLER_ADDR=""                          # the controller's relay registrar (host:7401)
 RELAY_CERT=""; RELAY_KEY=""; RELAY_CA="" # relay mTLS bundle (issue-relay-cert on the controller)
 RELAY_SECRET_IN=""                       # controller's relay_shared_secret (enables the TURN floor)
@@ -90,6 +91,8 @@ usage: install.sh [--role controller|controller+relay|relay] [options]
 
   relay:
     --controller HOST:PORT   the controller's relay registrar (required for role=relay)
+    --relay-id ID         relay identity (default: derived from the cert; MUST equal
+                          the issue-relay-cert --name the controller signed)
     --cert PATH|URL       relay TLS cert   (geneza-controller issue-relay-cert)
     --key  PATH|URL       relay TLS key
     --ca   PATH|URL       CA roots that verify the controller
@@ -112,6 +115,7 @@ while [ $# -gt 0 ]; do
     --controller-id)     CONTROLLER_ID="${2:-}"; shift 2 ;;
     --image-tag)      IMAGE_TAG="${2:-}"; shift 2 ;;
     --controller)        CONTROLLER_ADDR="${2:-}"; shift 2 ;;
+    --relay-id)       RELAY_ID="${2:-}"; shift 2 ;;
     --cert)           RELAY_CERT="${2:-}"; shift 2 ;;
     --key)            RELAY_KEY="${2:-}"; shift 2 ;;
     --ca)             RELAY_CA="${2:-}"; shift 2 ;;
@@ -200,7 +204,16 @@ if [ "$IS_CONTROLLER" = 1 ]; then
   # advertise + relay endpoints: localhost always works on-host; add the public face when given.
   ADV_DNS="[localhost]"; [ -n "$SITE" ] && ADV_DNS="[localhost, $SITE]"
   ADV_IPS="[127.0.0.1]"; [ "$PUBLIC_IP" != "127.0.0.1" ] && ADV_IPS="[127.0.0.1, $PUBLIC_IP]"
-  CADDY_SITE="$SITE"; [ -z "$CADDY_SITE" ] && CADDY_SITE=":443" # no FQDN => internal TLS on :443
+  # Caddy needs a HOST NAME to terminate TLS — a port-only ":443" block with
+  # `tls internal` cannot issue a cert and fails every handshake. With an FQDN, use
+  # it (ACME or internal); without one (lab), serve internal TLS for localhost (+ the
+  # public IP if given) so https://localhost works.
+  if [ -n "$SITE" ]; then
+    CADDY_SITE="$SITE"
+  else
+    CADDY_SITE="localhost"
+    [ -n "$PUBLIC_IP" ] && [ "$PUBLIC_IP" != "127.0.0.1" ] && CADDY_SITE="localhost ${PUBLIC_IP}"
+  fi
   # Public origin the browser console is reached on (cookie + OIDC redirect origin).
   CONSOLE_URL="https://localhost"
   [ "$PUBLIC_IP" != "127.0.0.1" ] && CONSOLE_URL="https://${PUBLIC_IP}"
@@ -300,8 +313,8 @@ EOF
 # installer endpoints on the controller's own HTTPS API (:7402, an internal hop whose
 # cert is not verified here).
 ${CADDY_SITE} {
-$( [ -n "$ACME_EMAIL" ] && echo "    tls ${ACME_EMAIL}" )
-$( [ "$CADDY_SITE" = ":443" ] && echo "    tls internal" )
+$( [ -n "$SITE" ] && [ -n "$ACME_EMAIL" ] && echo "    tls ${ACME_EMAIL}" )
+$( [ -z "$SITE" ] && echo "    tls internal" )
 
     # Agent enrollment + updates, RFC 8628 device login is brokered by the console,
     # the OpenStack vendordata callback, and the one-line agent installer.
@@ -335,6 +348,25 @@ if [ "$IS_RELAY" = 1 ] && [ "$IS_CONTROLLER" = 0 ]; then
     [ -n "$PUBLIC_IP" ]  || ask PUBLIC_IP  "This relay's public IP (TURN/funnel)" ""
     [ -n "$RELAY_SECRET_IN" ] || ask RELAY_SECRET_IN "Controller relay_shared_secret (blank = no TURN floor)" ""
   fi
+  # Fetch the operator-provided mTLS bundle NOW (before rendering relay.yaml), so
+  # relay_id can be derived from the cert.
+  if [ "$RENDER_ONLY" != 1 ]; then
+    mkdir -p "$DIR/data/relay/tls"
+    fetch() { case "$1" in http://*|https://*) curl -fsSL "$1" -o "$2" ;; *) cp "$1" "$2" ;; esac; }
+    [ -n "$RELAY_CERT" ] && fetch "$RELAY_CERT" "$DIR/data/relay/tls/relay.crt"
+    [ -n "$RELAY_KEY" ]  && fetch "$RELAY_KEY"  "$DIR/data/relay/tls/relay.key"
+    [ -n "$RELAY_CA" ]   && fetch "$RELAY_CA"   "$DIR/data/relay/tls/ca-roots.pem"
+    [ -f "$DIR/data/relay/tls/relay.crt" ] || die "relay needs a cert (run 'geneza-controller issue-relay-cert' on the controller)"
+    chmod 600 "$DIR/data/relay/tls/relay.key" 2>/dev/null || true
+  fi
+  # The controller binds the registered relay_id to the cert's NAME, so they MUST
+  # match. Default relay_id to the cert's own identity (geneza-controller
+  # issue-relay-cert --name <X> -> CN "relay:<X>"), so it just works; --relay-id and
+  # then the hostname are the fallbacks.
+  if [ -z "$RELAY_ID" ] && [ -f "$DIR/data/relay/tls/relay.crt" ] && command -v openssl >/dev/null 2>&1; then
+    RELAY_ID="$(openssl x509 -in "$DIR/data/relay/tls/relay.crt" -noout -subject 2>/dev/null | sed -n 's/.*CN *= *relay:\([^,/]*\).*/\1/p')"
+  fi
+  [ -n "$RELAY_ID" ] || RELAY_ID="$(hostname -s 2>/dev/null || hostname)"
 fi
 
 ###############################################################################
@@ -351,7 +383,7 @@ if [ "$IS_RELAY" = 1 ]; then
     REGISTRAR_LINES=$(cat <<EOF
 # Auto-join: self-register to the controller so it lands in the signed fleet map
 # with no manual map edits, and fail over across controllers on its own.
-relay_id: "$(hostname -s 2>/dev/null || hostname)"
+relay_id: "${RELAY_ID}"
 registrar_addr: "${CONTROLLER_ADDR}"
 controller_ca_file: /var/lib/geneza/relay/tls/ca-roots.pem
 EOF
@@ -378,17 +410,6 @@ EOF
     [ -n "$RELAY_TURN_SECRET" ] && echo "shared_secret: ${RELAY_TURN_SECRET}"
     [ -n "$REGISTRAR_LINES" ] && echo "$REGISTRAR_LINES"
   } > "$DIR/config/relay.yaml"
-
-  # relay-only fetches its mTLS bundle from the operator-provided sources.
-  if [ "$IS_CONTROLLER" = 0 ] && [ "$RENDER_ONLY" != 1 ]; then
-    mkdir -p "$DIR/data/relay/tls"
-    fetch() { case "$1" in http://*|https://*) curl -fsSL "$1" -o "$2" ;; *) cp "$1" "$2" ;; esac; }
-    [ -n "$RELAY_CERT" ] && fetch "$RELAY_CERT" "$DIR/data/relay/tls/relay.crt"
-    [ -n "$RELAY_KEY" ]  && fetch "$RELAY_KEY"  "$DIR/data/relay/tls/relay.key"
-    [ -n "$RELAY_CA" ]   && fetch "$RELAY_CA"   "$DIR/data/relay/tls/ca-roots.pem"
-    [ -f "$DIR/data/relay/tls/relay.crt" ] || die "relay needs a cert (run 'geneza-controller issue-relay-cert' on the controller)"
-    chmod 600 "$DIR/data/relay/tls/relay.key" 2>/dev/null || true
-  fi
 fi
 
 ###############################################################################
