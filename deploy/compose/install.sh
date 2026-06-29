@@ -48,6 +48,17 @@ log() { echo "==> $*"; }
 randhex() { head -c32 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
 randpw()  { head -c24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c24; }
 
+# detect_public_ip suggests the host's public IP for the prompt default: a public
+# echo service first, falling back to the default-route source address. Just a
+# prefilled suggestion — the operator presses Enter to accept it or types another.
+detect_public_ip() {
+  local ip=""
+  ip="$(curl -fsS --max-time 4 https://api.ipify.org 2>/dev/null || true)"
+  case "$ip" in ""|*[!0-9.]*) ip="" ;; esac
+  [ -n "$ip" ] || ip="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')"
+  printf '%s' "$ip"
+}
+
 # write_env persists the single source of truth ($DIR/.env): every var docker compose
 # interpolates plus every answer an upgrade re-run must reproduce. Mode 600 — it holds
 # the postgres password, relay secret, and admin hash.
@@ -162,8 +173,24 @@ if [ "$DO_UNINSTALL" = 1 ]; then
   exit 0
 fi
 
+# --- load saved state (single source of truth) -------------------------------
+# Generated secrets + every saved answer live in ONE file, $DIR/.env. Source it
+# FIRST so an upgrade reuses the full topology (role, hostname, public IP, …) and
+# the prompts below are driven purely by what is still unknown — never by a separate
+# marker that can disagree (e.g. a leftover docker-compose.yml without a .env, which
+# used to skip the hostname/IP prompts while still asking the role). A flag passed
+# this run wins; docker compose also auto-loads .env for ${...} interpolation.
+mkdir -p "$DIR" "$DIR/config" "$DIR/data"
+ENVFILE="$DIR/.env"
+# shellcheck source=/dev/null
+[ -f "$ENVFILE" ] && . "$ENVFILE"
+: "${RELAY_SECRET:=$(randhex)}"
+: "${POSTGRES_PASSWORD:=$(randpw)}"
+: "${ADMIN_BCRYPT:=}"
+UPGRADE=0; [ -f "$ENVFILE" ] && UPGRADE=1
+
 # --- pick a role --------------------------------------------------------------
-if [ -z "$ROLE" ] && [ -f "$DIR/role" ]; then ROLE="$(cat "$DIR/role")"; fi  # upgrade: reuse
+if [ -z "$ROLE" ] && [ -f "$DIR/role" ]; then ROLE="$(cat "$DIR/role")"; fi  # legacy marker fallback
 if [ -z "$ROLE" ]; then
   cat <<'EOF'
 
@@ -178,21 +205,7 @@ fi
 case "$ROLE" in controller|controller+relay|relay) ;; *) die "invalid --role: $ROLE" ;; esac
 IS_CONTROLLER=0; IS_RELAY=0
 case "$ROLE" in controller) IS_CONTROLLER=1 ;; controller+relay) IS_CONTROLLER=1; IS_RELAY=1 ;; relay) IS_RELAY=1 ;; esac
-
-UPGRADE=0; [ -f "$DIR/docker-compose.yml" ] && UPGRADE=1
-mkdir -p "$DIR" "$DIR/config" "$DIR/data"
 echo "$ROLE" > "$DIR/role"
-
-# All persistent install state — generated secrets, your answers, and the resolved
-# admin password hash — lives in ONE file: $DIR/.env. The installer re-sources it on
-# every upgrade (re-runs reproduce the topology and never rotate a secret), and
-# docker compose auto-loads it for ${...} interpolation. A flag passed this run wins.
-ENVFILE="$DIR/.env"
-# shellcheck source=/dev/null
-[ -f "$ENVFILE" ] && . "$ENVFILE"
-: "${RELAY_SECRET:=$(randhex)}"
-: "${POSTGRES_PASSWORD:=$(randpw)}"
-: "${ADMIN_BCRYPT:=}"
 
 ###############################################################################
 # CONTROLLER  (controller / controller+relay)
@@ -200,7 +213,9 @@ ENVFILE="$DIR/.env"
 if [ "$IS_CONTROLLER" = 1 ]; then
   if [ "$UPGRADE" = 0 ]; then
     [ -n "$SITE" ]      || ask SITE "Public hostname for the console (blank = self-signed TLS)" ""
-    [ -n "$PUBLIC_IP" ] || ask PUBLIC_IP "Public IP agents/clients reach this host on (blank = localhost lab)" ""
+    # Offer the detected public IP as the default (Enter accepts it); type another to
+    # override, or 127.0.0.1 for a localhost lab.
+    [ -n "$PUBLIC_IP" ] || ask PUBLIC_IP "Public IP agents/clients reach this host on" "$(detect_public_ip)"
     if [ -z "$ACME_EMAIL" ] && [ -n "$SITE" ]; then ask ACME_EMAIL "Let's Encrypt contact email (optional)" ""; fi
   fi
   [ -n "$PUBLIC_IP" ] || PUBLIC_IP="127.0.0.1"
