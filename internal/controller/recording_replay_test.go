@@ -223,7 +223,7 @@ func TestRecordingReplayAuthz(t *testing.T) {
 		t.Fatalf("upload: %v", err)
 	}
 
-	u := &userAPIService{s: srv}
+	u := &workspaceAPIService{s: srv}
 
 	// Denied: an ordinary operator (ws-member) cannot list or fetch.
 	opCtx := userCtx(ws, "bob", "ws-member")
@@ -367,4 +367,4 @@ func TestGetRecordingDetectsCorruption(t *testing.T) {
 	}
 }
 
-func u(srv *Server) *userAPIService { return &userAPIService{s: srv} }
+func u(srv *Server) *workspaceAPIService { return &workspaceAPIService{s: srv} }

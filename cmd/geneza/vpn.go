@@ -65,7 +65,7 @@ func newVPNCmd() *cobra.Command {
 // runVPN brings up the client TUN, installs routes (pinning the relay so the
 // encrypted tunnel itself does not get routed back into the overlay for an exit
 // node), and pumps IP packets until the context is cancelled.
-func runVPN(ctx context.Context, sess *client.Session, api genezav1.UserAPIClient, dnsZone string) error {
+func runVPN(ctx context.Context, sess *client.Session, api genezav1.WorkspaceAPIClient, dnsZone string) error {
 	tun, err := vpn.OpenTUN("gnz%d")
 	if err != nil {
 		return fmt.Errorf("open tun (need root/CAP_NET_ADMIN): %w", err)

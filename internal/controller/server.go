@@ -1173,8 +1173,8 @@ func (s *Server) Run(ctx context.Context) error {
 	grpcSrv := s.newGRPCServer(grpcTLS)
 	genezav1.RegisterEnrollmentServer(grpcSrv, &enrollmentService{s: s})
 	genezav1.RegisterNodeControlServer(grpcSrv, &nodeControlService{s: s})
-	genezav1.RegisterUserAPIServer(grpcSrv, &userAPIService{s: s})
-	genezav1.RegisterAdminAPIServer(grpcSrv, &adminAPIService{s: s})
+	genezav1.RegisterWorkspaceAPIServer(grpcSrv, &workspaceAPIService{s: s})
+	genezav1.RegisterClusterAPIServer(grpcSrv, &clusterAPIService{s: s})
 
 	// The controller↔relay control plane (the relay registrar) optionally lives on a
 	// separate, firewall-able mTLS listener so operators can restrict it to the

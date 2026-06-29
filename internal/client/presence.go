@@ -16,7 +16,7 @@ import (
 // last-presence freezes, and the continuous sweep drops the session. The goroutine
 // dies with ctx (session end). A single lost beat is covered by the server's grace
 // window; a server `ok:false` means presence/authz is being revoked, so we stop.
-func startPresenceHeartbeat(ctx context.Context, api genezav1.UserAPIClient, resp *genezav1.CreateSessionResponse) {
+func startPresenceHeartbeat(ctx context.Context, api genezav1.WorkspaceAPIClient, resp *genezav1.CreateSessionResponse) {
 	if !resp.GetPresentRequired() {
 		return
 	}

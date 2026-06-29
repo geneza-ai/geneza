@@ -10706,8 +10706,8 @@ const file_geneza_v1_control_proto_rawDesc = "" +
 	"\x06Stream\x12\x13.geneza.v1.AgentMsg\x1a\x18.geneza.v1.ControllerMsg(\x010\x01\x12F\n" +
 	"\tRenewCert\x12\x1b.geneza.v1.RenewCertRequest\x1a\x1c.geneza.v1.RenewCertResponse\x12D\n" +
 	"\x0fUploadRecording\x12\x19.geneza.v1.RecordingChunk\x1a\x14.geneza.v1.UploadAck(\x01\x12C\n" +
-	"\x12FetchClusterConfig\x12\x15.geneza.v1.MapRequest\x1a\x16.geneza.v1.MapResponse2\x8e\t\n" +
-	"\aUserAPI\x12F\n" +
+	"\x12FetchClusterConfig\x12\x15.geneza.v1.MapRequest\x1a\x16.geneza.v1.MapResponse2\xf3\x12\n" +
+	"\fWorkspaceAPI\x12F\n" +
 	"\tListNodes\x12\x1b.geneza.v1.ListNodesRequest\x1a\x1c.geneza.v1.ListNodesResponse\x12O\n" +
 	"\fListServices\x12\x1e.geneza.v1.ListServicesRequest\x1a\x1f.geneza.v1.ListServicesResponse\x12R\n" +
 	"\rCreateSession\x12\x1f.geneza.v1.CreateSessionRequest\x1a .geneza.v1.CreateSessionResponse\x12O\n" +
@@ -10721,13 +10721,30 @@ const file_geneza_v1_control_proto_rawDesc = "" +
 	"\fListNodeCVEs\x12\x1e.geneza.v1.ListNodeCVEsRequest\x1a\x1f.geneza.v1.ListNodeCVEsResponse\x12m\n" +
 	"\x16ListNodesAffectedByCVE\x12(.geneza.v1.ListNodesAffectedByCVERequest\x1a).geneza.v1.ListNodesAffectedByCVEResponse\x12a\n" +
 	"\x12ListNodeComponents\x12$.geneza.v1.ListNodeComponentsRequest\x1a%.geneza.v1.ListNodeComponentsResponse\x12^\n" +
-	"\x11ListWorkspaceCVEs\x12#.geneza.v1.ListWorkspaceCVEsRequest\x1a$.geneza.v1.ListWorkspaceCVEsResponse2\x9f\x14\n" +
-	"\bAdminAPI\x12X\n" +
+	"\x11ListWorkspaceCVEs\x12#.geneza.v1.ListWorkspaceCVEsRequest\x1a$.geneza.v1.ListWorkspaceCVEsResponse\x12X\n" +
 	"\x0fCreateJoinToken\x12!.geneza.v1.CreateJoinTokenRequest\x1a\".geneza.v1.CreateJoinTokenResponse\x12>\n" +
-	"\vApproveNode\x12\x1d.geneza.v1.ApproveNodeRequest\x1a\x10.geneza.v1.Empty\x12E\n" +
-	"\x0eListWorkspaces\x12\x10.geneza.v1.Empty\x1a!.geneza.v1.ListWorkspacesResponse\x12<\n" +
+	"\vApproveNode\x12\x1d.geneza.v1.ApproveNodeRequest\x1a\x10.geneza.v1.Empty\x12<\n" +
 	"\n" +
-	"RemoveNode\x12\x1c.geneza.v1.RemoveNodeRequest\x1a\x10.geneza.v1.Empty\x12Q\n" +
+	"RemoveNode\x12\x1c.geneza.v1.RemoveNodeRequest\x1a\x10.geneza.v1.Empty\x12B\n" +
+	"\rRevokeSession\x12\x1f.geneza.v1.RevokeSessionRequest\x1a\x10.geneza.v1.Empty\x12I\n" +
+	"\n" +
+	"QueryAudit\x12\x1c.geneza.v1.QueryAuditRequest\x1a\x1d.geneza.v1.QueryAuditResponse\x12D\n" +
+	"\x0eSetNodeModules\x12 .geneza.v1.SetNodeModulesRequest\x1a\x10.geneza.v1.Empty\x12R\n" +
+	"\x0eGetNodeModules\x12 .geneza.v1.GetNodeModulesRequest\x1a\x1e.geneza.v1.NodeModulesResponse\x12[\n" +
+	"\x10ReserveSubdomain\x12\".geneza.v1.ReserveSubdomainRequest\x1a#.geneza.v1.SubdomainReservationInfo\x12E\n" +
+	"\x0eListSubdomains\x12\x10.geneza.v1.Empty\x1a!.geneza.v1.ListSubdomainsResponse\x12H\n" +
+	"\x10ReleaseSubdomain\x12\".geneza.v1.ReleaseSubdomainRequest\x1a\x10.geneza.v1.Empty\x12E\n" +
+	"\fCreateFunnel\x12\x1e.geneza.v1.CreateFunnelRequest\x1a\x15.geneza.v1.FunnelInfo\x12?\n" +
+	"\vListFunnels\x12\x10.geneza.v1.Empty\x1a\x1e.geneza.v1.ListFunnelsResponse\x12@\n" +
+	"\fDeleteFunnel\x12\x1e.geneza.v1.DeleteFunnelRequest\x1a\x10.geneza.v1.Empty\x12H\n" +
+	"\x10SuspendPrincipal\x12\".geneza.v1.SuspendPrincipalRequest\x1a\x10.geneza.v1.Empty\x12F\n" +
+	"\x0eLiftSuspension\x12\".geneza.v1.SuspendPrincipalRequest\x1a\x10.geneza.v1.Empty\x12G\n" +
+	"\x0fListSuspensions\x12\x10.geneza.v1.Empty\x1a\".geneza.v1.ListSuspensionsResponse\x12J\n" +
+	"\n" +
+	"RevokeUser\x12\x1c.geneza.v1.RevokeUserRequest\x1a\x1e.geneza.v1.RevokeCountResponse2\xe8\f\n" +
+	"\n" +
+	"ClusterAPI\x12E\n" +
+	"\x0eListWorkspaces\x12\x10.geneza.v1.Empty\x1a!.geneza.v1.ListWorkspacesResponse\x12Q\n" +
 	"\x0fPublishArtifact\x12\x18.geneza.v1.ArtifactChunk\x1a\".geneza.v1.PublishArtifactResponse(\x01\x12J\n" +
 	"\x11SetDesiredVersion\x12#.geneza.v1.SetDesiredVersionRequest\x1a\x10.geneza.v1.Empty\x12P\n" +
 	"\fStartRollout\x12\x1e.geneza.v1.StartRolloutRequest\x1a .geneza.v1.RolloutStatusResponse\x12V\n" +
@@ -10737,17 +10754,12 @@ const file_geneza_v1_control_proto_rawDesc = "" +
 	"\fAbortRollout\x12 .geneza.v1.RolloutControlRequest\x1a .geneza.v1.RolloutStatusResponse\x12B\n" +
 	"\rSetAutoUpdate\x12\x1f.geneza.v1.SetAutoUpdateRequest\x1a\x10.geneza.v1.Empty\x12:\n" +
 	"\x0eGetFleetStatus\x12\x10.geneza.v1.Empty\x1a\x16.geneza.v1.FleetStatus\x122\n" +
-	"\fReloadPolicy\x12\x10.geneza.v1.Empty\x1a\x10.geneza.v1.Empty\x12I\n" +
-	"\n" +
-	"QueryAudit\x12\x1c.geneza.v1.QueryAuditRequest\x1a\x1d.geneza.v1.QueryAuditResponse\x12B\n" +
-	"\rRevokeSession\x12\x1f.geneza.v1.RevokeSessionRequest\x1a\x10.geneza.v1.Empty\x12J\n" +
+	"\fReloadPolicy\x12\x10.geneza.v1.Empty\x1a\x10.geneza.v1.Empty\x12J\n" +
 	"\n" +
 	"RevokeUser\x12\x1c.geneza.v1.RevokeUserRequest\x1a\x1e.geneza.v1.RevokeCountResponse\x12H\n" +
 	"\x10SuspendPrincipal\x12\".geneza.v1.SuspendPrincipalRequest\x1a\x10.geneza.v1.Empty\x12F\n" +
 	"\x0eLiftSuspension\x12\".geneza.v1.SuspendPrincipalRequest\x1a\x10.geneza.v1.Empty\x12G\n" +
-	"\x0fListSuspensions\x12\x10.geneza.v1.Empty\x1a\".geneza.v1.ListSuspensionsResponse\x12D\n" +
-	"\x0eSetNodeModules\x12 .geneza.v1.SetNodeModulesRequest\x1a\x10.geneza.v1.Empty\x12R\n" +
-	"\x0eGetNodeModules\x12 .geneza.v1.GetNodeModulesRequest\x1a\x1e.geneza.v1.NodeModulesResponse\x12<\n" +
+	"\x0fListSuspensions\x12\x10.geneza.v1.Empty\x1a\".geneza.v1.ListSuspensionsResponse\x12<\n" +
 	"\n" +
 	"BindSource\x12\x1c.geneza.v1.BindSourceRequest\x1a\x10.geneza.v1.Empty\x12@\n" +
 	"\fUnbindSource\x12\x1e.geneza.v1.UnbindSourceRequest\x1a\x10.geneza.v1.Empty\x12M\n" +
@@ -10755,13 +10767,7 @@ const file_geneza_v1_control_proto_rawDesc = "" +
 	"\n" +
 	"RevokeCert\x12\x1c.geneza.v1.RevokeCertRequest\x1a\x10.geneza.v1.Empty\x12I\n" +
 	"\x10ListRevokedCerts\x12\x10.geneza.v1.Empty\x1a#.geneza.v1.ListRevokedCertsResponse\x12d\n" +
-	"\x13InstallTrustAnchors\x12%.geneza.v1.InstallTrustAnchorsRequest\x1a&.geneza.v1.InstallTrustAnchorsResponse\x12[\n" +
-	"\x10ReserveSubdomain\x12\".geneza.v1.ReserveSubdomainRequest\x1a#.geneza.v1.SubdomainReservationInfo\x12E\n" +
-	"\x0eListSubdomains\x12\x10.geneza.v1.Empty\x1a!.geneza.v1.ListSubdomainsResponse\x12H\n" +
-	"\x10ReleaseSubdomain\x12\".geneza.v1.ReleaseSubdomainRequest\x1a\x10.geneza.v1.Empty\x12E\n" +
-	"\fCreateFunnel\x12\x1e.geneza.v1.CreateFunnelRequest\x1a\x15.geneza.v1.FunnelInfo\x12?\n" +
-	"\vListFunnels\x12\x10.geneza.v1.Empty\x1a\x1e.geneza.v1.ListFunnelsResponse\x12@\n" +
-	"\fDeleteFunnel\x12\x1e.geneza.v1.DeleteFunnelRequest\x1a\x10.geneza.v1.Empty\x124\n" +
+	"\x13InstallTrustAnchors\x12%.geneza.v1.InstallTrustAnchorsRequest\x1a&.geneza.v1.InstallTrustAnchorsResponse\x124\n" +
 	"\n" +
 	"ListRelays\x12\x10.geneza.v1.Empty\x1a\x14.geneza.v1.RelayListB*Z(geneza.io/internal/pb/geneza/v1;genezav1b\x06proto3"
 
@@ -11017,112 +11023,120 @@ var file_geneza_v1_control_proto_depIdxs = []int32{
 	52,  // 91: geneza.v1.NodeControl.RenewCert:input_type -> geneza.v1.RenewCertRequest
 	49,  // 92: geneza.v1.NodeControl.UploadRecording:input_type -> geneza.v1.RecordingChunk
 	5,   // 93: geneza.v1.NodeControl.FetchClusterConfig:input_type -> geneza.v1.MapRequest
-	66,  // 94: geneza.v1.UserAPI.ListNodes:input_type -> geneza.v1.ListNodesRequest
-	73,  // 95: geneza.v1.UserAPI.ListServices:input_type -> geneza.v1.ListServicesRequest
-	68,  // 96: geneza.v1.UserAPI.CreateSession:input_type -> geneza.v1.CreateSessionRequest
-	75,  // 97: geneza.v1.UserAPI.ListSessions:input_type -> geneza.v1.ListSessionsRequest
-	134, // 98: geneza.v1.UserAPI.WhoAmI:input_type -> geneza.v1.Empty
-	46,  // 99: geneza.v1.UserAPI.SessionSignal:input_type -> geneza.v1.ClientSignal
-	63,  // 100: geneza.v1.UserAPI.SessionControl:input_type -> geneza.v1.ClientControl
-	61,  // 101: geneza.v1.UserAPI.Heartbeat:input_type -> geneza.v1.HeartbeatRequest
-	56,  // 102: geneza.v1.UserAPI.ListRecordings:input_type -> geneza.v1.ListRecordingsRequest
-	58,  // 103: geneza.v1.UserAPI.GetRecording:input_type -> geneza.v1.GetRecordingRequest
-	79,  // 104: geneza.v1.UserAPI.ListNodeCVEs:input_type -> geneza.v1.ListNodeCVEsRequest
-	81,  // 105: geneza.v1.UserAPI.ListNodesAffectedByCVE:input_type -> geneza.v1.ListNodesAffectedByCVERequest
-	84,  // 106: geneza.v1.UserAPI.ListNodeComponents:input_type -> geneza.v1.ListNodeComponentsRequest
-	87,  // 107: geneza.v1.UserAPI.ListWorkspaceCVEs:input_type -> geneza.v1.ListWorkspaceCVEsRequest
-	110, // 108: geneza.v1.AdminAPI.CreateJoinToken:input_type -> geneza.v1.CreateJoinTokenRequest
-	112, // 109: geneza.v1.AdminAPI.ApproveNode:input_type -> geneza.v1.ApproveNodeRequest
-	134, // 110: geneza.v1.AdminAPI.ListWorkspaces:input_type -> geneza.v1.Empty
-	113, // 111: geneza.v1.AdminAPI.RemoveNode:input_type -> geneza.v1.RemoveNodeRequest
-	123, // 112: geneza.v1.AdminAPI.PublishArtifact:input_type -> geneza.v1.ArtifactChunk
-	125, // 113: geneza.v1.AdminAPI.SetDesiredVersion:input_type -> geneza.v1.SetDesiredVersionRequest
-	126, // 114: geneza.v1.AdminAPI.StartRollout:input_type -> geneza.v1.StartRolloutRequest
-	127, // 115: geneza.v1.AdminAPI.GetRolloutStatus:input_type -> geneza.v1.RolloutControlRequest
-	127, // 116: geneza.v1.AdminAPI.PauseRollout:input_type -> geneza.v1.RolloutControlRequest
-	127, // 117: geneza.v1.AdminAPI.ResumeRollout:input_type -> geneza.v1.RolloutControlRequest
-	127, // 118: geneza.v1.AdminAPI.AbortRollout:input_type -> geneza.v1.RolloutControlRequest
-	128, // 119: geneza.v1.AdminAPI.SetAutoUpdate:input_type -> geneza.v1.SetAutoUpdateRequest
-	134, // 120: geneza.v1.AdminAPI.GetFleetStatus:input_type -> geneza.v1.Empty
-	134, // 121: geneza.v1.AdminAPI.ReloadPolicy:input_type -> geneza.v1.Empty
-	131, // 122: geneza.v1.AdminAPI.QueryAudit:input_type -> geneza.v1.QueryAuditRequest
-	107, // 123: geneza.v1.AdminAPI.RevokeSession:input_type -> geneza.v1.RevokeSessionRequest
-	108, // 124: geneza.v1.AdminAPI.RevokeUser:input_type -> geneza.v1.RevokeUserRequest
-	101, // 125: geneza.v1.AdminAPI.SuspendPrincipal:input_type -> geneza.v1.SuspendPrincipalRequest
-	101, // 126: geneza.v1.AdminAPI.LiftSuspension:input_type -> geneza.v1.SuspendPrincipalRequest
-	134, // 127: geneza.v1.AdminAPI.ListSuspensions:input_type -> geneza.v1.Empty
-	104, // 128: geneza.v1.AdminAPI.SetNodeModules:input_type -> geneza.v1.SetNodeModulesRequest
-	105, // 129: geneza.v1.AdminAPI.GetNodeModules:input_type -> geneza.v1.GetNodeModulesRequest
-	116, // 130: geneza.v1.AdminAPI.BindSource:input_type -> geneza.v1.BindSourceRequest
-	117, // 131: geneza.v1.AdminAPI.UnbindSource:input_type -> geneza.v1.UnbindSourceRequest
-	134, // 132: geneza.v1.AdminAPI.ListSourceBindings:input_type -> geneza.v1.Empty
-	120, // 133: geneza.v1.AdminAPI.RevokeCert:input_type -> geneza.v1.RevokeCertRequest
-	134, // 134: geneza.v1.AdminAPI.ListRevokedCerts:input_type -> geneza.v1.Empty
-	99,  // 135: geneza.v1.AdminAPI.InstallTrustAnchors:input_type -> geneza.v1.InstallTrustAnchorsRequest
-	95,  // 136: geneza.v1.AdminAPI.ReserveSubdomain:input_type -> geneza.v1.ReserveSubdomainRequest
-	134, // 137: geneza.v1.AdminAPI.ListSubdomains:input_type -> geneza.v1.Empty
-	96,  // 138: geneza.v1.AdminAPI.ReleaseSubdomain:input_type -> geneza.v1.ReleaseSubdomainRequest
-	91,  // 139: geneza.v1.AdminAPI.CreateFunnel:input_type -> geneza.v1.CreateFunnelRequest
-	134, // 140: geneza.v1.AdminAPI.ListFunnels:input_type -> geneza.v1.Empty
-	92,  // 141: geneza.v1.AdminAPI.DeleteFunnel:input_type -> geneza.v1.DeleteFunnelRequest
-	134, // 142: geneza.v1.AdminAPI.ListRelays:input_type -> geneza.v1.Empty
-	4,   // 143: geneza.v1.Enrollment.Enroll:output_type -> geneza.v1.EnrollResponse
-	1,   // 144: geneza.v1.RelayRegistry.RegisterAndWatch:output_type -> geneza.v1.RelayWatch
-	20,  // 145: geneza.v1.NodeControl.Stream:output_type -> geneza.v1.ControllerMsg
-	53,  // 146: geneza.v1.NodeControl.RenewCert:output_type -> geneza.v1.RenewCertResponse
-	51,  // 147: geneza.v1.NodeControl.UploadRecording:output_type -> geneza.v1.UploadAck
-	6,   // 148: geneza.v1.NodeControl.FetchClusterConfig:output_type -> geneza.v1.MapResponse
-	67,  // 149: geneza.v1.UserAPI.ListNodes:output_type -> geneza.v1.ListNodesResponse
-	74,  // 150: geneza.v1.UserAPI.ListServices:output_type -> geneza.v1.ListServicesResponse
-	69,  // 151: geneza.v1.UserAPI.CreateSession:output_type -> geneza.v1.CreateSessionResponse
-	76,  // 152: geneza.v1.UserAPI.ListSessions:output_type -> geneza.v1.ListSessionsResponse
-	77,  // 153: geneza.v1.UserAPI.WhoAmI:output_type -> geneza.v1.WhoAmIResponse
-	47,  // 154: geneza.v1.UserAPI.SessionSignal:output_type -> geneza.v1.ControllerSignal
-	64,  // 155: geneza.v1.UserAPI.SessionControl:output_type -> geneza.v1.ControllerEnforcement
-	62,  // 156: geneza.v1.UserAPI.Heartbeat:output_type -> geneza.v1.HeartbeatResponse
-	57,  // 157: geneza.v1.UserAPI.ListRecordings:output_type -> geneza.v1.ListRecordingsResponse
-	59,  // 158: geneza.v1.UserAPI.GetRecording:output_type -> geneza.v1.RecordingBlobChunk
-	80,  // 159: geneza.v1.UserAPI.ListNodeCVEs:output_type -> geneza.v1.ListNodeCVEsResponse
-	82,  // 160: geneza.v1.UserAPI.ListNodesAffectedByCVE:output_type -> geneza.v1.ListNodesAffectedByCVEResponse
-	85,  // 161: geneza.v1.UserAPI.ListNodeComponents:output_type -> geneza.v1.ListNodeComponentsResponse
-	88,  // 162: geneza.v1.UserAPI.ListWorkspaceCVEs:output_type -> geneza.v1.ListWorkspaceCVEsResponse
-	111, // 163: geneza.v1.AdminAPI.CreateJoinToken:output_type -> geneza.v1.CreateJoinTokenResponse
-	134, // 164: geneza.v1.AdminAPI.ApproveNode:output_type -> geneza.v1.Empty
-	115, // 165: geneza.v1.AdminAPI.ListWorkspaces:output_type -> geneza.v1.ListWorkspacesResponse
-	134, // 166: geneza.v1.AdminAPI.RemoveNode:output_type -> geneza.v1.Empty
-	124, // 167: geneza.v1.AdminAPI.PublishArtifact:output_type -> geneza.v1.PublishArtifactResponse
-	134, // 168: geneza.v1.AdminAPI.SetDesiredVersion:output_type -> geneza.v1.Empty
-	129, // 169: geneza.v1.AdminAPI.StartRollout:output_type -> geneza.v1.RolloutStatusResponse
-	129, // 170: geneza.v1.AdminAPI.GetRolloutStatus:output_type -> geneza.v1.RolloutStatusResponse
-	129, // 171: geneza.v1.AdminAPI.PauseRollout:output_type -> geneza.v1.RolloutStatusResponse
-	129, // 172: geneza.v1.AdminAPI.ResumeRollout:output_type -> geneza.v1.RolloutStatusResponse
-	129, // 173: geneza.v1.AdminAPI.AbortRollout:output_type -> geneza.v1.RolloutStatusResponse
-	134, // 174: geneza.v1.AdminAPI.SetAutoUpdate:output_type -> geneza.v1.Empty
-	130, // 175: geneza.v1.AdminAPI.GetFleetStatus:output_type -> geneza.v1.FleetStatus
-	134, // 176: geneza.v1.AdminAPI.ReloadPolicy:output_type -> geneza.v1.Empty
-	133, // 177: geneza.v1.AdminAPI.QueryAudit:output_type -> geneza.v1.QueryAuditResponse
-	134, // 178: geneza.v1.AdminAPI.RevokeSession:output_type -> geneza.v1.Empty
-	109, // 179: geneza.v1.AdminAPI.RevokeUser:output_type -> geneza.v1.RevokeCountResponse
-	134, // 180: geneza.v1.AdminAPI.SuspendPrincipal:output_type -> geneza.v1.Empty
-	134, // 181: geneza.v1.AdminAPI.LiftSuspension:output_type -> geneza.v1.Empty
-	103, // 182: geneza.v1.AdminAPI.ListSuspensions:output_type -> geneza.v1.ListSuspensionsResponse
-	134, // 183: geneza.v1.AdminAPI.SetNodeModules:output_type -> geneza.v1.Empty
-	106, // 184: geneza.v1.AdminAPI.GetNodeModules:output_type -> geneza.v1.NodeModulesResponse
-	134, // 185: geneza.v1.AdminAPI.BindSource:output_type -> geneza.v1.Empty
-	134, // 186: geneza.v1.AdminAPI.UnbindSource:output_type -> geneza.v1.Empty
-	119, // 187: geneza.v1.AdminAPI.ListSourceBindings:output_type -> geneza.v1.ListSourceBindingsResponse
-	134, // 188: geneza.v1.AdminAPI.RevokeCert:output_type -> geneza.v1.Empty
-	122, // 189: geneza.v1.AdminAPI.ListRevokedCerts:output_type -> geneza.v1.ListRevokedCertsResponse
-	100, // 190: geneza.v1.AdminAPI.InstallTrustAnchors:output_type -> geneza.v1.InstallTrustAnchorsResponse
-	97,  // 191: geneza.v1.AdminAPI.ReserveSubdomain:output_type -> geneza.v1.SubdomainReservationInfo
-	98,  // 192: geneza.v1.AdminAPI.ListSubdomains:output_type -> geneza.v1.ListSubdomainsResponse
-	134, // 193: geneza.v1.AdminAPI.ReleaseSubdomain:output_type -> geneza.v1.Empty
-	93,  // 194: geneza.v1.AdminAPI.CreateFunnel:output_type -> geneza.v1.FunnelInfo
-	94,  // 195: geneza.v1.AdminAPI.ListFunnels:output_type -> geneza.v1.ListFunnelsResponse
-	134, // 196: geneza.v1.AdminAPI.DeleteFunnel:output_type -> geneza.v1.Empty
-	90,  // 197: geneza.v1.AdminAPI.ListRelays:output_type -> geneza.v1.RelayList
-	143, // [143:198] is the sub-list for method output_type
-	88,  // [88:143] is the sub-list for method input_type
+	66,  // 94: geneza.v1.WorkspaceAPI.ListNodes:input_type -> geneza.v1.ListNodesRequest
+	73,  // 95: geneza.v1.WorkspaceAPI.ListServices:input_type -> geneza.v1.ListServicesRequest
+	68,  // 96: geneza.v1.WorkspaceAPI.CreateSession:input_type -> geneza.v1.CreateSessionRequest
+	75,  // 97: geneza.v1.WorkspaceAPI.ListSessions:input_type -> geneza.v1.ListSessionsRequest
+	134, // 98: geneza.v1.WorkspaceAPI.WhoAmI:input_type -> geneza.v1.Empty
+	46,  // 99: geneza.v1.WorkspaceAPI.SessionSignal:input_type -> geneza.v1.ClientSignal
+	63,  // 100: geneza.v1.WorkspaceAPI.SessionControl:input_type -> geneza.v1.ClientControl
+	61,  // 101: geneza.v1.WorkspaceAPI.Heartbeat:input_type -> geneza.v1.HeartbeatRequest
+	56,  // 102: geneza.v1.WorkspaceAPI.ListRecordings:input_type -> geneza.v1.ListRecordingsRequest
+	58,  // 103: geneza.v1.WorkspaceAPI.GetRecording:input_type -> geneza.v1.GetRecordingRequest
+	79,  // 104: geneza.v1.WorkspaceAPI.ListNodeCVEs:input_type -> geneza.v1.ListNodeCVEsRequest
+	81,  // 105: geneza.v1.WorkspaceAPI.ListNodesAffectedByCVE:input_type -> geneza.v1.ListNodesAffectedByCVERequest
+	84,  // 106: geneza.v1.WorkspaceAPI.ListNodeComponents:input_type -> geneza.v1.ListNodeComponentsRequest
+	87,  // 107: geneza.v1.WorkspaceAPI.ListWorkspaceCVEs:input_type -> geneza.v1.ListWorkspaceCVEsRequest
+	110, // 108: geneza.v1.WorkspaceAPI.CreateJoinToken:input_type -> geneza.v1.CreateJoinTokenRequest
+	112, // 109: geneza.v1.WorkspaceAPI.ApproveNode:input_type -> geneza.v1.ApproveNodeRequest
+	113, // 110: geneza.v1.WorkspaceAPI.RemoveNode:input_type -> geneza.v1.RemoveNodeRequest
+	107, // 111: geneza.v1.WorkspaceAPI.RevokeSession:input_type -> geneza.v1.RevokeSessionRequest
+	131, // 112: geneza.v1.WorkspaceAPI.QueryAudit:input_type -> geneza.v1.QueryAuditRequest
+	104, // 113: geneza.v1.WorkspaceAPI.SetNodeModules:input_type -> geneza.v1.SetNodeModulesRequest
+	105, // 114: geneza.v1.WorkspaceAPI.GetNodeModules:input_type -> geneza.v1.GetNodeModulesRequest
+	95,  // 115: geneza.v1.WorkspaceAPI.ReserveSubdomain:input_type -> geneza.v1.ReserveSubdomainRequest
+	134, // 116: geneza.v1.WorkspaceAPI.ListSubdomains:input_type -> geneza.v1.Empty
+	96,  // 117: geneza.v1.WorkspaceAPI.ReleaseSubdomain:input_type -> geneza.v1.ReleaseSubdomainRequest
+	91,  // 118: geneza.v1.WorkspaceAPI.CreateFunnel:input_type -> geneza.v1.CreateFunnelRequest
+	134, // 119: geneza.v1.WorkspaceAPI.ListFunnels:input_type -> geneza.v1.Empty
+	92,  // 120: geneza.v1.WorkspaceAPI.DeleteFunnel:input_type -> geneza.v1.DeleteFunnelRequest
+	101, // 121: geneza.v1.WorkspaceAPI.SuspendPrincipal:input_type -> geneza.v1.SuspendPrincipalRequest
+	101, // 122: geneza.v1.WorkspaceAPI.LiftSuspension:input_type -> geneza.v1.SuspendPrincipalRequest
+	134, // 123: geneza.v1.WorkspaceAPI.ListSuspensions:input_type -> geneza.v1.Empty
+	108, // 124: geneza.v1.WorkspaceAPI.RevokeUser:input_type -> geneza.v1.RevokeUserRequest
+	134, // 125: geneza.v1.ClusterAPI.ListWorkspaces:input_type -> geneza.v1.Empty
+	123, // 126: geneza.v1.ClusterAPI.PublishArtifact:input_type -> geneza.v1.ArtifactChunk
+	125, // 127: geneza.v1.ClusterAPI.SetDesiredVersion:input_type -> geneza.v1.SetDesiredVersionRequest
+	126, // 128: geneza.v1.ClusterAPI.StartRollout:input_type -> geneza.v1.StartRolloutRequest
+	127, // 129: geneza.v1.ClusterAPI.GetRolloutStatus:input_type -> geneza.v1.RolloutControlRequest
+	127, // 130: geneza.v1.ClusterAPI.PauseRollout:input_type -> geneza.v1.RolloutControlRequest
+	127, // 131: geneza.v1.ClusterAPI.ResumeRollout:input_type -> geneza.v1.RolloutControlRequest
+	127, // 132: geneza.v1.ClusterAPI.AbortRollout:input_type -> geneza.v1.RolloutControlRequest
+	128, // 133: geneza.v1.ClusterAPI.SetAutoUpdate:input_type -> geneza.v1.SetAutoUpdateRequest
+	134, // 134: geneza.v1.ClusterAPI.GetFleetStatus:input_type -> geneza.v1.Empty
+	134, // 135: geneza.v1.ClusterAPI.ReloadPolicy:input_type -> geneza.v1.Empty
+	108, // 136: geneza.v1.ClusterAPI.RevokeUser:input_type -> geneza.v1.RevokeUserRequest
+	101, // 137: geneza.v1.ClusterAPI.SuspendPrincipal:input_type -> geneza.v1.SuspendPrincipalRequest
+	101, // 138: geneza.v1.ClusterAPI.LiftSuspension:input_type -> geneza.v1.SuspendPrincipalRequest
+	134, // 139: geneza.v1.ClusterAPI.ListSuspensions:input_type -> geneza.v1.Empty
+	116, // 140: geneza.v1.ClusterAPI.BindSource:input_type -> geneza.v1.BindSourceRequest
+	117, // 141: geneza.v1.ClusterAPI.UnbindSource:input_type -> geneza.v1.UnbindSourceRequest
+	134, // 142: geneza.v1.ClusterAPI.ListSourceBindings:input_type -> geneza.v1.Empty
+	120, // 143: geneza.v1.ClusterAPI.RevokeCert:input_type -> geneza.v1.RevokeCertRequest
+	134, // 144: geneza.v1.ClusterAPI.ListRevokedCerts:input_type -> geneza.v1.Empty
+	99,  // 145: geneza.v1.ClusterAPI.InstallTrustAnchors:input_type -> geneza.v1.InstallTrustAnchorsRequest
+	134, // 146: geneza.v1.ClusterAPI.ListRelays:input_type -> geneza.v1.Empty
+	4,   // 147: geneza.v1.Enrollment.Enroll:output_type -> geneza.v1.EnrollResponse
+	1,   // 148: geneza.v1.RelayRegistry.RegisterAndWatch:output_type -> geneza.v1.RelayWatch
+	20,  // 149: geneza.v1.NodeControl.Stream:output_type -> geneza.v1.ControllerMsg
+	53,  // 150: geneza.v1.NodeControl.RenewCert:output_type -> geneza.v1.RenewCertResponse
+	51,  // 151: geneza.v1.NodeControl.UploadRecording:output_type -> geneza.v1.UploadAck
+	6,   // 152: geneza.v1.NodeControl.FetchClusterConfig:output_type -> geneza.v1.MapResponse
+	67,  // 153: geneza.v1.WorkspaceAPI.ListNodes:output_type -> geneza.v1.ListNodesResponse
+	74,  // 154: geneza.v1.WorkspaceAPI.ListServices:output_type -> geneza.v1.ListServicesResponse
+	69,  // 155: geneza.v1.WorkspaceAPI.CreateSession:output_type -> geneza.v1.CreateSessionResponse
+	76,  // 156: geneza.v1.WorkspaceAPI.ListSessions:output_type -> geneza.v1.ListSessionsResponse
+	77,  // 157: geneza.v1.WorkspaceAPI.WhoAmI:output_type -> geneza.v1.WhoAmIResponse
+	47,  // 158: geneza.v1.WorkspaceAPI.SessionSignal:output_type -> geneza.v1.ControllerSignal
+	64,  // 159: geneza.v1.WorkspaceAPI.SessionControl:output_type -> geneza.v1.ControllerEnforcement
+	62,  // 160: geneza.v1.WorkspaceAPI.Heartbeat:output_type -> geneza.v1.HeartbeatResponse
+	57,  // 161: geneza.v1.WorkspaceAPI.ListRecordings:output_type -> geneza.v1.ListRecordingsResponse
+	59,  // 162: geneza.v1.WorkspaceAPI.GetRecording:output_type -> geneza.v1.RecordingBlobChunk
+	80,  // 163: geneza.v1.WorkspaceAPI.ListNodeCVEs:output_type -> geneza.v1.ListNodeCVEsResponse
+	82,  // 164: geneza.v1.WorkspaceAPI.ListNodesAffectedByCVE:output_type -> geneza.v1.ListNodesAffectedByCVEResponse
+	85,  // 165: geneza.v1.WorkspaceAPI.ListNodeComponents:output_type -> geneza.v1.ListNodeComponentsResponse
+	88,  // 166: geneza.v1.WorkspaceAPI.ListWorkspaceCVEs:output_type -> geneza.v1.ListWorkspaceCVEsResponse
+	111, // 167: geneza.v1.WorkspaceAPI.CreateJoinToken:output_type -> geneza.v1.CreateJoinTokenResponse
+	134, // 168: geneza.v1.WorkspaceAPI.ApproveNode:output_type -> geneza.v1.Empty
+	134, // 169: geneza.v1.WorkspaceAPI.RemoveNode:output_type -> geneza.v1.Empty
+	134, // 170: geneza.v1.WorkspaceAPI.RevokeSession:output_type -> geneza.v1.Empty
+	133, // 171: geneza.v1.WorkspaceAPI.QueryAudit:output_type -> geneza.v1.QueryAuditResponse
+	134, // 172: geneza.v1.WorkspaceAPI.SetNodeModules:output_type -> geneza.v1.Empty
+	106, // 173: geneza.v1.WorkspaceAPI.GetNodeModules:output_type -> geneza.v1.NodeModulesResponse
+	97,  // 174: geneza.v1.WorkspaceAPI.ReserveSubdomain:output_type -> geneza.v1.SubdomainReservationInfo
+	98,  // 175: geneza.v1.WorkspaceAPI.ListSubdomains:output_type -> geneza.v1.ListSubdomainsResponse
+	134, // 176: geneza.v1.WorkspaceAPI.ReleaseSubdomain:output_type -> geneza.v1.Empty
+	93,  // 177: geneza.v1.WorkspaceAPI.CreateFunnel:output_type -> geneza.v1.FunnelInfo
+	94,  // 178: geneza.v1.WorkspaceAPI.ListFunnels:output_type -> geneza.v1.ListFunnelsResponse
+	134, // 179: geneza.v1.WorkspaceAPI.DeleteFunnel:output_type -> geneza.v1.Empty
+	134, // 180: geneza.v1.WorkspaceAPI.SuspendPrincipal:output_type -> geneza.v1.Empty
+	134, // 181: geneza.v1.WorkspaceAPI.LiftSuspension:output_type -> geneza.v1.Empty
+	103, // 182: geneza.v1.WorkspaceAPI.ListSuspensions:output_type -> geneza.v1.ListSuspensionsResponse
+	109, // 183: geneza.v1.WorkspaceAPI.RevokeUser:output_type -> geneza.v1.RevokeCountResponse
+	115, // 184: geneza.v1.ClusterAPI.ListWorkspaces:output_type -> geneza.v1.ListWorkspacesResponse
+	124, // 185: geneza.v1.ClusterAPI.PublishArtifact:output_type -> geneza.v1.PublishArtifactResponse
+	134, // 186: geneza.v1.ClusterAPI.SetDesiredVersion:output_type -> geneza.v1.Empty
+	129, // 187: geneza.v1.ClusterAPI.StartRollout:output_type -> geneza.v1.RolloutStatusResponse
+	129, // 188: geneza.v1.ClusterAPI.GetRolloutStatus:output_type -> geneza.v1.RolloutStatusResponse
+	129, // 189: geneza.v1.ClusterAPI.PauseRollout:output_type -> geneza.v1.RolloutStatusResponse
+	129, // 190: geneza.v1.ClusterAPI.ResumeRollout:output_type -> geneza.v1.RolloutStatusResponse
+	129, // 191: geneza.v1.ClusterAPI.AbortRollout:output_type -> geneza.v1.RolloutStatusResponse
+	134, // 192: geneza.v1.ClusterAPI.SetAutoUpdate:output_type -> geneza.v1.Empty
+	130, // 193: geneza.v1.ClusterAPI.GetFleetStatus:output_type -> geneza.v1.FleetStatus
+	134, // 194: geneza.v1.ClusterAPI.ReloadPolicy:output_type -> geneza.v1.Empty
+	109, // 195: geneza.v1.ClusterAPI.RevokeUser:output_type -> geneza.v1.RevokeCountResponse
+	134, // 196: geneza.v1.ClusterAPI.SuspendPrincipal:output_type -> geneza.v1.Empty
+	134, // 197: geneza.v1.ClusterAPI.LiftSuspension:output_type -> geneza.v1.Empty
+	103, // 198: geneza.v1.ClusterAPI.ListSuspensions:output_type -> geneza.v1.ListSuspensionsResponse
+	134, // 199: geneza.v1.ClusterAPI.BindSource:output_type -> geneza.v1.Empty
+	134, // 200: geneza.v1.ClusterAPI.UnbindSource:output_type -> geneza.v1.Empty
+	119, // 201: geneza.v1.ClusterAPI.ListSourceBindings:output_type -> geneza.v1.ListSourceBindingsResponse
+	134, // 202: geneza.v1.ClusterAPI.RevokeCert:output_type -> geneza.v1.Empty
+	122, // 203: geneza.v1.ClusterAPI.ListRevokedCerts:output_type -> geneza.v1.ListRevokedCertsResponse
+	100, // 204: geneza.v1.ClusterAPI.InstallTrustAnchors:output_type -> geneza.v1.InstallTrustAnchorsResponse
+	90,  // 205: geneza.v1.ClusterAPI.ListRelays:output_type -> geneza.v1.RelayList
+	147, // [147:206] is the sub-list for method output_type
+	88,  // [88:147] is the sub-list for method input_type
 	88,  // [88:88] is the sub-list for extension type_name
 	88,  // [88:88] is the sub-list for extension extendee
 	0,   // [0:88] is the sub-list for field type_name

@@ -20,6 +20,8 @@ import (
 	"geneza.io/internal/types"
 )
 
+func adminWSCtx() context.Context { return userCtx(defaultWorkspace, "adm", roleWSAdmin) }
+
 func testServerConfig(t testing.TB) *Config {
 	t.Helper()
 	dir := t.TempDir()
@@ -100,8 +102,8 @@ func TestServerLoginEnrollAndConfigReconcile(t *testing.T) {
 	}
 
 	// Token enrollment issues a node cert and the signed cluster config.
-	admin := &adminAPIService{s: srv}
-	tok, err := admin.CreateJoinToken(context.Background(), &genezav1.CreateJoinTokenRequest{
+	admin := &workspaceAPIService{s: srv}
+	tok, err := admin.CreateJoinToken(adminWSCtx(), &genezav1.CreateJoinTokenRequest{
 		Labels: map[string]string{"env": "prod"},
 	})
 	if err != nil {
@@ -195,7 +197,7 @@ func TestServerLoginEnrollAndConfigReconcile(t *testing.T) {
 
 	// Stable promotion gate: with canary nodes set and offline, promotion
 	// must fail; with no canary ring it succeeds.
-	admin3 := &adminAPIService{s: srv3}
+	admin3 := &clusterAPIService{s: srv3}
 	if _, err := admin3.SetDesiredVersion(context.Background(), &genezav1.SetDesiredVersionRequest{
 		Ring: "canary", Version: "1.1.0", CanaryNodes: []string{enResp.NodeId},
 	}); err != nil {
@@ -222,12 +224,12 @@ func TestEnrollApprovalGate(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer srv.Close()
-	admin := &adminAPIService{s: srv}
+	admin := &workspaceAPIService{s: srv}
 	enroll := &enrollmentService{s: srv}
 
 	enrollWith := func(autoApprove bool) *NodeRecord {
 		t.Helper()
-		tok, err := admin.CreateJoinToken(context.Background(), &genezav1.CreateJoinTokenRequest{
+		tok, err := admin.CreateJoinToken(adminWSCtx(), &genezav1.CreateJoinTokenRequest{
 			Labels: map[string]string{"env": "prod"}, AutoApprove: autoApprove,
 		})
 		if err != nil {
@@ -256,7 +258,7 @@ func TestEnrollApprovalGate(t *testing.T) {
 		t.Fatal("token enrollment should land pending (Approved=false)")
 	}
 	// Approve flips it and records provenance.
-	if _, err := admin.ApproveNode(context.Background(), &genezav1.ApproveNodeRequest{Node: pending.ID, Approve: true}); err != nil {
+	if _, err := admin.ApproveNode(adminWSCtx(), &genezav1.ApproveNodeRequest{Node: pending.ID, Approve: true}); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
 	got, _ := srv.store.GetNode(defaultWorkspace, pending.ID)
@@ -266,7 +268,7 @@ func TestEnrollApprovalGate(t *testing.T) {
 		t.Fatalf("after approve: %+v", got)
 	}
 	// Re-quarantine clears it.
-	if _, err := admin.ApproveNode(context.Background(), &genezav1.ApproveNodeRequest{Node: pending.ID, Approve: false}); err != nil {
+	if _, err := admin.ApproveNode(adminWSCtx(), &genezav1.ApproveNodeRequest{Node: pending.ID, Approve: false}); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ = srv.store.GetNode(defaultWorkspace, pending.ID); got.Approved {
@@ -280,7 +282,7 @@ func TestEnrollApprovalGate(t *testing.T) {
 	}
 
 	// Unknown node id -> NotFound.
-	if _, err := admin.ApproveNode(context.Background(), &genezav1.ApproveNodeRequest{Node: "n-doesnotexist", Approve: true}); status.Code(err) != codes.NotFound {
+	if _, err := admin.ApproveNode(adminWSCtx(), &genezav1.ApproveNodeRequest{Node: "n-doesnotexist", Approve: true}); status.Code(err) != codes.NotFound {
 		t.Fatalf("approve unknown: want NotFound, got %v", err)
 	}
 }

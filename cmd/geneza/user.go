@@ -50,7 +50,7 @@ func newUserSuspendCmd(suspend bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			cc, api, err := dialAdmin(e)
+			cc, api, _, err := dialUser(e)
 			if err != nil {
 				return err
 			}
@@ -93,7 +93,7 @@ func newUserSuspensionsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			cc, api, err := dialAdmin(e)
+			cc, api, _, err := dialUser(e)
 			if err != nil {
 				return err
 			}

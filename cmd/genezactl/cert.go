@@ -32,7 +32,7 @@ func newCertRevokeCmd() *cobra.Command {
 		Short: "Revoke a leaf cert by hex serial (denied on its next RPC/reconnect)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return withAdmin(cmd.Context(), 30*time.Second, func(ctx context.Context, api genezav1.AdminAPIClient) error {
+			return withAdmin(cmd.Context(), 30*time.Second, func(ctx context.Context, api genezav1.ClusterAPIClient) error {
 				if _, err := api.RevokeCert(ctx, &genezav1.RevokeCertRequest{Serial: args[0], Reason: reason}); err != nil {
 					return client.Humanize(err)
 				}
@@ -52,7 +52,7 @@ func newCertLsCmd() *cobra.Command {
 		Short:   "List revoked cert serials",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return withAdmin(cmd.Context(), 30*time.Second, func(ctx context.Context, api genezav1.AdminAPIClient) error {
+			return withAdmin(cmd.Context(), 30*time.Second, func(ctx context.Context, api genezav1.ClusterAPIClient) error {
 				resp, err := api.ListRevokedCerts(ctx, &genezav1.Empty{})
 				if err != nil {
 					return client.Humanize(err)

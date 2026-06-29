@@ -18,7 +18,7 @@ import (
 
 func TestListRelaysSurfacesSerial(t *testing.T) {
 	srv := newReplayServer(t)
-	a := &adminAPIService{s: srv}
+	a := &clusterAPIService{s: srv}
 	if err := srv.store.UpsertRelay(&RelayRecord{
 		RelayNode:    types.RelayNode{RegionID: "r1", RelayID: "relay-a", Addrs: []string{"1.2.3.4:7404"}},
 		Version:      "1.0.0",

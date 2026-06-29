@@ -35,7 +35,7 @@ func newWorkspaceLsCmd() *cobra.Command {
 		Short:   "List the tenant workspaces this controller hosts",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return withAdmin(cmd.Context(), 30*time.Second, func(ctx context.Context, api genezav1.AdminAPIClient) error {
+			return withAdmin(cmd.Context(), 30*time.Second, func(ctx context.Context, api genezav1.ClusterAPIClient) error {
 				resp, err := api.ListWorkspaces(ctx, &genezav1.Empty{})
 				if err != nil {
 					return client.Humanize(err)
@@ -62,7 +62,7 @@ func newWorkspaceBindCmd() *cobra.Command {
 		Short: "Bind a cloud-qualified source (openstack:project:<svc>:<uuid>, idp:group:<realm>:<g>, ...) to a workspace",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return withAdmin(cmd.Context(), 30*time.Second, func(ctx context.Context, api genezav1.AdminAPIClient) error {
+			return withAdmin(cmd.Context(), 30*time.Second, func(ctx context.Context, api genezav1.ClusterAPIClient) error {
 				if _, err := api.BindSource(ctx, &genezav1.BindSourceRequest{Key: args[0], WorkspaceId: args[1]}); err != nil {
 					return client.Humanize(err)
 				}
@@ -80,7 +80,7 @@ func newWorkspaceUnbindCmd() *cobra.Command {
 		Short:   "Remove a source binding",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return withAdmin(cmd.Context(), 30*time.Second, func(ctx context.Context, api genezav1.AdminAPIClient) error {
+			return withAdmin(cmd.Context(), 30*time.Second, func(ctx context.Context, api genezav1.ClusterAPIClient) error {
 				if _, err := api.UnbindSource(ctx, &genezav1.UnbindSourceRequest{Key: args[0]}); err != nil {
 					return client.Humanize(err)
 				}
@@ -97,7 +97,7 @@ func newWorkspaceBindingsCmd() *cobra.Command {
 		Short: "List source bindings",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return withAdmin(cmd.Context(), 30*time.Second, func(ctx context.Context, api genezav1.AdminAPIClient) error {
+			return withAdmin(cmd.Context(), 30*time.Second, func(ctx context.Context, api genezav1.ClusterAPIClient) error {
 				resp, err := api.ListSourceBindings(ctx, &genezav1.Empty{})
 				if err != nil {
 					return client.Humanize(err)

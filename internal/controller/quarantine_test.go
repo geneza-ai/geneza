@@ -328,10 +328,10 @@ func TestEnrollQuarantineLookupFailsClosed(t *testing.T) {
 	}
 	defer srv.Close()
 	srv.store = &faultyStore{Store: srv.store, failFindQuarantine: true}
-	admin := &adminAPIService{s: srv}
+	admin := &workspaceAPIService{s: srv}
 	enroll := &enrollmentService{s: srv}
 
-	tok, err := admin.CreateJoinToken(context.Background(), &genezav1.CreateJoinTokenRequest{AutoApprove: true})
+	tok, err := admin.CreateJoinToken(adminWSCtx(), &genezav1.CreateJoinTokenRequest{AutoApprove: true})
 	if err != nil {
 		t.Fatal(err)
 	}

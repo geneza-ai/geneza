@@ -17,7 +17,7 @@ import (
 )
 
 // One listener, three trust levels. VerifyClientCertIfGiven lets Enrollment
-// and UserAPI.Login in without a client cert while everything else is gated
+// and WorkspaceAPI.Login in without a client cert while everything else is gated
 // per-RPC on the verified peer identity. A presented-but-invalid cert still
 // fails the TLS handshake outright.
 func (s *Server) grpcTLSConfig() (*tls.Config, error) {
@@ -77,7 +77,7 @@ func extractPeer(ctx context.Context) *peerInfo {
 //
 //   - platform-admin: the cloud-operator root — gates hub-graph mutations
 //     (bindings, cloud registration).
-//   - admin: the CLUSTER/fleet super-admin — the only role the gRPC AdminAPI
+//   - admin: the CLUSTER/fleet super-admin — the only role the gRPC ClusterAPI
 //     gate accepts (cross-workspace fleet management).
 //
 // BOTH are RESERVED: they are issued ONLY out-of-band via a break-glass cert,
@@ -85,7 +85,7 @@ func extractPeer(ctx context.Context) *peerInfo {
 // membership path, no matter how (mis)configured. A
 // login — being inherently workspace-scoped — must never mint a cross-workspace
 // cluster credential. The most a login can grant is ws-admin (workspace admin):
-// it satisfies the console mutation gate but NOT the gRPC AdminAPI gate.
+// it satisfies the console mutation gate but NOT the gRPC ClusterAPI gate.
 const (
 	roleAdmin         = "admin"
 	rolePlatformAdmin = "platform-admin"
@@ -195,7 +195,7 @@ func authorize(ctx context.Context, fullMethod string) (context.Context, error) 
 			return nil, status.Error(codes.PermissionDenied, "relay certificate required")
 		}
 		return ctx, nil
-	case strings.HasPrefix(fullMethod, "/geneza.v1.UserAPI/"):
+	case strings.HasPrefix(fullMethod, "/geneza.v1.WorkspaceAPI/"):
 		if pi == nil {
 			return nil, status.Error(codes.Unauthenticated, "user certificate required")
 		}
@@ -203,7 +203,7 @@ func authorize(ctx context.Context, fullMethod string) (context.Context, error) 
 			return nil, status.Error(codes.PermissionDenied, "user certificate required")
 		}
 		return ctx, nil
-	case strings.HasPrefix(fullMethod, "/geneza.v1.AdminAPI/"):
+	case strings.HasPrefix(fullMethod, "/geneza.v1.ClusterAPI/"):
 		if pi == nil {
 			return nil, status.Error(codes.Unauthenticated, "admin certificate required")
 		}

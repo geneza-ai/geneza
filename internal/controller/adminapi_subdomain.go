@@ -10,7 +10,7 @@ import (
 	genezav1 "geneza.io/internal/pb/geneza/v1"
 )
 
-// Managed-domain subdomain reservations over the AdminAPI (ws-admin gated like
+// Managed-domain subdomain reservations over the ClusterAPI (ws-admin gated like
 // the rest of the service, scoped to the caller's workspace). These mirror the
 // console REST surface; both call the same Server reserve/release methods.
 
@@ -24,7 +24,10 @@ func subdomainInfo(r *SubdomainReservation) *genezav1.SubdomainReservationInfo {
 	}
 }
 
-func (a *adminAPIService) ReserveSubdomain(ctx context.Context, req *genezav1.ReserveSubdomainRequest) (*genezav1.SubdomainReservationInfo, error) {
+func (a *workspaceAPIService) ReserveSubdomain(ctx context.Context, req *genezav1.ReserveSubdomainRequest) (*genezav1.SubdomainReservationInfo, error) {
+	if err := requireWSAdmin(ctx); err != nil {
+		return nil, err
+	}
 	rec, err := a.s.reserveWorkspaceSubdomain(actorWorkspace(ctx), req.GetDomain(), req.GetLabel(), adminActor(ctx))
 	if err != nil {
 		switch {
@@ -41,7 +44,7 @@ func (a *adminAPIService) ReserveSubdomain(ctx context.Context, req *genezav1.Re
 	return subdomainInfo(rec), nil
 }
 
-func (a *adminAPIService) ListSubdomains(ctx context.Context, _ *genezav1.Empty) (*genezav1.ListSubdomainsResponse, error) {
+func (a *workspaceAPIService) ListSubdomains(ctx context.Context, _ *genezav1.Empty) (*genezav1.ListSubdomainsResponse, error) {
 	ws := actorWorkspace(ctx)
 	subs, err := a.s.store.ListWorkspaceSubdomains(ws)
 	if err != nil {
@@ -63,7 +66,10 @@ func (a *adminAPIService) ListSubdomains(ctx context.Context, _ *genezav1.Empty)
 	}, nil
 }
 
-func (a *adminAPIService) ReleaseSubdomain(ctx context.Context, req *genezav1.ReleaseSubdomainRequest) (*genezav1.Empty, error) {
+func (a *workspaceAPIService) ReleaseSubdomain(ctx context.Context, req *genezav1.ReleaseSubdomainRequest) (*genezav1.Empty, error) {
+	if err := requireWSAdmin(ctx); err != nil {
+		return nil, err
+	}
 	if err := a.s.releaseWorkspaceSubdomain(actorWorkspace(ctx), req.GetDomain(), req.GetLabel(), adminActor(ctx)); err != nil {
 		if errors.Is(err, errSubdomainTaken) {
 			return nil, status.Error(codes.PermissionDenied, "that subdomain belongs to another workspace")

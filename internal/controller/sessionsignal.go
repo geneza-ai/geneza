@@ -22,7 +22,7 @@ const sessionSigWindow = sessionEntryTTL
 
 // Session-scoped ICE signaling (session p2p). When the broker grants a session
 // it registers a sigEntry keyed by session_id. The ephemeral client opens a
-// UserAPI.SessionSignal stream and the agent uses its NodeControl disco path;
+// WorkspaceAPI.SessionSignal stream and the agent uses its NodeControl disco path;
 // the controller forwards ICE creds/candidates ONLY between the two principals
 // named in the brokered grant, keyed by session_id — NEVER the overlay
 // wgpub path. The controller never sees session data (E2E Noise stays the boundary).

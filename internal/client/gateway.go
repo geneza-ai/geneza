@@ -93,10 +93,10 @@ func DialController(addr string, pool *x509.CertPool, clientCert *tls.Certificat
 }
 
 // dialRedirect connects to the controller a CreateSession redirect points at, trying
-// its signed addresses in order. It returns a UserAPI client plus a closer the
+// its signed addresses in order. It returns a WorkspaceAPI client plus a closer the
 // caller ties to the session lifetime (the connection carries the session's
 // presence heartbeat and signaling after the redirect is followed).
-func dialRedirect(red *genezav1.ControllerRedirect, pool *x509.CertPool, cert *tls.Certificate) (genezav1.UserAPIClient, func() error, error) {
+func dialRedirect(red *genezav1.ControllerRedirect, pool *x509.CertPool, cert *tls.Certificate) (genezav1.WorkspaceAPIClient, func() error, error) {
 	var lastErr error
 	for _, addr := range red.GetAddrs() {
 		cc, err := DialController(addr, pool, cert)
@@ -104,7 +104,7 @@ func dialRedirect(red *genezav1.ControllerRedirect, pool *x509.CertPool, cert *t
 			lastErr = err
 			continue
 		}
-		return genezav1.NewUserAPIClient(cc), cc.Close, nil
+		return genezav1.NewWorkspaceAPIClient(cc), cc.Close, nil
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("redirect carried no addresses")

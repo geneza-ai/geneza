@@ -101,7 +101,7 @@ const (
 // path: ephemeral Noise key -> CreateSession -> TLS to the relay (verified
 // against the pinned geneza CA) -> rendezvous -> Noise IK handshake carrying
 // the signed grant -> SSH channel layer.
-func Establish(ctx context.Context, api genezav1.UserAPIClient, pool *x509.CertPool, cert *tls.Certificate, p SessionParams) (*Session, error) {
+func Establish(ctx context.Context, api genezav1.WorkspaceAPIClient, pool *x509.CertPool, cert *tls.Certificate, p SessionParams) (*Session, error) {
 	// One ephemeral tunnel keypair per session: the controller binds it into the
 	// signed grant, so only this process can complete the handshake, and
 	// nothing long-lived exists to steal.
@@ -193,7 +193,7 @@ func Establish(ctx context.Context, api genezav1.UserAPIClient, pool *x509.CertP
 // The data path is identical across callers: TLS to the relay (pinned geneza CA) ->
 // rendezvous -> Noise IK carrying the signed grant -> SSH (or, for vpn, the bare
 // tunnel conn). The Noise gate + signed grant stay the security boundary on every path.
-func DialSession(ctx context.Context, api genezav1.UserAPIClient, pool *x509.CertPool, resp *genezav1.CreateSessionResponse, key noise.DHKey, relayDialAddr string) (*Session, error) {
+func DialSession(ctx context.Context, api genezav1.WorkspaceAPIClient, pool *x509.CertPool, resp *genezav1.CreateSessionResponse, key noise.DHKey, relayDialAddr string) (*Session, error) {
 	if resp.GetTurn() != nil && api != nil {
 		if s, err := dialSessionICE(ctx, api, resp, key); err == nil {
 			return s, nil

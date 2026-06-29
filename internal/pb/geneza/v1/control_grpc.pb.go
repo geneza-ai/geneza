@@ -477,26 +477,48 @@ var NodeControl_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
-	UserAPI_ListNodes_FullMethodName              = "/geneza.v1.UserAPI/ListNodes"
-	UserAPI_ListServices_FullMethodName           = "/geneza.v1.UserAPI/ListServices"
-	UserAPI_CreateSession_FullMethodName          = "/geneza.v1.UserAPI/CreateSession"
-	UserAPI_ListSessions_FullMethodName           = "/geneza.v1.UserAPI/ListSessions"
-	UserAPI_WhoAmI_FullMethodName                 = "/geneza.v1.UserAPI/WhoAmI"
-	UserAPI_SessionSignal_FullMethodName          = "/geneza.v1.UserAPI/SessionSignal"
-	UserAPI_SessionControl_FullMethodName         = "/geneza.v1.UserAPI/SessionControl"
-	UserAPI_Heartbeat_FullMethodName              = "/geneza.v1.UserAPI/Heartbeat"
-	UserAPI_ListRecordings_FullMethodName         = "/geneza.v1.UserAPI/ListRecordings"
-	UserAPI_GetRecording_FullMethodName           = "/geneza.v1.UserAPI/GetRecording"
-	UserAPI_ListNodeCVEs_FullMethodName           = "/geneza.v1.UserAPI/ListNodeCVEs"
-	UserAPI_ListNodesAffectedByCVE_FullMethodName = "/geneza.v1.UserAPI/ListNodesAffectedByCVE"
-	UserAPI_ListNodeComponents_FullMethodName     = "/geneza.v1.UserAPI/ListNodeComponents"
-	UserAPI_ListWorkspaceCVEs_FullMethodName      = "/geneza.v1.UserAPI/ListWorkspaceCVEs"
+	WorkspaceAPI_ListNodes_FullMethodName              = "/geneza.v1.WorkspaceAPI/ListNodes"
+	WorkspaceAPI_ListServices_FullMethodName           = "/geneza.v1.WorkspaceAPI/ListServices"
+	WorkspaceAPI_CreateSession_FullMethodName          = "/geneza.v1.WorkspaceAPI/CreateSession"
+	WorkspaceAPI_ListSessions_FullMethodName           = "/geneza.v1.WorkspaceAPI/ListSessions"
+	WorkspaceAPI_WhoAmI_FullMethodName                 = "/geneza.v1.WorkspaceAPI/WhoAmI"
+	WorkspaceAPI_SessionSignal_FullMethodName          = "/geneza.v1.WorkspaceAPI/SessionSignal"
+	WorkspaceAPI_SessionControl_FullMethodName         = "/geneza.v1.WorkspaceAPI/SessionControl"
+	WorkspaceAPI_Heartbeat_FullMethodName              = "/geneza.v1.WorkspaceAPI/Heartbeat"
+	WorkspaceAPI_ListRecordings_FullMethodName         = "/geneza.v1.WorkspaceAPI/ListRecordings"
+	WorkspaceAPI_GetRecording_FullMethodName           = "/geneza.v1.WorkspaceAPI/GetRecording"
+	WorkspaceAPI_ListNodeCVEs_FullMethodName           = "/geneza.v1.WorkspaceAPI/ListNodeCVEs"
+	WorkspaceAPI_ListNodesAffectedByCVE_FullMethodName = "/geneza.v1.WorkspaceAPI/ListNodesAffectedByCVE"
+	WorkspaceAPI_ListNodeComponents_FullMethodName     = "/geneza.v1.WorkspaceAPI/ListNodeComponents"
+	WorkspaceAPI_ListWorkspaceCVEs_FullMethodName      = "/geneza.v1.WorkspaceAPI/ListWorkspaceCVEs"
+	WorkspaceAPI_CreateJoinToken_FullMethodName        = "/geneza.v1.WorkspaceAPI/CreateJoinToken"
+	WorkspaceAPI_ApproveNode_FullMethodName            = "/geneza.v1.WorkspaceAPI/ApproveNode"
+	WorkspaceAPI_RemoveNode_FullMethodName             = "/geneza.v1.WorkspaceAPI/RemoveNode"
+	WorkspaceAPI_RevokeSession_FullMethodName          = "/geneza.v1.WorkspaceAPI/RevokeSession"
+	WorkspaceAPI_QueryAudit_FullMethodName             = "/geneza.v1.WorkspaceAPI/QueryAudit"
+	WorkspaceAPI_SetNodeModules_FullMethodName         = "/geneza.v1.WorkspaceAPI/SetNodeModules"
+	WorkspaceAPI_GetNodeModules_FullMethodName         = "/geneza.v1.WorkspaceAPI/GetNodeModules"
+	WorkspaceAPI_ReserveSubdomain_FullMethodName       = "/geneza.v1.WorkspaceAPI/ReserveSubdomain"
+	WorkspaceAPI_ListSubdomains_FullMethodName         = "/geneza.v1.WorkspaceAPI/ListSubdomains"
+	WorkspaceAPI_ReleaseSubdomain_FullMethodName       = "/geneza.v1.WorkspaceAPI/ReleaseSubdomain"
+	WorkspaceAPI_CreateFunnel_FullMethodName           = "/geneza.v1.WorkspaceAPI/CreateFunnel"
+	WorkspaceAPI_ListFunnels_FullMethodName            = "/geneza.v1.WorkspaceAPI/ListFunnels"
+	WorkspaceAPI_DeleteFunnel_FullMethodName           = "/geneza.v1.WorkspaceAPI/DeleteFunnel"
+	WorkspaceAPI_SuspendPrincipal_FullMethodName       = "/geneza.v1.WorkspaceAPI/SuspendPrincipal"
+	WorkspaceAPI_LiftSuspension_FullMethodName         = "/geneza.v1.WorkspaceAPI/LiftSuspension"
+	WorkspaceAPI_ListSuspensions_FullMethodName        = "/geneza.v1.WorkspaceAPI/ListSuspensions"
+	WorkspaceAPI_RevokeUser_FullMethodName             = "/geneza.v1.WorkspaceAPI/RevokeUser"
 )
 
-// UserAPIClient is the client API for UserAPI service.
+// WorkspaceAPIClient is the client API for WorkspaceAPI service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
-type UserAPIClient interface {
+//
+// WorkspaceAPI is the tenant plane: every method is scoped to the caller's
+// workspace (ident.Workspace), reached by the geneza CLI. Reads require ws-member;
+// the administrative mutations require ws-admin (the reserved cluster admin
+// satisfies both). Nothing here can touch another tenant.
+type WorkspaceAPIClient interface {
 	ListNodes(ctx context.Context, in *ListNodesRequest, opts ...grpc.CallOption) (*ListNodesResponse, error)
 	ListServices(ctx context.Context, in *ListServicesRequest, opts ...grpc.CallOption) (*ListServicesResponse, error)
 	CreateSession(ctx context.Context, in *CreateSessionRequest, opts ...grpc.CallOption) (*CreateSessionResponse, error)
@@ -542,69 +564,99 @@ type UserAPIClient interface {
 	// of distinct affected nodes (host and container-image verdicts unioned), and a
 	// fixing version. Same cert-scoped tenancy and ws-member gate as the others.
 	ListWorkspaceCVEs(ctx context.Context, in *ListWorkspaceCVEsRequest, opts ...grpc.CallOption) (*ListWorkspaceCVEsResponse, error)
+	// --- workspace administration (ws-admin), moved off the former AdminAPI so a
+	// workspace admin manages their OWN tenant; all bind to the caller's workspace ---
+	// CreateJoinToken mints a one-time enrollment code bound to the caller's
+	// workspace; ApproveNode gates admission; RemoveNode decommissions.
+	CreateJoinToken(ctx context.Context, in *CreateJoinTokenRequest, opts ...grpc.CallOption) (*CreateJoinTokenResponse, error)
+	ApproveNode(ctx context.Context, in *ApproveNodeRequest, opts ...grpc.CallOption) (*Empty, error)
+	RemoveNode(ctx context.Context, in *RemoveNodeRequest, opts ...grpc.CallOption) (*Empty, error)
+	// RevokeSession force-terminates one of this workspace's live sessions ("kick").
+	RevokeSession(ctx context.Context, in *RevokeSessionRequest, opts ...grpc.CallOption) (*Empty, error)
+	// QueryAudit returns THIS workspace's audit slice (scoped to the caller's tenant).
+	QueryAudit(ctx context.Context, in *QueryAuditRequest, opts ...grpc.CallOption) (*QueryAuditResponse, error)
+	// Per-node agent modules (monitoring / inventory) on the workspace's own nodes.
+	SetNodeModules(ctx context.Context, in *SetNodeModulesRequest, opts ...grpc.CallOption) (*Empty, error)
+	GetNodeModules(ctx context.Context, in *GetNodeModulesRequest, opts ...grpc.CallOption) (*NodeModulesResponse, error)
+	// Managed-domain subdomain reservations for the workspace.
+	ReserveSubdomain(ctx context.Context, in *ReserveSubdomainRequest, opts ...grpc.CallOption) (*SubdomainReservationInfo, error)
+	ListSubdomains(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*ListSubdomainsResponse, error)
+	ReleaseSubdomain(ctx context.Context, in *ReleaseSubdomainRequest, opts ...grpc.CallOption) (*Empty, error)
+	// Funnel: expose a workspace service publicly under one of its reservations.
+	CreateFunnel(ctx context.Context, in *CreateFunnelRequest, opts ...grpc.CallOption) (*FunnelInfo, error)
+	ListFunnels(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*ListFunnelsResponse, error)
+	DeleteFunnel(ctx context.Context, in *DeleteFunnelRequest, opts ...grpc.CallOption) (*Empty, error)
+	// Principal authorization within THIS workspace: suspend/unsuspend a member and
+	// list the workspace's suspensions. Bound to the caller's workspace (any Workspace
+	// field in the request is ignored). RevokeUser drops a user's live sessions in
+	// this workspace. The cross-tenant operator equivalents live on ClusterAPI.
+	SuspendPrincipal(ctx context.Context, in *SuspendPrincipalRequest, opts ...grpc.CallOption) (*Empty, error)
+	LiftSuspension(ctx context.Context, in *SuspendPrincipalRequest, opts ...grpc.CallOption) (*Empty, error)
+	ListSuspensions(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*ListSuspensionsResponse, error)
+	RevokeUser(ctx context.Context, in *RevokeUserRequest, opts ...grpc.CallOption) (*RevokeCountResponse, error)
 }
 
-type userAPIClient struct {
+type workspaceAPIClient struct {
 	cc grpc.ClientConnInterface
 }
 
-func NewUserAPIClient(cc grpc.ClientConnInterface) UserAPIClient {
-	return &userAPIClient{cc}
+func NewWorkspaceAPIClient(cc grpc.ClientConnInterface) WorkspaceAPIClient {
+	return &workspaceAPIClient{cc}
 }
 
-func (c *userAPIClient) ListNodes(ctx context.Context, in *ListNodesRequest, opts ...grpc.CallOption) (*ListNodesResponse, error) {
+func (c *workspaceAPIClient) ListNodes(ctx context.Context, in *ListNodesRequest, opts ...grpc.CallOption) (*ListNodesResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListNodesResponse)
-	err := c.cc.Invoke(ctx, UserAPI_ListNodes_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, WorkspaceAPI_ListNodes_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *userAPIClient) ListServices(ctx context.Context, in *ListServicesRequest, opts ...grpc.CallOption) (*ListServicesResponse, error) {
+func (c *workspaceAPIClient) ListServices(ctx context.Context, in *ListServicesRequest, opts ...grpc.CallOption) (*ListServicesResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListServicesResponse)
-	err := c.cc.Invoke(ctx, UserAPI_ListServices_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, WorkspaceAPI_ListServices_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *userAPIClient) CreateSession(ctx context.Context, in *CreateSessionRequest, opts ...grpc.CallOption) (*CreateSessionResponse, error) {
+func (c *workspaceAPIClient) CreateSession(ctx context.Context, in *CreateSessionRequest, opts ...grpc.CallOption) (*CreateSessionResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CreateSessionResponse)
-	err := c.cc.Invoke(ctx, UserAPI_CreateSession_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, WorkspaceAPI_CreateSession_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *userAPIClient) ListSessions(ctx context.Context, in *ListSessionsRequest, opts ...grpc.CallOption) (*ListSessionsResponse, error) {
+func (c *workspaceAPIClient) ListSessions(ctx context.Context, in *ListSessionsRequest, opts ...grpc.CallOption) (*ListSessionsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListSessionsResponse)
-	err := c.cc.Invoke(ctx, UserAPI_ListSessions_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, WorkspaceAPI_ListSessions_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *userAPIClient) WhoAmI(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*WhoAmIResponse, error) {
+func (c *workspaceAPIClient) WhoAmI(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*WhoAmIResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(WhoAmIResponse)
-	err := c.cc.Invoke(ctx, UserAPI_WhoAmI_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, WorkspaceAPI_WhoAmI_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *userAPIClient) SessionSignal(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ClientSignal, ControllerSignal], error) {
+func (c *workspaceAPIClient) SessionSignal(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ClientSignal, ControllerSignal], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &UserAPI_ServiceDesc.Streams[0], UserAPI_SessionSignal_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &WorkspaceAPI_ServiceDesc.Streams[0], WorkspaceAPI_SessionSignal_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -613,11 +665,11 @@ func (c *userAPIClient) SessionSignal(ctx context.Context, opts ...grpc.CallOpti
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type UserAPI_SessionSignalClient = grpc.BidiStreamingClient[ClientSignal, ControllerSignal]
+type WorkspaceAPI_SessionSignalClient = grpc.BidiStreamingClient[ClientSignal, ControllerSignal]
 
-func (c *userAPIClient) SessionControl(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ClientControl, ControllerEnforcement], error) {
+func (c *workspaceAPIClient) SessionControl(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ClientControl, ControllerEnforcement], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &UserAPI_ServiceDesc.Streams[1], UserAPI_SessionControl_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &WorkspaceAPI_ServiceDesc.Streams[1], WorkspaceAPI_SessionControl_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -626,31 +678,31 @@ func (c *userAPIClient) SessionControl(ctx context.Context, opts ...grpc.CallOpt
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type UserAPI_SessionControlClient = grpc.BidiStreamingClient[ClientControl, ControllerEnforcement]
+type WorkspaceAPI_SessionControlClient = grpc.BidiStreamingClient[ClientControl, ControllerEnforcement]
 
-func (c *userAPIClient) Heartbeat(ctx context.Context, in *HeartbeatRequest, opts ...grpc.CallOption) (*HeartbeatResponse, error) {
+func (c *workspaceAPIClient) Heartbeat(ctx context.Context, in *HeartbeatRequest, opts ...grpc.CallOption) (*HeartbeatResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(HeartbeatResponse)
-	err := c.cc.Invoke(ctx, UserAPI_Heartbeat_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, WorkspaceAPI_Heartbeat_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *userAPIClient) ListRecordings(ctx context.Context, in *ListRecordingsRequest, opts ...grpc.CallOption) (*ListRecordingsResponse, error) {
+func (c *workspaceAPIClient) ListRecordings(ctx context.Context, in *ListRecordingsRequest, opts ...grpc.CallOption) (*ListRecordingsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListRecordingsResponse)
-	err := c.cc.Invoke(ctx, UserAPI_ListRecordings_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, WorkspaceAPI_ListRecordings_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *userAPIClient) GetRecording(ctx context.Context, in *GetRecordingRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[RecordingBlobChunk], error) {
+func (c *workspaceAPIClient) GetRecording(ctx context.Context, in *GetRecordingRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[RecordingBlobChunk], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &UserAPI_ServiceDesc.Streams[2], UserAPI_GetRecording_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &WorkspaceAPI_ServiceDesc.Streams[2], WorkspaceAPI_GetRecording_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -665,52 +717,227 @@ func (c *userAPIClient) GetRecording(ctx context.Context, in *GetRecordingReques
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type UserAPI_GetRecordingClient = grpc.ServerStreamingClient[RecordingBlobChunk]
+type WorkspaceAPI_GetRecordingClient = grpc.ServerStreamingClient[RecordingBlobChunk]
 
-func (c *userAPIClient) ListNodeCVEs(ctx context.Context, in *ListNodeCVEsRequest, opts ...grpc.CallOption) (*ListNodeCVEsResponse, error) {
+func (c *workspaceAPIClient) ListNodeCVEs(ctx context.Context, in *ListNodeCVEsRequest, opts ...grpc.CallOption) (*ListNodeCVEsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListNodeCVEsResponse)
-	err := c.cc.Invoke(ctx, UserAPI_ListNodeCVEs_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, WorkspaceAPI_ListNodeCVEs_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *userAPIClient) ListNodesAffectedByCVE(ctx context.Context, in *ListNodesAffectedByCVERequest, opts ...grpc.CallOption) (*ListNodesAffectedByCVEResponse, error) {
+func (c *workspaceAPIClient) ListNodesAffectedByCVE(ctx context.Context, in *ListNodesAffectedByCVERequest, opts ...grpc.CallOption) (*ListNodesAffectedByCVEResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListNodesAffectedByCVEResponse)
-	err := c.cc.Invoke(ctx, UserAPI_ListNodesAffectedByCVE_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, WorkspaceAPI_ListNodesAffectedByCVE_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *userAPIClient) ListNodeComponents(ctx context.Context, in *ListNodeComponentsRequest, opts ...grpc.CallOption) (*ListNodeComponentsResponse, error) {
+func (c *workspaceAPIClient) ListNodeComponents(ctx context.Context, in *ListNodeComponentsRequest, opts ...grpc.CallOption) (*ListNodeComponentsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListNodeComponentsResponse)
-	err := c.cc.Invoke(ctx, UserAPI_ListNodeComponents_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, WorkspaceAPI_ListNodeComponents_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *userAPIClient) ListWorkspaceCVEs(ctx context.Context, in *ListWorkspaceCVEsRequest, opts ...grpc.CallOption) (*ListWorkspaceCVEsResponse, error) {
+func (c *workspaceAPIClient) ListWorkspaceCVEs(ctx context.Context, in *ListWorkspaceCVEsRequest, opts ...grpc.CallOption) (*ListWorkspaceCVEsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListWorkspaceCVEsResponse)
-	err := c.cc.Invoke(ctx, UserAPI_ListWorkspaceCVEs_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, WorkspaceAPI_ListWorkspaceCVEs_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-// UserAPIServer is the server API for UserAPI service.
-// All implementations must embed UnimplementedUserAPIServer
+func (c *workspaceAPIClient) CreateJoinToken(ctx context.Context, in *CreateJoinTokenRequest, opts ...grpc.CallOption) (*CreateJoinTokenResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateJoinTokenResponse)
+	err := c.cc.Invoke(ctx, WorkspaceAPI_CreateJoinToken_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *workspaceAPIClient) ApproveNode(ctx context.Context, in *ApproveNodeRequest, opts ...grpc.CallOption) (*Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Empty)
+	err := c.cc.Invoke(ctx, WorkspaceAPI_ApproveNode_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *workspaceAPIClient) RemoveNode(ctx context.Context, in *RemoveNodeRequest, opts ...grpc.CallOption) (*Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Empty)
+	err := c.cc.Invoke(ctx, WorkspaceAPI_RemoveNode_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *workspaceAPIClient) RevokeSession(ctx context.Context, in *RevokeSessionRequest, opts ...grpc.CallOption) (*Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Empty)
+	err := c.cc.Invoke(ctx, WorkspaceAPI_RevokeSession_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *workspaceAPIClient) QueryAudit(ctx context.Context, in *QueryAuditRequest, opts ...grpc.CallOption) (*QueryAuditResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(QueryAuditResponse)
+	err := c.cc.Invoke(ctx, WorkspaceAPI_QueryAudit_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *workspaceAPIClient) SetNodeModules(ctx context.Context, in *SetNodeModulesRequest, opts ...grpc.CallOption) (*Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Empty)
+	err := c.cc.Invoke(ctx, WorkspaceAPI_SetNodeModules_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *workspaceAPIClient) GetNodeModules(ctx context.Context, in *GetNodeModulesRequest, opts ...grpc.CallOption) (*NodeModulesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(NodeModulesResponse)
+	err := c.cc.Invoke(ctx, WorkspaceAPI_GetNodeModules_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *workspaceAPIClient) ReserveSubdomain(ctx context.Context, in *ReserveSubdomainRequest, opts ...grpc.CallOption) (*SubdomainReservationInfo, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SubdomainReservationInfo)
+	err := c.cc.Invoke(ctx, WorkspaceAPI_ReserveSubdomain_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *workspaceAPIClient) ListSubdomains(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*ListSubdomainsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListSubdomainsResponse)
+	err := c.cc.Invoke(ctx, WorkspaceAPI_ListSubdomains_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *workspaceAPIClient) ReleaseSubdomain(ctx context.Context, in *ReleaseSubdomainRequest, opts ...grpc.CallOption) (*Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Empty)
+	err := c.cc.Invoke(ctx, WorkspaceAPI_ReleaseSubdomain_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *workspaceAPIClient) CreateFunnel(ctx context.Context, in *CreateFunnelRequest, opts ...grpc.CallOption) (*FunnelInfo, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(FunnelInfo)
+	err := c.cc.Invoke(ctx, WorkspaceAPI_CreateFunnel_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *workspaceAPIClient) ListFunnels(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*ListFunnelsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListFunnelsResponse)
+	err := c.cc.Invoke(ctx, WorkspaceAPI_ListFunnels_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *workspaceAPIClient) DeleteFunnel(ctx context.Context, in *DeleteFunnelRequest, opts ...grpc.CallOption) (*Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Empty)
+	err := c.cc.Invoke(ctx, WorkspaceAPI_DeleteFunnel_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *workspaceAPIClient) SuspendPrincipal(ctx context.Context, in *SuspendPrincipalRequest, opts ...grpc.CallOption) (*Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Empty)
+	err := c.cc.Invoke(ctx, WorkspaceAPI_SuspendPrincipal_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *workspaceAPIClient) LiftSuspension(ctx context.Context, in *SuspendPrincipalRequest, opts ...grpc.CallOption) (*Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Empty)
+	err := c.cc.Invoke(ctx, WorkspaceAPI_LiftSuspension_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *workspaceAPIClient) ListSuspensions(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*ListSuspensionsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListSuspensionsResponse)
+	err := c.cc.Invoke(ctx, WorkspaceAPI_ListSuspensions_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *workspaceAPIClient) RevokeUser(ctx context.Context, in *RevokeUserRequest, opts ...grpc.CallOption) (*RevokeCountResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RevokeCountResponse)
+	err := c.cc.Invoke(ctx, WorkspaceAPI_RevokeUser_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// WorkspaceAPIServer is the server API for WorkspaceAPI service.
+// All implementations must embed UnimplementedWorkspaceAPIServer
 // for forward compatibility.
-type UserAPIServer interface {
+//
+// WorkspaceAPI is the tenant plane: every method is scoped to the caller's
+// workspace (ident.Workspace), reached by the geneza CLI. Reads require ws-member;
+// the administrative mutations require ws-admin (the reserved cluster admin
+// satisfies both). Nothing here can touch another tenant.
+type WorkspaceAPIServer interface {
 	ListNodes(context.Context, *ListNodesRequest) (*ListNodesResponse, error)
 	ListServices(context.Context, *ListServicesRequest) (*ListServicesResponse, error)
 	CreateSession(context.Context, *CreateSessionRequest) (*CreateSessionResponse, error)
@@ -756,370 +983,825 @@ type UserAPIServer interface {
 	// of distinct affected nodes (host and container-image verdicts unioned), and a
 	// fixing version. Same cert-scoped tenancy and ws-member gate as the others.
 	ListWorkspaceCVEs(context.Context, *ListWorkspaceCVEsRequest) (*ListWorkspaceCVEsResponse, error)
-	mustEmbedUnimplementedUserAPIServer()
+	// --- workspace administration (ws-admin), moved off the former AdminAPI so a
+	// workspace admin manages their OWN tenant; all bind to the caller's workspace ---
+	// CreateJoinToken mints a one-time enrollment code bound to the caller's
+	// workspace; ApproveNode gates admission; RemoveNode decommissions.
+	CreateJoinToken(context.Context, *CreateJoinTokenRequest) (*CreateJoinTokenResponse, error)
+	ApproveNode(context.Context, *ApproveNodeRequest) (*Empty, error)
+	RemoveNode(context.Context, *RemoveNodeRequest) (*Empty, error)
+	// RevokeSession force-terminates one of this workspace's live sessions ("kick").
+	RevokeSession(context.Context, *RevokeSessionRequest) (*Empty, error)
+	// QueryAudit returns THIS workspace's audit slice (scoped to the caller's tenant).
+	QueryAudit(context.Context, *QueryAuditRequest) (*QueryAuditResponse, error)
+	// Per-node agent modules (monitoring / inventory) on the workspace's own nodes.
+	SetNodeModules(context.Context, *SetNodeModulesRequest) (*Empty, error)
+	GetNodeModules(context.Context, *GetNodeModulesRequest) (*NodeModulesResponse, error)
+	// Managed-domain subdomain reservations for the workspace.
+	ReserveSubdomain(context.Context, *ReserveSubdomainRequest) (*SubdomainReservationInfo, error)
+	ListSubdomains(context.Context, *Empty) (*ListSubdomainsResponse, error)
+	ReleaseSubdomain(context.Context, *ReleaseSubdomainRequest) (*Empty, error)
+	// Funnel: expose a workspace service publicly under one of its reservations.
+	CreateFunnel(context.Context, *CreateFunnelRequest) (*FunnelInfo, error)
+	ListFunnels(context.Context, *Empty) (*ListFunnelsResponse, error)
+	DeleteFunnel(context.Context, *DeleteFunnelRequest) (*Empty, error)
+	// Principal authorization within THIS workspace: suspend/unsuspend a member and
+	// list the workspace's suspensions. Bound to the caller's workspace (any Workspace
+	// field in the request is ignored). RevokeUser drops a user's live sessions in
+	// this workspace. The cross-tenant operator equivalents live on ClusterAPI.
+	SuspendPrincipal(context.Context, *SuspendPrincipalRequest) (*Empty, error)
+	LiftSuspension(context.Context, *SuspendPrincipalRequest) (*Empty, error)
+	ListSuspensions(context.Context, *Empty) (*ListSuspensionsResponse, error)
+	RevokeUser(context.Context, *RevokeUserRequest) (*RevokeCountResponse, error)
+	mustEmbedUnimplementedWorkspaceAPIServer()
 }
 
-// UnimplementedUserAPIServer must be embedded to have
+// UnimplementedWorkspaceAPIServer must be embedded to have
 // forward compatible implementations.
 //
 // NOTE: this should be embedded by value instead of pointer to avoid a nil
 // pointer dereference when methods are called.
-type UnimplementedUserAPIServer struct{}
+type UnimplementedWorkspaceAPIServer struct{}
 
-func (UnimplementedUserAPIServer) ListNodes(context.Context, *ListNodesRequest) (*ListNodesResponse, error) {
+func (UnimplementedWorkspaceAPIServer) ListNodes(context.Context, *ListNodesRequest) (*ListNodesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListNodes not implemented")
 }
-func (UnimplementedUserAPIServer) ListServices(context.Context, *ListServicesRequest) (*ListServicesResponse, error) {
+func (UnimplementedWorkspaceAPIServer) ListServices(context.Context, *ListServicesRequest) (*ListServicesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListServices not implemented")
 }
-func (UnimplementedUserAPIServer) CreateSession(context.Context, *CreateSessionRequest) (*CreateSessionResponse, error) {
+func (UnimplementedWorkspaceAPIServer) CreateSession(context.Context, *CreateSessionRequest) (*CreateSessionResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CreateSession not implemented")
 }
-func (UnimplementedUserAPIServer) ListSessions(context.Context, *ListSessionsRequest) (*ListSessionsResponse, error) {
+func (UnimplementedWorkspaceAPIServer) ListSessions(context.Context, *ListSessionsRequest) (*ListSessionsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListSessions not implemented")
 }
-func (UnimplementedUserAPIServer) WhoAmI(context.Context, *Empty) (*WhoAmIResponse, error) {
+func (UnimplementedWorkspaceAPIServer) WhoAmI(context.Context, *Empty) (*WhoAmIResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method WhoAmI not implemented")
 }
-func (UnimplementedUserAPIServer) SessionSignal(grpc.BidiStreamingServer[ClientSignal, ControllerSignal]) error {
+func (UnimplementedWorkspaceAPIServer) SessionSignal(grpc.BidiStreamingServer[ClientSignal, ControllerSignal]) error {
 	return status.Error(codes.Unimplemented, "method SessionSignal not implemented")
 }
-func (UnimplementedUserAPIServer) SessionControl(grpc.BidiStreamingServer[ClientControl, ControllerEnforcement]) error {
+func (UnimplementedWorkspaceAPIServer) SessionControl(grpc.BidiStreamingServer[ClientControl, ControllerEnforcement]) error {
 	return status.Error(codes.Unimplemented, "method SessionControl not implemented")
 }
-func (UnimplementedUserAPIServer) Heartbeat(context.Context, *HeartbeatRequest) (*HeartbeatResponse, error) {
+func (UnimplementedWorkspaceAPIServer) Heartbeat(context.Context, *HeartbeatRequest) (*HeartbeatResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Heartbeat not implemented")
 }
-func (UnimplementedUserAPIServer) ListRecordings(context.Context, *ListRecordingsRequest) (*ListRecordingsResponse, error) {
+func (UnimplementedWorkspaceAPIServer) ListRecordings(context.Context, *ListRecordingsRequest) (*ListRecordingsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListRecordings not implemented")
 }
-func (UnimplementedUserAPIServer) GetRecording(*GetRecordingRequest, grpc.ServerStreamingServer[RecordingBlobChunk]) error {
+func (UnimplementedWorkspaceAPIServer) GetRecording(*GetRecordingRequest, grpc.ServerStreamingServer[RecordingBlobChunk]) error {
 	return status.Error(codes.Unimplemented, "method GetRecording not implemented")
 }
-func (UnimplementedUserAPIServer) ListNodeCVEs(context.Context, *ListNodeCVEsRequest) (*ListNodeCVEsResponse, error) {
+func (UnimplementedWorkspaceAPIServer) ListNodeCVEs(context.Context, *ListNodeCVEsRequest) (*ListNodeCVEsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListNodeCVEs not implemented")
 }
-func (UnimplementedUserAPIServer) ListNodesAffectedByCVE(context.Context, *ListNodesAffectedByCVERequest) (*ListNodesAffectedByCVEResponse, error) {
+func (UnimplementedWorkspaceAPIServer) ListNodesAffectedByCVE(context.Context, *ListNodesAffectedByCVERequest) (*ListNodesAffectedByCVEResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListNodesAffectedByCVE not implemented")
 }
-func (UnimplementedUserAPIServer) ListNodeComponents(context.Context, *ListNodeComponentsRequest) (*ListNodeComponentsResponse, error) {
+func (UnimplementedWorkspaceAPIServer) ListNodeComponents(context.Context, *ListNodeComponentsRequest) (*ListNodeComponentsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListNodeComponents not implemented")
 }
-func (UnimplementedUserAPIServer) ListWorkspaceCVEs(context.Context, *ListWorkspaceCVEsRequest) (*ListWorkspaceCVEsResponse, error) {
+func (UnimplementedWorkspaceAPIServer) ListWorkspaceCVEs(context.Context, *ListWorkspaceCVEsRequest) (*ListWorkspaceCVEsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListWorkspaceCVEs not implemented")
 }
-func (UnimplementedUserAPIServer) mustEmbedUnimplementedUserAPIServer() {}
-func (UnimplementedUserAPIServer) testEmbeddedByValue()                 {}
+func (UnimplementedWorkspaceAPIServer) CreateJoinToken(context.Context, *CreateJoinTokenRequest) (*CreateJoinTokenResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreateJoinToken not implemented")
+}
+func (UnimplementedWorkspaceAPIServer) ApproveNode(context.Context, *ApproveNodeRequest) (*Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method ApproveNode not implemented")
+}
+func (UnimplementedWorkspaceAPIServer) RemoveNode(context.Context, *RemoveNodeRequest) (*Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method RemoveNode not implemented")
+}
+func (UnimplementedWorkspaceAPIServer) RevokeSession(context.Context, *RevokeSessionRequest) (*Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method RevokeSession not implemented")
+}
+func (UnimplementedWorkspaceAPIServer) QueryAudit(context.Context, *QueryAuditRequest) (*QueryAuditResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method QueryAudit not implemented")
+}
+func (UnimplementedWorkspaceAPIServer) SetNodeModules(context.Context, *SetNodeModulesRequest) (*Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetNodeModules not implemented")
+}
+func (UnimplementedWorkspaceAPIServer) GetNodeModules(context.Context, *GetNodeModulesRequest) (*NodeModulesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetNodeModules not implemented")
+}
+func (UnimplementedWorkspaceAPIServer) ReserveSubdomain(context.Context, *ReserveSubdomainRequest) (*SubdomainReservationInfo, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReserveSubdomain not implemented")
+}
+func (UnimplementedWorkspaceAPIServer) ListSubdomains(context.Context, *Empty) (*ListSubdomainsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListSubdomains not implemented")
+}
+func (UnimplementedWorkspaceAPIServer) ReleaseSubdomain(context.Context, *ReleaseSubdomainRequest) (*Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReleaseSubdomain not implemented")
+}
+func (UnimplementedWorkspaceAPIServer) CreateFunnel(context.Context, *CreateFunnelRequest) (*FunnelInfo, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreateFunnel not implemented")
+}
+func (UnimplementedWorkspaceAPIServer) ListFunnels(context.Context, *Empty) (*ListFunnelsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListFunnels not implemented")
+}
+func (UnimplementedWorkspaceAPIServer) DeleteFunnel(context.Context, *DeleteFunnelRequest) (*Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteFunnel not implemented")
+}
+func (UnimplementedWorkspaceAPIServer) SuspendPrincipal(context.Context, *SuspendPrincipalRequest) (*Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method SuspendPrincipal not implemented")
+}
+func (UnimplementedWorkspaceAPIServer) LiftSuspension(context.Context, *SuspendPrincipalRequest) (*Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method LiftSuspension not implemented")
+}
+func (UnimplementedWorkspaceAPIServer) ListSuspensions(context.Context, *Empty) (*ListSuspensionsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListSuspensions not implemented")
+}
+func (UnimplementedWorkspaceAPIServer) RevokeUser(context.Context, *RevokeUserRequest) (*RevokeCountResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RevokeUser not implemented")
+}
+func (UnimplementedWorkspaceAPIServer) mustEmbedUnimplementedWorkspaceAPIServer() {}
+func (UnimplementedWorkspaceAPIServer) testEmbeddedByValue()                      {}
 
-// UnsafeUserAPIServer may be embedded to opt out of forward compatibility for this service.
-// Use of this interface is not recommended, as added methods to UserAPIServer will
+// UnsafeWorkspaceAPIServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to WorkspaceAPIServer will
 // result in compilation errors.
-type UnsafeUserAPIServer interface {
-	mustEmbedUnimplementedUserAPIServer()
+type UnsafeWorkspaceAPIServer interface {
+	mustEmbedUnimplementedWorkspaceAPIServer()
 }
 
-func RegisterUserAPIServer(s grpc.ServiceRegistrar, srv UserAPIServer) {
-	// If the following call panics, it indicates UnimplementedUserAPIServer was
+func RegisterWorkspaceAPIServer(s grpc.ServiceRegistrar, srv WorkspaceAPIServer) {
+	// If the following call panics, it indicates UnimplementedWorkspaceAPIServer was
 	// embedded by pointer and is nil.  This will cause panics if an
 	// unimplemented method is ever invoked, so we test this at initialization
 	// time to prevent it from happening at runtime later due to I/O.
 	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
 		t.testEmbeddedByValue()
 	}
-	s.RegisterService(&UserAPI_ServiceDesc, srv)
+	s.RegisterService(&WorkspaceAPI_ServiceDesc, srv)
 }
 
-func _UserAPI_ListNodes_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _WorkspaceAPI_ListNodes_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListNodesRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(UserAPIServer).ListNodes(ctx, in)
+		return srv.(WorkspaceAPIServer).ListNodes(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: UserAPI_ListNodes_FullMethodName,
+		FullMethod: WorkspaceAPI_ListNodes_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(UserAPIServer).ListNodes(ctx, req.(*ListNodesRequest))
+		return srv.(WorkspaceAPIServer).ListNodes(ctx, req.(*ListNodesRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _UserAPI_ListServices_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _WorkspaceAPI_ListServices_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListServicesRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(UserAPIServer).ListServices(ctx, in)
+		return srv.(WorkspaceAPIServer).ListServices(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: UserAPI_ListServices_FullMethodName,
+		FullMethod: WorkspaceAPI_ListServices_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(UserAPIServer).ListServices(ctx, req.(*ListServicesRequest))
+		return srv.(WorkspaceAPIServer).ListServices(ctx, req.(*ListServicesRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _UserAPI_CreateSession_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _WorkspaceAPI_CreateSession_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(CreateSessionRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(UserAPIServer).CreateSession(ctx, in)
+		return srv.(WorkspaceAPIServer).CreateSession(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: UserAPI_CreateSession_FullMethodName,
+		FullMethod: WorkspaceAPI_CreateSession_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(UserAPIServer).CreateSession(ctx, req.(*CreateSessionRequest))
+		return srv.(WorkspaceAPIServer).CreateSession(ctx, req.(*CreateSessionRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _UserAPI_ListSessions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _WorkspaceAPI_ListSessions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListSessionsRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(UserAPIServer).ListSessions(ctx, in)
+		return srv.(WorkspaceAPIServer).ListSessions(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: UserAPI_ListSessions_FullMethodName,
+		FullMethod: WorkspaceAPI_ListSessions_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(UserAPIServer).ListSessions(ctx, req.(*ListSessionsRequest))
+		return srv.(WorkspaceAPIServer).ListSessions(ctx, req.(*ListSessionsRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _UserAPI_WhoAmI_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _WorkspaceAPI_WhoAmI_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(Empty)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(UserAPIServer).WhoAmI(ctx, in)
+		return srv.(WorkspaceAPIServer).WhoAmI(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: UserAPI_WhoAmI_FullMethodName,
+		FullMethod: WorkspaceAPI_WhoAmI_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(UserAPIServer).WhoAmI(ctx, req.(*Empty))
+		return srv.(WorkspaceAPIServer).WhoAmI(ctx, req.(*Empty))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _UserAPI_SessionSignal_Handler(srv interface{}, stream grpc.ServerStream) error {
-	return srv.(UserAPIServer).SessionSignal(&grpc.GenericServerStream[ClientSignal, ControllerSignal]{ServerStream: stream})
+func _WorkspaceAPI_SessionSignal_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(WorkspaceAPIServer).SessionSignal(&grpc.GenericServerStream[ClientSignal, ControllerSignal]{ServerStream: stream})
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type UserAPI_SessionSignalServer = grpc.BidiStreamingServer[ClientSignal, ControllerSignal]
+type WorkspaceAPI_SessionSignalServer = grpc.BidiStreamingServer[ClientSignal, ControllerSignal]
 
-func _UserAPI_SessionControl_Handler(srv interface{}, stream grpc.ServerStream) error {
-	return srv.(UserAPIServer).SessionControl(&grpc.GenericServerStream[ClientControl, ControllerEnforcement]{ServerStream: stream})
+func _WorkspaceAPI_SessionControl_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(WorkspaceAPIServer).SessionControl(&grpc.GenericServerStream[ClientControl, ControllerEnforcement]{ServerStream: stream})
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type UserAPI_SessionControlServer = grpc.BidiStreamingServer[ClientControl, ControllerEnforcement]
+type WorkspaceAPI_SessionControlServer = grpc.BidiStreamingServer[ClientControl, ControllerEnforcement]
 
-func _UserAPI_Heartbeat_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _WorkspaceAPI_Heartbeat_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(HeartbeatRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(UserAPIServer).Heartbeat(ctx, in)
+		return srv.(WorkspaceAPIServer).Heartbeat(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: UserAPI_Heartbeat_FullMethodName,
+		FullMethod: WorkspaceAPI_Heartbeat_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(UserAPIServer).Heartbeat(ctx, req.(*HeartbeatRequest))
+		return srv.(WorkspaceAPIServer).Heartbeat(ctx, req.(*HeartbeatRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _UserAPI_ListRecordings_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _WorkspaceAPI_ListRecordings_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListRecordingsRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(UserAPIServer).ListRecordings(ctx, in)
+		return srv.(WorkspaceAPIServer).ListRecordings(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: UserAPI_ListRecordings_FullMethodName,
+		FullMethod: WorkspaceAPI_ListRecordings_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(UserAPIServer).ListRecordings(ctx, req.(*ListRecordingsRequest))
+		return srv.(WorkspaceAPIServer).ListRecordings(ctx, req.(*ListRecordingsRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _UserAPI_GetRecording_Handler(srv interface{}, stream grpc.ServerStream) error {
+func _WorkspaceAPI_GetRecording_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(GetRecordingRequest)
 	if err := stream.RecvMsg(m); err != nil {
 		return err
 	}
-	return srv.(UserAPIServer).GetRecording(m, &grpc.GenericServerStream[GetRecordingRequest, RecordingBlobChunk]{ServerStream: stream})
+	return srv.(WorkspaceAPIServer).GetRecording(m, &grpc.GenericServerStream[GetRecordingRequest, RecordingBlobChunk]{ServerStream: stream})
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type UserAPI_GetRecordingServer = grpc.ServerStreamingServer[RecordingBlobChunk]
+type WorkspaceAPI_GetRecordingServer = grpc.ServerStreamingServer[RecordingBlobChunk]
 
-func _UserAPI_ListNodeCVEs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _WorkspaceAPI_ListNodeCVEs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListNodeCVEsRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(UserAPIServer).ListNodeCVEs(ctx, in)
+		return srv.(WorkspaceAPIServer).ListNodeCVEs(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: UserAPI_ListNodeCVEs_FullMethodName,
+		FullMethod: WorkspaceAPI_ListNodeCVEs_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(UserAPIServer).ListNodeCVEs(ctx, req.(*ListNodeCVEsRequest))
+		return srv.(WorkspaceAPIServer).ListNodeCVEs(ctx, req.(*ListNodeCVEsRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _UserAPI_ListNodesAffectedByCVE_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _WorkspaceAPI_ListNodesAffectedByCVE_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListNodesAffectedByCVERequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(UserAPIServer).ListNodesAffectedByCVE(ctx, in)
+		return srv.(WorkspaceAPIServer).ListNodesAffectedByCVE(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: UserAPI_ListNodesAffectedByCVE_FullMethodName,
+		FullMethod: WorkspaceAPI_ListNodesAffectedByCVE_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(UserAPIServer).ListNodesAffectedByCVE(ctx, req.(*ListNodesAffectedByCVERequest))
+		return srv.(WorkspaceAPIServer).ListNodesAffectedByCVE(ctx, req.(*ListNodesAffectedByCVERequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _UserAPI_ListNodeComponents_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _WorkspaceAPI_ListNodeComponents_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListNodeComponentsRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(UserAPIServer).ListNodeComponents(ctx, in)
+		return srv.(WorkspaceAPIServer).ListNodeComponents(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: UserAPI_ListNodeComponents_FullMethodName,
+		FullMethod: WorkspaceAPI_ListNodeComponents_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(UserAPIServer).ListNodeComponents(ctx, req.(*ListNodeComponentsRequest))
+		return srv.(WorkspaceAPIServer).ListNodeComponents(ctx, req.(*ListNodeComponentsRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _UserAPI_ListWorkspaceCVEs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _WorkspaceAPI_ListWorkspaceCVEs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListWorkspaceCVEsRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(UserAPIServer).ListWorkspaceCVEs(ctx, in)
+		return srv.(WorkspaceAPIServer).ListWorkspaceCVEs(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: UserAPI_ListWorkspaceCVEs_FullMethodName,
+		FullMethod: WorkspaceAPI_ListWorkspaceCVEs_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(UserAPIServer).ListWorkspaceCVEs(ctx, req.(*ListWorkspaceCVEsRequest))
+		return srv.(WorkspaceAPIServer).ListWorkspaceCVEs(ctx, req.(*ListWorkspaceCVEsRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-// UserAPI_ServiceDesc is the grpc.ServiceDesc for UserAPI service.
+func _WorkspaceAPI_CreateJoinToken_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateJoinTokenRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkspaceAPIServer).CreateJoinToken(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkspaceAPI_CreateJoinToken_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkspaceAPIServer).CreateJoinToken(ctx, req.(*CreateJoinTokenRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WorkspaceAPI_ApproveNode_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ApproveNodeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkspaceAPIServer).ApproveNode(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkspaceAPI_ApproveNode_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkspaceAPIServer).ApproveNode(ctx, req.(*ApproveNodeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WorkspaceAPI_RemoveNode_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RemoveNodeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkspaceAPIServer).RemoveNode(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkspaceAPI_RemoveNode_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkspaceAPIServer).RemoveNode(ctx, req.(*RemoveNodeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WorkspaceAPI_RevokeSession_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RevokeSessionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkspaceAPIServer).RevokeSession(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkspaceAPI_RevokeSession_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkspaceAPIServer).RevokeSession(ctx, req.(*RevokeSessionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WorkspaceAPI_QueryAudit_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(QueryAuditRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkspaceAPIServer).QueryAudit(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkspaceAPI_QueryAudit_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkspaceAPIServer).QueryAudit(ctx, req.(*QueryAuditRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WorkspaceAPI_SetNodeModules_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetNodeModulesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkspaceAPIServer).SetNodeModules(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkspaceAPI_SetNodeModules_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkspaceAPIServer).SetNodeModules(ctx, req.(*SetNodeModulesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WorkspaceAPI_GetNodeModules_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetNodeModulesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkspaceAPIServer).GetNodeModules(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkspaceAPI_GetNodeModules_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkspaceAPIServer).GetNodeModules(ctx, req.(*GetNodeModulesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WorkspaceAPI_ReserveSubdomain_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReserveSubdomainRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkspaceAPIServer).ReserveSubdomain(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkspaceAPI_ReserveSubdomain_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkspaceAPIServer).ReserveSubdomain(ctx, req.(*ReserveSubdomainRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WorkspaceAPI_ListSubdomains_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkspaceAPIServer).ListSubdomains(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkspaceAPI_ListSubdomains_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkspaceAPIServer).ListSubdomains(ctx, req.(*Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WorkspaceAPI_ReleaseSubdomain_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReleaseSubdomainRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkspaceAPIServer).ReleaseSubdomain(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkspaceAPI_ReleaseSubdomain_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkspaceAPIServer).ReleaseSubdomain(ctx, req.(*ReleaseSubdomainRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WorkspaceAPI_CreateFunnel_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateFunnelRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkspaceAPIServer).CreateFunnel(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkspaceAPI_CreateFunnel_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkspaceAPIServer).CreateFunnel(ctx, req.(*CreateFunnelRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WorkspaceAPI_ListFunnels_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkspaceAPIServer).ListFunnels(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkspaceAPI_ListFunnels_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkspaceAPIServer).ListFunnels(ctx, req.(*Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WorkspaceAPI_DeleteFunnel_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteFunnelRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkspaceAPIServer).DeleteFunnel(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkspaceAPI_DeleteFunnel_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkspaceAPIServer).DeleteFunnel(ctx, req.(*DeleteFunnelRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WorkspaceAPI_SuspendPrincipal_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SuspendPrincipalRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkspaceAPIServer).SuspendPrincipal(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkspaceAPI_SuspendPrincipal_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkspaceAPIServer).SuspendPrincipal(ctx, req.(*SuspendPrincipalRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WorkspaceAPI_LiftSuspension_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SuspendPrincipalRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkspaceAPIServer).LiftSuspension(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkspaceAPI_LiftSuspension_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkspaceAPIServer).LiftSuspension(ctx, req.(*SuspendPrincipalRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WorkspaceAPI_ListSuspensions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkspaceAPIServer).ListSuspensions(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkspaceAPI_ListSuspensions_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkspaceAPIServer).ListSuspensions(ctx, req.(*Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WorkspaceAPI_RevokeUser_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RevokeUserRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkspaceAPIServer).RevokeUser(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkspaceAPI_RevokeUser_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkspaceAPIServer).RevokeUser(ctx, req.(*RevokeUserRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// WorkspaceAPI_ServiceDesc is the grpc.ServiceDesc for WorkspaceAPI service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
-var UserAPI_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "geneza.v1.UserAPI",
-	HandlerType: (*UserAPIServer)(nil),
+var WorkspaceAPI_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "geneza.v1.WorkspaceAPI",
+	HandlerType: (*WorkspaceAPIServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
 			MethodName: "ListNodes",
-			Handler:    _UserAPI_ListNodes_Handler,
+			Handler:    _WorkspaceAPI_ListNodes_Handler,
 		},
 		{
 			MethodName: "ListServices",
-			Handler:    _UserAPI_ListServices_Handler,
+			Handler:    _WorkspaceAPI_ListServices_Handler,
 		},
 		{
 			MethodName: "CreateSession",
-			Handler:    _UserAPI_CreateSession_Handler,
+			Handler:    _WorkspaceAPI_CreateSession_Handler,
 		},
 		{
 			MethodName: "ListSessions",
-			Handler:    _UserAPI_ListSessions_Handler,
+			Handler:    _WorkspaceAPI_ListSessions_Handler,
 		},
 		{
 			MethodName: "WhoAmI",
-			Handler:    _UserAPI_WhoAmI_Handler,
+			Handler:    _WorkspaceAPI_WhoAmI_Handler,
 		},
 		{
 			MethodName: "Heartbeat",
-			Handler:    _UserAPI_Heartbeat_Handler,
+			Handler:    _WorkspaceAPI_Heartbeat_Handler,
 		},
 		{
 			MethodName: "ListRecordings",
-			Handler:    _UserAPI_ListRecordings_Handler,
+			Handler:    _WorkspaceAPI_ListRecordings_Handler,
 		},
 		{
 			MethodName: "ListNodeCVEs",
-			Handler:    _UserAPI_ListNodeCVEs_Handler,
+			Handler:    _WorkspaceAPI_ListNodeCVEs_Handler,
 		},
 		{
 			MethodName: "ListNodesAffectedByCVE",
-			Handler:    _UserAPI_ListNodesAffectedByCVE_Handler,
+			Handler:    _WorkspaceAPI_ListNodesAffectedByCVE_Handler,
 		},
 		{
 			MethodName: "ListNodeComponents",
-			Handler:    _UserAPI_ListNodeComponents_Handler,
+			Handler:    _WorkspaceAPI_ListNodeComponents_Handler,
 		},
 		{
 			MethodName: "ListWorkspaceCVEs",
-			Handler:    _UserAPI_ListWorkspaceCVEs_Handler,
+			Handler:    _WorkspaceAPI_ListWorkspaceCVEs_Handler,
+		},
+		{
+			MethodName: "CreateJoinToken",
+			Handler:    _WorkspaceAPI_CreateJoinToken_Handler,
+		},
+		{
+			MethodName: "ApproveNode",
+			Handler:    _WorkspaceAPI_ApproveNode_Handler,
+		},
+		{
+			MethodName: "RemoveNode",
+			Handler:    _WorkspaceAPI_RemoveNode_Handler,
+		},
+		{
+			MethodName: "RevokeSession",
+			Handler:    _WorkspaceAPI_RevokeSession_Handler,
+		},
+		{
+			MethodName: "QueryAudit",
+			Handler:    _WorkspaceAPI_QueryAudit_Handler,
+		},
+		{
+			MethodName: "SetNodeModules",
+			Handler:    _WorkspaceAPI_SetNodeModules_Handler,
+		},
+		{
+			MethodName: "GetNodeModules",
+			Handler:    _WorkspaceAPI_GetNodeModules_Handler,
+		},
+		{
+			MethodName: "ReserveSubdomain",
+			Handler:    _WorkspaceAPI_ReserveSubdomain_Handler,
+		},
+		{
+			MethodName: "ListSubdomains",
+			Handler:    _WorkspaceAPI_ListSubdomains_Handler,
+		},
+		{
+			MethodName: "ReleaseSubdomain",
+			Handler:    _WorkspaceAPI_ReleaseSubdomain_Handler,
+		},
+		{
+			MethodName: "CreateFunnel",
+			Handler:    _WorkspaceAPI_CreateFunnel_Handler,
+		},
+		{
+			MethodName: "ListFunnels",
+			Handler:    _WorkspaceAPI_ListFunnels_Handler,
+		},
+		{
+			MethodName: "DeleteFunnel",
+			Handler:    _WorkspaceAPI_DeleteFunnel_Handler,
+		},
+		{
+			MethodName: "SuspendPrincipal",
+			Handler:    _WorkspaceAPI_SuspendPrincipal_Handler,
+		},
+		{
+			MethodName: "LiftSuspension",
+			Handler:    _WorkspaceAPI_LiftSuspension_Handler,
+		},
+		{
+			MethodName: "ListSuspensions",
+			Handler:    _WorkspaceAPI_ListSuspensions_Handler,
+		},
+		{
+			MethodName: "RevokeUser",
+			Handler:    _WorkspaceAPI_RevokeUser_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{
 		{
 			StreamName:    "SessionSignal",
-			Handler:       _UserAPI_SessionSignal_Handler,
+			Handler:       _WorkspaceAPI_SessionSignal_Handler,
 			ServerStreams: true,
 			ClientStreams: true,
 		},
 		{
 			StreamName:    "SessionControl",
-			Handler:       _UserAPI_SessionControl_Handler,
+			Handler:       _WorkspaceAPI_SessionControl_Handler,
 			ServerStreams: true,
 			ClientStreams: true,
 		},
 		{
 			StreamName:    "GetRecording",
-			Handler:       _UserAPI_GetRecording_Handler,
+			Handler:       _WorkspaceAPI_GetRecording_Handler,
 			ServerStreams: true,
 		},
 	},
@@ -1127,57 +1809,40 @@ var UserAPI_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
-	AdminAPI_CreateJoinToken_FullMethodName     = "/geneza.v1.AdminAPI/CreateJoinToken"
-	AdminAPI_ApproveNode_FullMethodName         = "/geneza.v1.AdminAPI/ApproveNode"
-	AdminAPI_ListWorkspaces_FullMethodName      = "/geneza.v1.AdminAPI/ListWorkspaces"
-	AdminAPI_RemoveNode_FullMethodName          = "/geneza.v1.AdminAPI/RemoveNode"
-	AdminAPI_PublishArtifact_FullMethodName     = "/geneza.v1.AdminAPI/PublishArtifact"
-	AdminAPI_SetDesiredVersion_FullMethodName   = "/geneza.v1.AdminAPI/SetDesiredVersion"
-	AdminAPI_StartRollout_FullMethodName        = "/geneza.v1.AdminAPI/StartRollout"
-	AdminAPI_GetRolloutStatus_FullMethodName    = "/geneza.v1.AdminAPI/GetRolloutStatus"
-	AdminAPI_PauseRollout_FullMethodName        = "/geneza.v1.AdminAPI/PauseRollout"
-	AdminAPI_ResumeRollout_FullMethodName       = "/geneza.v1.AdminAPI/ResumeRollout"
-	AdminAPI_AbortRollout_FullMethodName        = "/geneza.v1.AdminAPI/AbortRollout"
-	AdminAPI_SetAutoUpdate_FullMethodName       = "/geneza.v1.AdminAPI/SetAutoUpdate"
-	AdminAPI_GetFleetStatus_FullMethodName      = "/geneza.v1.AdminAPI/GetFleetStatus"
-	AdminAPI_ReloadPolicy_FullMethodName        = "/geneza.v1.AdminAPI/ReloadPolicy"
-	AdminAPI_QueryAudit_FullMethodName          = "/geneza.v1.AdminAPI/QueryAudit"
-	AdminAPI_RevokeSession_FullMethodName       = "/geneza.v1.AdminAPI/RevokeSession"
-	AdminAPI_RevokeUser_FullMethodName          = "/geneza.v1.AdminAPI/RevokeUser"
-	AdminAPI_SuspendPrincipal_FullMethodName    = "/geneza.v1.AdminAPI/SuspendPrincipal"
-	AdminAPI_LiftSuspension_FullMethodName      = "/geneza.v1.AdminAPI/LiftSuspension"
-	AdminAPI_ListSuspensions_FullMethodName     = "/geneza.v1.AdminAPI/ListSuspensions"
-	AdminAPI_SetNodeModules_FullMethodName      = "/geneza.v1.AdminAPI/SetNodeModules"
-	AdminAPI_GetNodeModules_FullMethodName      = "/geneza.v1.AdminAPI/GetNodeModules"
-	AdminAPI_BindSource_FullMethodName          = "/geneza.v1.AdminAPI/BindSource"
-	AdminAPI_UnbindSource_FullMethodName        = "/geneza.v1.AdminAPI/UnbindSource"
-	AdminAPI_ListSourceBindings_FullMethodName  = "/geneza.v1.AdminAPI/ListSourceBindings"
-	AdminAPI_RevokeCert_FullMethodName          = "/geneza.v1.AdminAPI/RevokeCert"
-	AdminAPI_ListRevokedCerts_FullMethodName    = "/geneza.v1.AdminAPI/ListRevokedCerts"
-	AdminAPI_InstallTrustAnchors_FullMethodName = "/geneza.v1.AdminAPI/InstallTrustAnchors"
-	AdminAPI_ReserveSubdomain_FullMethodName    = "/geneza.v1.AdminAPI/ReserveSubdomain"
-	AdminAPI_ListSubdomains_FullMethodName      = "/geneza.v1.AdminAPI/ListSubdomains"
-	AdminAPI_ReleaseSubdomain_FullMethodName    = "/geneza.v1.AdminAPI/ReleaseSubdomain"
-	AdminAPI_CreateFunnel_FullMethodName        = "/geneza.v1.AdminAPI/CreateFunnel"
-	AdminAPI_ListFunnels_FullMethodName         = "/geneza.v1.AdminAPI/ListFunnels"
-	AdminAPI_DeleteFunnel_FullMethodName        = "/geneza.v1.AdminAPI/DeleteFunnel"
-	AdminAPI_ListRelays_FullMethodName          = "/geneza.v1.AdminAPI/ListRelays"
+	ClusterAPI_ListWorkspaces_FullMethodName      = "/geneza.v1.ClusterAPI/ListWorkspaces"
+	ClusterAPI_PublishArtifact_FullMethodName     = "/geneza.v1.ClusterAPI/PublishArtifact"
+	ClusterAPI_SetDesiredVersion_FullMethodName   = "/geneza.v1.ClusterAPI/SetDesiredVersion"
+	ClusterAPI_StartRollout_FullMethodName        = "/geneza.v1.ClusterAPI/StartRollout"
+	ClusterAPI_GetRolloutStatus_FullMethodName    = "/geneza.v1.ClusterAPI/GetRolloutStatus"
+	ClusterAPI_PauseRollout_FullMethodName        = "/geneza.v1.ClusterAPI/PauseRollout"
+	ClusterAPI_ResumeRollout_FullMethodName       = "/geneza.v1.ClusterAPI/ResumeRollout"
+	ClusterAPI_AbortRollout_FullMethodName        = "/geneza.v1.ClusterAPI/AbortRollout"
+	ClusterAPI_SetAutoUpdate_FullMethodName       = "/geneza.v1.ClusterAPI/SetAutoUpdate"
+	ClusterAPI_GetFleetStatus_FullMethodName      = "/geneza.v1.ClusterAPI/GetFleetStatus"
+	ClusterAPI_ReloadPolicy_FullMethodName        = "/geneza.v1.ClusterAPI/ReloadPolicy"
+	ClusterAPI_RevokeUser_FullMethodName          = "/geneza.v1.ClusterAPI/RevokeUser"
+	ClusterAPI_SuspendPrincipal_FullMethodName    = "/geneza.v1.ClusterAPI/SuspendPrincipal"
+	ClusterAPI_LiftSuspension_FullMethodName      = "/geneza.v1.ClusterAPI/LiftSuspension"
+	ClusterAPI_ListSuspensions_FullMethodName     = "/geneza.v1.ClusterAPI/ListSuspensions"
+	ClusterAPI_BindSource_FullMethodName          = "/geneza.v1.ClusterAPI/BindSource"
+	ClusterAPI_UnbindSource_FullMethodName        = "/geneza.v1.ClusterAPI/UnbindSource"
+	ClusterAPI_ListSourceBindings_FullMethodName  = "/geneza.v1.ClusterAPI/ListSourceBindings"
+	ClusterAPI_RevokeCert_FullMethodName          = "/geneza.v1.ClusterAPI/RevokeCert"
+	ClusterAPI_ListRevokedCerts_FullMethodName    = "/geneza.v1.ClusterAPI/ListRevokedCerts"
+	ClusterAPI_InstallTrustAnchors_FullMethodName = "/geneza.v1.ClusterAPI/InstallTrustAnchors"
+	ClusterAPI_ListRelays_FullMethodName          = "/geneza.v1.ClusterAPI/ListRelays"
 )
 
-// AdminAPIClient is the client API for AdminAPI service.
+// ClusterAPIClient is the client API for ClusterAPI service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
-type AdminAPIClient interface {
-	CreateJoinToken(ctx context.Context, in *CreateJoinTokenRequest, opts ...grpc.CallOption) (*CreateJoinTokenResponse, error)
-	// ApproveNode flips a node's pending-approval gate (zero-trust admission
-	// control): an unapproved node has an identity but no session can be brokered
-	// to it until an admin approves. approve=false re-quarantines a node.
-	ApproveNode(ctx context.Context, in *ApproveNodeRequest, opts ...grpc.CallOption) (*Empty, error)
+//
+// ClusterAPI is the cluster-operator plane: fleet-global and cross-tenant state,
+// reached by genezactl and gated to the reserved break-glass admin/platform-admin
+// cert. Per-workspace operations live on WorkspaceAPI instead.
+type ClusterAPIClient interface {
 	// ListWorkspaces lists the tenants this controller hosts.
 	ListWorkspaces(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*ListWorkspacesResponse, error)
-	// RemoveNode decommissions a machine: deletes its record so it no longer
-	// appears in the fleet and must re-enroll (and re-be-approved) to return.
-	RemoveNode(ctx context.Context, in *RemoveNodeRequest, opts ...grpc.CallOption) (*Empty, error)
 	PublishArtifact(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[ArtifactChunk, PublishArtifactResponse], error)
 	SetDesiredVersion(ctx context.Context, in *SetDesiredVersionRequest, opts ...grpc.CallOption) (*Empty, error)
 	// Staggered rollout control: drive a product (agent/relay) through percentage
@@ -1189,24 +1854,21 @@ type AdminAPIClient interface {
 	ResumeRollout(ctx context.Context, in *RolloutControlRequest, opts ...grpc.CallOption) (*RolloutStatusResponse, error)
 	AbortRollout(ctx context.Context, in *RolloutControlRequest, opts ...grpc.CallOption) (*RolloutStatusResponse, error)
 	SetAutoUpdate(ctx context.Context, in *SetAutoUpdateRequest, opts ...grpc.CallOption) (*Empty, error)
+	// GetFleetStatus pairs the caller-workspace node summary with the cluster-global
+	// agent/relay version rings; consumed by genezactl status/release.
 	GetFleetStatus(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*FleetStatus, error)
 	ReloadPolicy(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*Empty, error)
-	QueryAudit(ctx context.Context, in *QueryAuditRequest, opts ...grpc.CallOption) (*QueryAuditResponse, error)
-	// RevokeSession force-terminates a live session (admin "kick"). RevokeUser
-	// revokes all of a user's sessions.
-	RevokeSession(ctx context.Context, in *RevokeSessionRequest, opts ...grpc.CallOption) (*Empty, error)
+	// RevokeUser revokes all of a user's sessions across the fleet (cross-tenant: it
+	// matches by username over every workspace).
 	RevokeUser(ctx context.Context, in *RevokeUserRequest, opts ...grpc.CallOption) (*RevokeCountResponse, error)
 	// Authorization (separate from authentication): SuspendPrincipal revokes a
 	// principal's authorization even while their token/cert stays valid — nukes
 	// their live tunnel + browser sessions and DENIES new ones (login, broker,
-	// cert-issuance, sweep) until LiftSuspension. Sticky across re-login.
+	// cert-issuance, sweep) until LiftSuspension. Cross-tenant: the operator targets
+	// any workspace via the request.
 	SuspendPrincipal(ctx context.Context, in *SuspendPrincipalRequest, opts ...grpc.CallOption) (*Empty, error)
 	LiftSuspension(ctx context.Context, in *SuspendPrincipalRequest, opts ...grpc.CallOption) (*Empty, error)
 	ListSuspensions(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*ListSuspensionsResponse, error)
-	// Per-node agent modules (enable/disable monitoring & future exporters). The
-	// controller persists the desired set and pushes it to the node in realtime.
-	SetNodeModules(ctx context.Context, in *SetNodeModulesRequest, opts ...grpc.CallOption) (*Empty, error)
-	GetNodeModules(ctx context.Context, in *GetNodeModulesRequest, opts ...grpc.CallOption) (*NodeModulesResponse, error)
 	// Cloud-qualified SOURCE bindings (workspace-as-hub): bind an external
 	// identity source (e.g. openstack:project:<svc>:<uuid>, idp:group:<realm>:<g>)
 	// to a workspace so its VMs/users enroll/land there. Operator pre-bind path.
@@ -1221,78 +1883,35 @@ type AdminAPIClient interface {
 	// (assembled by geneza-trust) and CASes it into the store, flipping the cluster
 	// into split mode. The controller holds NO trust key: it only stores the
 	// operator-supplied anchor and re-pins the routine map to it; it can never author
-	// or alter the anchor. Cluster-admin gated like the rest of the AdminAPI.
+	// or alter the anchor. Cluster-admin gated like the rest of ClusterAPI.
 	InstallTrustAnchors(ctx context.Context, in *InstallTrustAnchorsRequest, opts ...grpc.CallOption) (*InstallTrustAnchorsResponse, error)
-	// Managed-domain subdomain reservations (ws-admin scoped to the caller's
-	// workspace): claim a subdomain label on a configured managed domain, list the
-	// workspace's reservations + claimable domains, release one. The cert manager
-	// issues a wildcard per reservation.
-	ReserveSubdomain(ctx context.Context, in *ReserveSubdomainRequest, opts ...grpc.CallOption) (*SubdomainReservationInfo, error)
-	ListSubdomains(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*ListSubdomainsResponse, error)
-	ReleaseSubdomain(ctx context.Context, in *ReleaseSubdomainRequest, opts ...grpc.CallOption) (*Empty, error)
-	// Funnel: expose a workspace service to the PUBLIC internet at a hostname under
-	// one of the workspace's reservations. The controller mints a narrow leaf and a
-	// relay pool terminates public TLS + reverse-proxies into the overlay.
-	CreateFunnel(ctx context.Context, in *CreateFunnelRequest, opts ...grpc.CallOption) (*FunnelInfo, error)
-	ListFunnels(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*ListFunnelsResponse, error)
-	DeleteFunnel(ctx context.Context, in *DeleteFunnelRequest, opts ...grpc.CallOption) (*Empty, error)
 	// Relay fleet view: presence rows for the registered relays, including each
 	// relay's CURRENT identity-cert serial — the value to pass to RevokeCert to
 	// decommission it (the serial rotates on renewal, so read it live from here).
 	ListRelays(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*RelayList, error)
 }
 
-type adminAPIClient struct {
+type clusterAPIClient struct {
 	cc grpc.ClientConnInterface
 }
 
-func NewAdminAPIClient(cc grpc.ClientConnInterface) AdminAPIClient {
-	return &adminAPIClient{cc}
+func NewClusterAPIClient(cc grpc.ClientConnInterface) ClusterAPIClient {
+	return &clusterAPIClient{cc}
 }
 
-func (c *adminAPIClient) CreateJoinToken(ctx context.Context, in *CreateJoinTokenRequest, opts ...grpc.CallOption) (*CreateJoinTokenResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(CreateJoinTokenResponse)
-	err := c.cc.Invoke(ctx, AdminAPI_CreateJoinToken_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *adminAPIClient) ApproveNode(ctx context.Context, in *ApproveNodeRequest, opts ...grpc.CallOption) (*Empty, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(Empty)
-	err := c.cc.Invoke(ctx, AdminAPI_ApproveNode_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *adminAPIClient) ListWorkspaces(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*ListWorkspacesResponse, error) {
+func (c *clusterAPIClient) ListWorkspaces(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*ListWorkspacesResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListWorkspacesResponse)
-	err := c.cc.Invoke(ctx, AdminAPI_ListWorkspaces_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, ClusterAPI_ListWorkspaces_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *adminAPIClient) RemoveNode(ctx context.Context, in *RemoveNodeRequest, opts ...grpc.CallOption) (*Empty, error) {
+func (c *clusterAPIClient) PublishArtifact(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[ArtifactChunk, PublishArtifactResponse], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(Empty)
-	err := c.cc.Invoke(ctx, AdminAPI_RemoveNode_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *adminAPIClient) PublishArtifact(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[ArtifactChunk, PublishArtifactResponse], error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &AdminAPI_ServiceDesc.Streams[0], AdminAPI_PublishArtifact_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &ClusterAPI_ServiceDesc.Streams[0], ClusterAPI_PublishArtifact_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1301,322 +1920,218 @@ func (c *adminAPIClient) PublishArtifact(ctx context.Context, opts ...grpc.CallO
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type AdminAPI_PublishArtifactClient = grpc.ClientStreamingClient[ArtifactChunk, PublishArtifactResponse]
+type ClusterAPI_PublishArtifactClient = grpc.ClientStreamingClient[ArtifactChunk, PublishArtifactResponse]
 
-func (c *adminAPIClient) SetDesiredVersion(ctx context.Context, in *SetDesiredVersionRequest, opts ...grpc.CallOption) (*Empty, error) {
+func (c *clusterAPIClient) SetDesiredVersion(ctx context.Context, in *SetDesiredVersionRequest, opts ...grpc.CallOption) (*Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(Empty)
-	err := c.cc.Invoke(ctx, AdminAPI_SetDesiredVersion_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, ClusterAPI_SetDesiredVersion_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *adminAPIClient) StartRollout(ctx context.Context, in *StartRolloutRequest, opts ...grpc.CallOption) (*RolloutStatusResponse, error) {
+func (c *clusterAPIClient) StartRollout(ctx context.Context, in *StartRolloutRequest, opts ...grpc.CallOption) (*RolloutStatusResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RolloutStatusResponse)
-	err := c.cc.Invoke(ctx, AdminAPI_StartRollout_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, ClusterAPI_StartRollout_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *adminAPIClient) GetRolloutStatus(ctx context.Context, in *RolloutControlRequest, opts ...grpc.CallOption) (*RolloutStatusResponse, error) {
+func (c *clusterAPIClient) GetRolloutStatus(ctx context.Context, in *RolloutControlRequest, opts ...grpc.CallOption) (*RolloutStatusResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RolloutStatusResponse)
-	err := c.cc.Invoke(ctx, AdminAPI_GetRolloutStatus_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, ClusterAPI_GetRolloutStatus_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *adminAPIClient) PauseRollout(ctx context.Context, in *RolloutControlRequest, opts ...grpc.CallOption) (*RolloutStatusResponse, error) {
+func (c *clusterAPIClient) PauseRollout(ctx context.Context, in *RolloutControlRequest, opts ...grpc.CallOption) (*RolloutStatusResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RolloutStatusResponse)
-	err := c.cc.Invoke(ctx, AdminAPI_PauseRollout_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, ClusterAPI_PauseRollout_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *adminAPIClient) ResumeRollout(ctx context.Context, in *RolloutControlRequest, opts ...grpc.CallOption) (*RolloutStatusResponse, error) {
+func (c *clusterAPIClient) ResumeRollout(ctx context.Context, in *RolloutControlRequest, opts ...grpc.CallOption) (*RolloutStatusResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RolloutStatusResponse)
-	err := c.cc.Invoke(ctx, AdminAPI_ResumeRollout_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, ClusterAPI_ResumeRollout_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *adminAPIClient) AbortRollout(ctx context.Context, in *RolloutControlRequest, opts ...grpc.CallOption) (*RolloutStatusResponse, error) {
+func (c *clusterAPIClient) AbortRollout(ctx context.Context, in *RolloutControlRequest, opts ...grpc.CallOption) (*RolloutStatusResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RolloutStatusResponse)
-	err := c.cc.Invoke(ctx, AdminAPI_AbortRollout_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, ClusterAPI_AbortRollout_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *adminAPIClient) SetAutoUpdate(ctx context.Context, in *SetAutoUpdateRequest, opts ...grpc.CallOption) (*Empty, error) {
+func (c *clusterAPIClient) SetAutoUpdate(ctx context.Context, in *SetAutoUpdateRequest, opts ...grpc.CallOption) (*Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(Empty)
-	err := c.cc.Invoke(ctx, AdminAPI_SetAutoUpdate_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, ClusterAPI_SetAutoUpdate_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *adminAPIClient) GetFleetStatus(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*FleetStatus, error) {
+func (c *clusterAPIClient) GetFleetStatus(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*FleetStatus, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(FleetStatus)
-	err := c.cc.Invoke(ctx, AdminAPI_GetFleetStatus_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, ClusterAPI_GetFleetStatus_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *adminAPIClient) ReloadPolicy(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*Empty, error) {
+func (c *clusterAPIClient) ReloadPolicy(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(Empty)
-	err := c.cc.Invoke(ctx, AdminAPI_ReloadPolicy_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, ClusterAPI_ReloadPolicy_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *adminAPIClient) QueryAudit(ctx context.Context, in *QueryAuditRequest, opts ...grpc.CallOption) (*QueryAuditResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(QueryAuditResponse)
-	err := c.cc.Invoke(ctx, AdminAPI_QueryAudit_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *adminAPIClient) RevokeSession(ctx context.Context, in *RevokeSessionRequest, opts ...grpc.CallOption) (*Empty, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(Empty)
-	err := c.cc.Invoke(ctx, AdminAPI_RevokeSession_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *adminAPIClient) RevokeUser(ctx context.Context, in *RevokeUserRequest, opts ...grpc.CallOption) (*RevokeCountResponse, error) {
+func (c *clusterAPIClient) RevokeUser(ctx context.Context, in *RevokeUserRequest, opts ...grpc.CallOption) (*RevokeCountResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RevokeCountResponse)
-	err := c.cc.Invoke(ctx, AdminAPI_RevokeUser_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, ClusterAPI_RevokeUser_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *adminAPIClient) SuspendPrincipal(ctx context.Context, in *SuspendPrincipalRequest, opts ...grpc.CallOption) (*Empty, error) {
+func (c *clusterAPIClient) SuspendPrincipal(ctx context.Context, in *SuspendPrincipalRequest, opts ...grpc.CallOption) (*Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(Empty)
-	err := c.cc.Invoke(ctx, AdminAPI_SuspendPrincipal_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, ClusterAPI_SuspendPrincipal_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *adminAPIClient) LiftSuspension(ctx context.Context, in *SuspendPrincipalRequest, opts ...grpc.CallOption) (*Empty, error) {
+func (c *clusterAPIClient) LiftSuspension(ctx context.Context, in *SuspendPrincipalRequest, opts ...grpc.CallOption) (*Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(Empty)
-	err := c.cc.Invoke(ctx, AdminAPI_LiftSuspension_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, ClusterAPI_LiftSuspension_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *adminAPIClient) ListSuspensions(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*ListSuspensionsResponse, error) {
+func (c *clusterAPIClient) ListSuspensions(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*ListSuspensionsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListSuspensionsResponse)
-	err := c.cc.Invoke(ctx, AdminAPI_ListSuspensions_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, ClusterAPI_ListSuspensions_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *adminAPIClient) SetNodeModules(ctx context.Context, in *SetNodeModulesRequest, opts ...grpc.CallOption) (*Empty, error) {
+func (c *clusterAPIClient) BindSource(ctx context.Context, in *BindSourceRequest, opts ...grpc.CallOption) (*Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(Empty)
-	err := c.cc.Invoke(ctx, AdminAPI_SetNodeModules_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, ClusterAPI_BindSource_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *adminAPIClient) GetNodeModules(ctx context.Context, in *GetNodeModulesRequest, opts ...grpc.CallOption) (*NodeModulesResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(NodeModulesResponse)
-	err := c.cc.Invoke(ctx, AdminAPI_GetNodeModules_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *adminAPIClient) BindSource(ctx context.Context, in *BindSourceRequest, opts ...grpc.CallOption) (*Empty, error) {
+func (c *clusterAPIClient) UnbindSource(ctx context.Context, in *UnbindSourceRequest, opts ...grpc.CallOption) (*Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(Empty)
-	err := c.cc.Invoke(ctx, AdminAPI_BindSource_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, ClusterAPI_UnbindSource_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *adminAPIClient) UnbindSource(ctx context.Context, in *UnbindSourceRequest, opts ...grpc.CallOption) (*Empty, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(Empty)
-	err := c.cc.Invoke(ctx, AdminAPI_UnbindSource_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *adminAPIClient) ListSourceBindings(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*ListSourceBindingsResponse, error) {
+func (c *clusterAPIClient) ListSourceBindings(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*ListSourceBindingsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListSourceBindingsResponse)
-	err := c.cc.Invoke(ctx, AdminAPI_ListSourceBindings_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, ClusterAPI_ListSourceBindings_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *adminAPIClient) RevokeCert(ctx context.Context, in *RevokeCertRequest, opts ...grpc.CallOption) (*Empty, error) {
+func (c *clusterAPIClient) RevokeCert(ctx context.Context, in *RevokeCertRequest, opts ...grpc.CallOption) (*Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(Empty)
-	err := c.cc.Invoke(ctx, AdminAPI_RevokeCert_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, ClusterAPI_RevokeCert_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *adminAPIClient) ListRevokedCerts(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*ListRevokedCertsResponse, error) {
+func (c *clusterAPIClient) ListRevokedCerts(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*ListRevokedCertsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListRevokedCertsResponse)
-	err := c.cc.Invoke(ctx, AdminAPI_ListRevokedCerts_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, ClusterAPI_ListRevokedCerts_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *adminAPIClient) InstallTrustAnchors(ctx context.Context, in *InstallTrustAnchorsRequest, opts ...grpc.CallOption) (*InstallTrustAnchorsResponse, error) {
+func (c *clusterAPIClient) InstallTrustAnchors(ctx context.Context, in *InstallTrustAnchorsRequest, opts ...grpc.CallOption) (*InstallTrustAnchorsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(InstallTrustAnchorsResponse)
-	err := c.cc.Invoke(ctx, AdminAPI_InstallTrustAnchors_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, ClusterAPI_InstallTrustAnchors_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *adminAPIClient) ReserveSubdomain(ctx context.Context, in *ReserveSubdomainRequest, opts ...grpc.CallOption) (*SubdomainReservationInfo, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(SubdomainReservationInfo)
-	err := c.cc.Invoke(ctx, AdminAPI_ReserveSubdomain_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *adminAPIClient) ListSubdomains(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*ListSubdomainsResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(ListSubdomainsResponse)
-	err := c.cc.Invoke(ctx, AdminAPI_ListSubdomains_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *adminAPIClient) ReleaseSubdomain(ctx context.Context, in *ReleaseSubdomainRequest, opts ...grpc.CallOption) (*Empty, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(Empty)
-	err := c.cc.Invoke(ctx, AdminAPI_ReleaseSubdomain_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *adminAPIClient) CreateFunnel(ctx context.Context, in *CreateFunnelRequest, opts ...grpc.CallOption) (*FunnelInfo, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(FunnelInfo)
-	err := c.cc.Invoke(ctx, AdminAPI_CreateFunnel_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *adminAPIClient) ListFunnels(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*ListFunnelsResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(ListFunnelsResponse)
-	err := c.cc.Invoke(ctx, AdminAPI_ListFunnels_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *adminAPIClient) DeleteFunnel(ctx context.Context, in *DeleteFunnelRequest, opts ...grpc.CallOption) (*Empty, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(Empty)
-	err := c.cc.Invoke(ctx, AdminAPI_DeleteFunnel_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *adminAPIClient) ListRelays(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*RelayList, error) {
+func (c *clusterAPIClient) ListRelays(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*RelayList, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RelayList)
-	err := c.cc.Invoke(ctx, AdminAPI_ListRelays_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, ClusterAPI_ListRelays_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-// AdminAPIServer is the server API for AdminAPI service.
-// All implementations must embed UnimplementedAdminAPIServer
+// ClusterAPIServer is the server API for ClusterAPI service.
+// All implementations must embed UnimplementedClusterAPIServer
 // for forward compatibility.
-type AdminAPIServer interface {
-	CreateJoinToken(context.Context, *CreateJoinTokenRequest) (*CreateJoinTokenResponse, error)
-	// ApproveNode flips a node's pending-approval gate (zero-trust admission
-	// control): an unapproved node has an identity but no session can be brokered
-	// to it until an admin approves. approve=false re-quarantines a node.
-	ApproveNode(context.Context, *ApproveNodeRequest) (*Empty, error)
+//
+// ClusterAPI is the cluster-operator plane: fleet-global and cross-tenant state,
+// reached by genezactl and gated to the reserved break-glass admin/platform-admin
+// cert. Per-workspace operations live on WorkspaceAPI instead.
+type ClusterAPIServer interface {
 	// ListWorkspaces lists the tenants this controller hosts.
 	ListWorkspaces(context.Context, *Empty) (*ListWorkspacesResponse, error)
-	// RemoveNode decommissions a machine: deletes its record so it no longer
-	// appears in the fleet and must re-enroll (and re-be-approved) to return.
-	RemoveNode(context.Context, *RemoveNodeRequest) (*Empty, error)
 	PublishArtifact(grpc.ClientStreamingServer[ArtifactChunk, PublishArtifactResponse]) error
 	SetDesiredVersion(context.Context, *SetDesiredVersionRequest) (*Empty, error)
 	// Staggered rollout control: drive a product (agent/relay) through percentage
@@ -1628,24 +2143,21 @@ type AdminAPIServer interface {
 	ResumeRollout(context.Context, *RolloutControlRequest) (*RolloutStatusResponse, error)
 	AbortRollout(context.Context, *RolloutControlRequest) (*RolloutStatusResponse, error)
 	SetAutoUpdate(context.Context, *SetAutoUpdateRequest) (*Empty, error)
+	// GetFleetStatus pairs the caller-workspace node summary with the cluster-global
+	// agent/relay version rings; consumed by genezactl status/release.
 	GetFleetStatus(context.Context, *Empty) (*FleetStatus, error)
 	ReloadPolicy(context.Context, *Empty) (*Empty, error)
-	QueryAudit(context.Context, *QueryAuditRequest) (*QueryAuditResponse, error)
-	// RevokeSession force-terminates a live session (admin "kick"). RevokeUser
-	// revokes all of a user's sessions.
-	RevokeSession(context.Context, *RevokeSessionRequest) (*Empty, error)
+	// RevokeUser revokes all of a user's sessions across the fleet (cross-tenant: it
+	// matches by username over every workspace).
 	RevokeUser(context.Context, *RevokeUserRequest) (*RevokeCountResponse, error)
 	// Authorization (separate from authentication): SuspendPrincipal revokes a
 	// principal's authorization even while their token/cert stays valid — nukes
 	// their live tunnel + browser sessions and DENIES new ones (login, broker,
-	// cert-issuance, sweep) until LiftSuspension. Sticky across re-login.
+	// cert-issuance, sweep) until LiftSuspension. Cross-tenant: the operator targets
+	// any workspace via the request.
 	SuspendPrincipal(context.Context, *SuspendPrincipalRequest) (*Empty, error)
 	LiftSuspension(context.Context, *SuspendPrincipalRequest) (*Empty, error)
 	ListSuspensions(context.Context, *Empty) (*ListSuspensionsResponse, error)
-	// Per-node agent modules (enable/disable monitoring & future exporters). The
-	// controller persists the desired set and pushes it to the node in realtime.
-	SetNodeModules(context.Context, *SetNodeModulesRequest) (*Empty, error)
-	GetNodeModules(context.Context, *GetNodeModulesRequest) (*NodeModulesResponse, error)
 	// Cloud-qualified SOURCE bindings (workspace-as-hub): bind an external
 	// identity source (e.g. openstack:project:<svc>:<uuid>, idp:group:<realm>:<g>)
 	// to a workspace so its VMs/users enroll/land there. Operator pre-bind path.
@@ -1660,928 +2172,590 @@ type AdminAPIServer interface {
 	// (assembled by geneza-trust) and CASes it into the store, flipping the cluster
 	// into split mode. The controller holds NO trust key: it only stores the
 	// operator-supplied anchor and re-pins the routine map to it; it can never author
-	// or alter the anchor. Cluster-admin gated like the rest of the AdminAPI.
+	// or alter the anchor. Cluster-admin gated like the rest of ClusterAPI.
 	InstallTrustAnchors(context.Context, *InstallTrustAnchorsRequest) (*InstallTrustAnchorsResponse, error)
-	// Managed-domain subdomain reservations (ws-admin scoped to the caller's
-	// workspace): claim a subdomain label on a configured managed domain, list the
-	// workspace's reservations + claimable domains, release one. The cert manager
-	// issues a wildcard per reservation.
-	ReserveSubdomain(context.Context, *ReserveSubdomainRequest) (*SubdomainReservationInfo, error)
-	ListSubdomains(context.Context, *Empty) (*ListSubdomainsResponse, error)
-	ReleaseSubdomain(context.Context, *ReleaseSubdomainRequest) (*Empty, error)
-	// Funnel: expose a workspace service to the PUBLIC internet at a hostname under
-	// one of the workspace's reservations. The controller mints a narrow leaf and a
-	// relay pool terminates public TLS + reverse-proxies into the overlay.
-	CreateFunnel(context.Context, *CreateFunnelRequest) (*FunnelInfo, error)
-	ListFunnels(context.Context, *Empty) (*ListFunnelsResponse, error)
-	DeleteFunnel(context.Context, *DeleteFunnelRequest) (*Empty, error)
 	// Relay fleet view: presence rows for the registered relays, including each
 	// relay's CURRENT identity-cert serial — the value to pass to RevokeCert to
 	// decommission it (the serial rotates on renewal, so read it live from here).
 	ListRelays(context.Context, *Empty) (*RelayList, error)
-	mustEmbedUnimplementedAdminAPIServer()
+	mustEmbedUnimplementedClusterAPIServer()
 }
 
-// UnimplementedAdminAPIServer must be embedded to have
+// UnimplementedClusterAPIServer must be embedded to have
 // forward compatible implementations.
 //
 // NOTE: this should be embedded by value instead of pointer to avoid a nil
 // pointer dereference when methods are called.
-type UnimplementedAdminAPIServer struct{}
+type UnimplementedClusterAPIServer struct{}
 
-func (UnimplementedAdminAPIServer) CreateJoinToken(context.Context, *CreateJoinTokenRequest) (*CreateJoinTokenResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method CreateJoinToken not implemented")
-}
-func (UnimplementedAdminAPIServer) ApproveNode(context.Context, *ApproveNodeRequest) (*Empty, error) {
-	return nil, status.Error(codes.Unimplemented, "method ApproveNode not implemented")
-}
-func (UnimplementedAdminAPIServer) ListWorkspaces(context.Context, *Empty) (*ListWorkspacesResponse, error) {
+func (UnimplementedClusterAPIServer) ListWorkspaces(context.Context, *Empty) (*ListWorkspacesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListWorkspaces not implemented")
 }
-func (UnimplementedAdminAPIServer) RemoveNode(context.Context, *RemoveNodeRequest) (*Empty, error) {
-	return nil, status.Error(codes.Unimplemented, "method RemoveNode not implemented")
-}
-func (UnimplementedAdminAPIServer) PublishArtifact(grpc.ClientStreamingServer[ArtifactChunk, PublishArtifactResponse]) error {
+func (UnimplementedClusterAPIServer) PublishArtifact(grpc.ClientStreamingServer[ArtifactChunk, PublishArtifactResponse]) error {
 	return status.Error(codes.Unimplemented, "method PublishArtifact not implemented")
 }
-func (UnimplementedAdminAPIServer) SetDesiredVersion(context.Context, *SetDesiredVersionRequest) (*Empty, error) {
+func (UnimplementedClusterAPIServer) SetDesiredVersion(context.Context, *SetDesiredVersionRequest) (*Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetDesiredVersion not implemented")
 }
-func (UnimplementedAdminAPIServer) StartRollout(context.Context, *StartRolloutRequest) (*RolloutStatusResponse, error) {
+func (UnimplementedClusterAPIServer) StartRollout(context.Context, *StartRolloutRequest) (*RolloutStatusResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method StartRollout not implemented")
 }
-func (UnimplementedAdminAPIServer) GetRolloutStatus(context.Context, *RolloutControlRequest) (*RolloutStatusResponse, error) {
+func (UnimplementedClusterAPIServer) GetRolloutStatus(context.Context, *RolloutControlRequest) (*RolloutStatusResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetRolloutStatus not implemented")
 }
-func (UnimplementedAdminAPIServer) PauseRollout(context.Context, *RolloutControlRequest) (*RolloutStatusResponse, error) {
+func (UnimplementedClusterAPIServer) PauseRollout(context.Context, *RolloutControlRequest) (*RolloutStatusResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method PauseRollout not implemented")
 }
-func (UnimplementedAdminAPIServer) ResumeRollout(context.Context, *RolloutControlRequest) (*RolloutStatusResponse, error) {
+func (UnimplementedClusterAPIServer) ResumeRollout(context.Context, *RolloutControlRequest) (*RolloutStatusResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ResumeRollout not implemented")
 }
-func (UnimplementedAdminAPIServer) AbortRollout(context.Context, *RolloutControlRequest) (*RolloutStatusResponse, error) {
+func (UnimplementedClusterAPIServer) AbortRollout(context.Context, *RolloutControlRequest) (*RolloutStatusResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AbortRollout not implemented")
 }
-func (UnimplementedAdminAPIServer) SetAutoUpdate(context.Context, *SetAutoUpdateRequest) (*Empty, error) {
+func (UnimplementedClusterAPIServer) SetAutoUpdate(context.Context, *SetAutoUpdateRequest) (*Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetAutoUpdate not implemented")
 }
-func (UnimplementedAdminAPIServer) GetFleetStatus(context.Context, *Empty) (*FleetStatus, error) {
+func (UnimplementedClusterAPIServer) GetFleetStatus(context.Context, *Empty) (*FleetStatus, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetFleetStatus not implemented")
 }
-func (UnimplementedAdminAPIServer) ReloadPolicy(context.Context, *Empty) (*Empty, error) {
+func (UnimplementedClusterAPIServer) ReloadPolicy(context.Context, *Empty) (*Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method ReloadPolicy not implemented")
 }
-func (UnimplementedAdminAPIServer) QueryAudit(context.Context, *QueryAuditRequest) (*QueryAuditResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method QueryAudit not implemented")
-}
-func (UnimplementedAdminAPIServer) RevokeSession(context.Context, *RevokeSessionRequest) (*Empty, error) {
-	return nil, status.Error(codes.Unimplemented, "method RevokeSession not implemented")
-}
-func (UnimplementedAdminAPIServer) RevokeUser(context.Context, *RevokeUserRequest) (*RevokeCountResponse, error) {
+func (UnimplementedClusterAPIServer) RevokeUser(context.Context, *RevokeUserRequest) (*RevokeCountResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RevokeUser not implemented")
 }
-func (UnimplementedAdminAPIServer) SuspendPrincipal(context.Context, *SuspendPrincipalRequest) (*Empty, error) {
+func (UnimplementedClusterAPIServer) SuspendPrincipal(context.Context, *SuspendPrincipalRequest) (*Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method SuspendPrincipal not implemented")
 }
-func (UnimplementedAdminAPIServer) LiftSuspension(context.Context, *SuspendPrincipalRequest) (*Empty, error) {
+func (UnimplementedClusterAPIServer) LiftSuspension(context.Context, *SuspendPrincipalRequest) (*Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method LiftSuspension not implemented")
 }
-func (UnimplementedAdminAPIServer) ListSuspensions(context.Context, *Empty) (*ListSuspensionsResponse, error) {
+func (UnimplementedClusterAPIServer) ListSuspensions(context.Context, *Empty) (*ListSuspensionsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListSuspensions not implemented")
 }
-func (UnimplementedAdminAPIServer) SetNodeModules(context.Context, *SetNodeModulesRequest) (*Empty, error) {
-	return nil, status.Error(codes.Unimplemented, "method SetNodeModules not implemented")
-}
-func (UnimplementedAdminAPIServer) GetNodeModules(context.Context, *GetNodeModulesRequest) (*NodeModulesResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method GetNodeModules not implemented")
-}
-func (UnimplementedAdminAPIServer) BindSource(context.Context, *BindSourceRequest) (*Empty, error) {
+func (UnimplementedClusterAPIServer) BindSource(context.Context, *BindSourceRequest) (*Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method BindSource not implemented")
 }
-func (UnimplementedAdminAPIServer) UnbindSource(context.Context, *UnbindSourceRequest) (*Empty, error) {
+func (UnimplementedClusterAPIServer) UnbindSource(context.Context, *UnbindSourceRequest) (*Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method UnbindSource not implemented")
 }
-func (UnimplementedAdminAPIServer) ListSourceBindings(context.Context, *Empty) (*ListSourceBindingsResponse, error) {
+func (UnimplementedClusterAPIServer) ListSourceBindings(context.Context, *Empty) (*ListSourceBindingsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListSourceBindings not implemented")
 }
-func (UnimplementedAdminAPIServer) RevokeCert(context.Context, *RevokeCertRequest) (*Empty, error) {
+func (UnimplementedClusterAPIServer) RevokeCert(context.Context, *RevokeCertRequest) (*Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method RevokeCert not implemented")
 }
-func (UnimplementedAdminAPIServer) ListRevokedCerts(context.Context, *Empty) (*ListRevokedCertsResponse, error) {
+func (UnimplementedClusterAPIServer) ListRevokedCerts(context.Context, *Empty) (*ListRevokedCertsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListRevokedCerts not implemented")
 }
-func (UnimplementedAdminAPIServer) InstallTrustAnchors(context.Context, *InstallTrustAnchorsRequest) (*InstallTrustAnchorsResponse, error) {
+func (UnimplementedClusterAPIServer) InstallTrustAnchors(context.Context, *InstallTrustAnchorsRequest) (*InstallTrustAnchorsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method InstallTrustAnchors not implemented")
 }
-func (UnimplementedAdminAPIServer) ReserveSubdomain(context.Context, *ReserveSubdomainRequest) (*SubdomainReservationInfo, error) {
-	return nil, status.Error(codes.Unimplemented, "method ReserveSubdomain not implemented")
-}
-func (UnimplementedAdminAPIServer) ListSubdomains(context.Context, *Empty) (*ListSubdomainsResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method ListSubdomains not implemented")
-}
-func (UnimplementedAdminAPIServer) ReleaseSubdomain(context.Context, *ReleaseSubdomainRequest) (*Empty, error) {
-	return nil, status.Error(codes.Unimplemented, "method ReleaseSubdomain not implemented")
-}
-func (UnimplementedAdminAPIServer) CreateFunnel(context.Context, *CreateFunnelRequest) (*FunnelInfo, error) {
-	return nil, status.Error(codes.Unimplemented, "method CreateFunnel not implemented")
-}
-func (UnimplementedAdminAPIServer) ListFunnels(context.Context, *Empty) (*ListFunnelsResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method ListFunnels not implemented")
-}
-func (UnimplementedAdminAPIServer) DeleteFunnel(context.Context, *DeleteFunnelRequest) (*Empty, error) {
-	return nil, status.Error(codes.Unimplemented, "method DeleteFunnel not implemented")
-}
-func (UnimplementedAdminAPIServer) ListRelays(context.Context, *Empty) (*RelayList, error) {
+func (UnimplementedClusterAPIServer) ListRelays(context.Context, *Empty) (*RelayList, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListRelays not implemented")
 }
-func (UnimplementedAdminAPIServer) mustEmbedUnimplementedAdminAPIServer() {}
-func (UnimplementedAdminAPIServer) testEmbeddedByValue()                  {}
+func (UnimplementedClusterAPIServer) mustEmbedUnimplementedClusterAPIServer() {}
+func (UnimplementedClusterAPIServer) testEmbeddedByValue()                    {}
 
-// UnsafeAdminAPIServer may be embedded to opt out of forward compatibility for this service.
-// Use of this interface is not recommended, as added methods to AdminAPIServer will
+// UnsafeClusterAPIServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to ClusterAPIServer will
 // result in compilation errors.
-type UnsafeAdminAPIServer interface {
-	mustEmbedUnimplementedAdminAPIServer()
+type UnsafeClusterAPIServer interface {
+	mustEmbedUnimplementedClusterAPIServer()
 }
 
-func RegisterAdminAPIServer(s grpc.ServiceRegistrar, srv AdminAPIServer) {
-	// If the following call panics, it indicates UnimplementedAdminAPIServer was
+func RegisterClusterAPIServer(s grpc.ServiceRegistrar, srv ClusterAPIServer) {
+	// If the following call panics, it indicates UnimplementedClusterAPIServer was
 	// embedded by pointer and is nil.  This will cause panics if an
 	// unimplemented method is ever invoked, so we test this at initialization
 	// time to prevent it from happening at runtime later due to I/O.
 	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
 		t.testEmbeddedByValue()
 	}
-	s.RegisterService(&AdminAPI_ServiceDesc, srv)
+	s.RegisterService(&ClusterAPI_ServiceDesc, srv)
 }
 
-func _AdminAPI_CreateJoinToken_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(CreateJoinTokenRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(AdminAPIServer).CreateJoinToken(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: AdminAPI_CreateJoinToken_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AdminAPIServer).CreateJoinToken(ctx, req.(*CreateJoinTokenRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _AdminAPI_ApproveNode_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ApproveNodeRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(AdminAPIServer).ApproveNode(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: AdminAPI_ApproveNode_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AdminAPIServer).ApproveNode(ctx, req.(*ApproveNodeRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _AdminAPI_ListWorkspaces_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _ClusterAPI_ListWorkspaces_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(Empty)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(AdminAPIServer).ListWorkspaces(ctx, in)
+		return srv.(ClusterAPIServer).ListWorkspaces(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: AdminAPI_ListWorkspaces_FullMethodName,
+		FullMethod: ClusterAPI_ListWorkspaces_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AdminAPIServer).ListWorkspaces(ctx, req.(*Empty))
+		return srv.(ClusterAPIServer).ListWorkspaces(ctx, req.(*Empty))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _AdminAPI_RemoveNode_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(RemoveNodeRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(AdminAPIServer).RemoveNode(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: AdminAPI_RemoveNode_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AdminAPIServer).RemoveNode(ctx, req.(*RemoveNodeRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _AdminAPI_PublishArtifact_Handler(srv interface{}, stream grpc.ServerStream) error {
-	return srv.(AdminAPIServer).PublishArtifact(&grpc.GenericServerStream[ArtifactChunk, PublishArtifactResponse]{ServerStream: stream})
+func _ClusterAPI_PublishArtifact_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(ClusterAPIServer).PublishArtifact(&grpc.GenericServerStream[ArtifactChunk, PublishArtifactResponse]{ServerStream: stream})
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type AdminAPI_PublishArtifactServer = grpc.ClientStreamingServer[ArtifactChunk, PublishArtifactResponse]
+type ClusterAPI_PublishArtifactServer = grpc.ClientStreamingServer[ArtifactChunk, PublishArtifactResponse]
 
-func _AdminAPI_SetDesiredVersion_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _ClusterAPI_SetDesiredVersion_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(SetDesiredVersionRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(AdminAPIServer).SetDesiredVersion(ctx, in)
+		return srv.(ClusterAPIServer).SetDesiredVersion(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: AdminAPI_SetDesiredVersion_FullMethodName,
+		FullMethod: ClusterAPI_SetDesiredVersion_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AdminAPIServer).SetDesiredVersion(ctx, req.(*SetDesiredVersionRequest))
+		return srv.(ClusterAPIServer).SetDesiredVersion(ctx, req.(*SetDesiredVersionRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _AdminAPI_StartRollout_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _ClusterAPI_StartRollout_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(StartRolloutRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(AdminAPIServer).StartRollout(ctx, in)
+		return srv.(ClusterAPIServer).StartRollout(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: AdminAPI_StartRollout_FullMethodName,
+		FullMethod: ClusterAPI_StartRollout_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AdminAPIServer).StartRollout(ctx, req.(*StartRolloutRequest))
+		return srv.(ClusterAPIServer).StartRollout(ctx, req.(*StartRolloutRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _AdminAPI_GetRolloutStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _ClusterAPI_GetRolloutStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(RolloutControlRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(AdminAPIServer).GetRolloutStatus(ctx, in)
+		return srv.(ClusterAPIServer).GetRolloutStatus(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: AdminAPI_GetRolloutStatus_FullMethodName,
+		FullMethod: ClusterAPI_GetRolloutStatus_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AdminAPIServer).GetRolloutStatus(ctx, req.(*RolloutControlRequest))
+		return srv.(ClusterAPIServer).GetRolloutStatus(ctx, req.(*RolloutControlRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _AdminAPI_PauseRollout_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _ClusterAPI_PauseRollout_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(RolloutControlRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(AdminAPIServer).PauseRollout(ctx, in)
+		return srv.(ClusterAPIServer).PauseRollout(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: AdminAPI_PauseRollout_FullMethodName,
+		FullMethod: ClusterAPI_PauseRollout_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AdminAPIServer).PauseRollout(ctx, req.(*RolloutControlRequest))
+		return srv.(ClusterAPIServer).PauseRollout(ctx, req.(*RolloutControlRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _AdminAPI_ResumeRollout_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _ClusterAPI_ResumeRollout_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(RolloutControlRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(AdminAPIServer).ResumeRollout(ctx, in)
+		return srv.(ClusterAPIServer).ResumeRollout(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: AdminAPI_ResumeRollout_FullMethodName,
+		FullMethod: ClusterAPI_ResumeRollout_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AdminAPIServer).ResumeRollout(ctx, req.(*RolloutControlRequest))
+		return srv.(ClusterAPIServer).ResumeRollout(ctx, req.(*RolloutControlRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _AdminAPI_AbortRollout_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _ClusterAPI_AbortRollout_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(RolloutControlRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(AdminAPIServer).AbortRollout(ctx, in)
+		return srv.(ClusterAPIServer).AbortRollout(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: AdminAPI_AbortRollout_FullMethodName,
+		FullMethod: ClusterAPI_AbortRollout_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AdminAPIServer).AbortRollout(ctx, req.(*RolloutControlRequest))
+		return srv.(ClusterAPIServer).AbortRollout(ctx, req.(*RolloutControlRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _AdminAPI_SetAutoUpdate_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _ClusterAPI_SetAutoUpdate_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(SetAutoUpdateRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(AdminAPIServer).SetAutoUpdate(ctx, in)
+		return srv.(ClusterAPIServer).SetAutoUpdate(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: AdminAPI_SetAutoUpdate_FullMethodName,
+		FullMethod: ClusterAPI_SetAutoUpdate_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AdminAPIServer).SetAutoUpdate(ctx, req.(*SetAutoUpdateRequest))
+		return srv.(ClusterAPIServer).SetAutoUpdate(ctx, req.(*SetAutoUpdateRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _AdminAPI_GetFleetStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _ClusterAPI_GetFleetStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(Empty)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(AdminAPIServer).GetFleetStatus(ctx, in)
+		return srv.(ClusterAPIServer).GetFleetStatus(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: AdminAPI_GetFleetStatus_FullMethodName,
+		FullMethod: ClusterAPI_GetFleetStatus_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AdminAPIServer).GetFleetStatus(ctx, req.(*Empty))
+		return srv.(ClusterAPIServer).GetFleetStatus(ctx, req.(*Empty))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _AdminAPI_ReloadPolicy_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _ClusterAPI_ReloadPolicy_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(Empty)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(AdminAPIServer).ReloadPolicy(ctx, in)
+		return srv.(ClusterAPIServer).ReloadPolicy(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: AdminAPI_ReloadPolicy_FullMethodName,
+		FullMethod: ClusterAPI_ReloadPolicy_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AdminAPIServer).ReloadPolicy(ctx, req.(*Empty))
+		return srv.(ClusterAPIServer).ReloadPolicy(ctx, req.(*Empty))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _AdminAPI_QueryAudit_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(QueryAuditRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(AdminAPIServer).QueryAudit(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: AdminAPI_QueryAudit_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AdminAPIServer).QueryAudit(ctx, req.(*QueryAuditRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _AdminAPI_RevokeSession_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(RevokeSessionRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(AdminAPIServer).RevokeSession(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: AdminAPI_RevokeSession_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AdminAPIServer).RevokeSession(ctx, req.(*RevokeSessionRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _AdminAPI_RevokeUser_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _ClusterAPI_RevokeUser_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(RevokeUserRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(AdminAPIServer).RevokeUser(ctx, in)
+		return srv.(ClusterAPIServer).RevokeUser(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: AdminAPI_RevokeUser_FullMethodName,
+		FullMethod: ClusterAPI_RevokeUser_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AdminAPIServer).RevokeUser(ctx, req.(*RevokeUserRequest))
+		return srv.(ClusterAPIServer).RevokeUser(ctx, req.(*RevokeUserRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _AdminAPI_SuspendPrincipal_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _ClusterAPI_SuspendPrincipal_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(SuspendPrincipalRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(AdminAPIServer).SuspendPrincipal(ctx, in)
+		return srv.(ClusterAPIServer).SuspendPrincipal(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: AdminAPI_SuspendPrincipal_FullMethodName,
+		FullMethod: ClusterAPI_SuspendPrincipal_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AdminAPIServer).SuspendPrincipal(ctx, req.(*SuspendPrincipalRequest))
+		return srv.(ClusterAPIServer).SuspendPrincipal(ctx, req.(*SuspendPrincipalRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _AdminAPI_LiftSuspension_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _ClusterAPI_LiftSuspension_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(SuspendPrincipalRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(AdminAPIServer).LiftSuspension(ctx, in)
+		return srv.(ClusterAPIServer).LiftSuspension(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: AdminAPI_LiftSuspension_FullMethodName,
+		FullMethod: ClusterAPI_LiftSuspension_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AdminAPIServer).LiftSuspension(ctx, req.(*SuspendPrincipalRequest))
+		return srv.(ClusterAPIServer).LiftSuspension(ctx, req.(*SuspendPrincipalRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _AdminAPI_ListSuspensions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _ClusterAPI_ListSuspensions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(Empty)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(AdminAPIServer).ListSuspensions(ctx, in)
+		return srv.(ClusterAPIServer).ListSuspensions(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: AdminAPI_ListSuspensions_FullMethodName,
+		FullMethod: ClusterAPI_ListSuspensions_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AdminAPIServer).ListSuspensions(ctx, req.(*Empty))
+		return srv.(ClusterAPIServer).ListSuspensions(ctx, req.(*Empty))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _AdminAPI_SetNodeModules_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(SetNodeModulesRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(AdminAPIServer).SetNodeModules(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: AdminAPI_SetNodeModules_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AdminAPIServer).SetNodeModules(ctx, req.(*SetNodeModulesRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _AdminAPI_GetNodeModules_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(GetNodeModulesRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(AdminAPIServer).GetNodeModules(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: AdminAPI_GetNodeModules_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AdminAPIServer).GetNodeModules(ctx, req.(*GetNodeModulesRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _AdminAPI_BindSource_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _ClusterAPI_BindSource_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(BindSourceRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(AdminAPIServer).BindSource(ctx, in)
+		return srv.(ClusterAPIServer).BindSource(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: AdminAPI_BindSource_FullMethodName,
+		FullMethod: ClusterAPI_BindSource_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AdminAPIServer).BindSource(ctx, req.(*BindSourceRequest))
+		return srv.(ClusterAPIServer).BindSource(ctx, req.(*BindSourceRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _AdminAPI_UnbindSource_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _ClusterAPI_UnbindSource_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(UnbindSourceRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(AdminAPIServer).UnbindSource(ctx, in)
+		return srv.(ClusterAPIServer).UnbindSource(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: AdminAPI_UnbindSource_FullMethodName,
+		FullMethod: ClusterAPI_UnbindSource_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AdminAPIServer).UnbindSource(ctx, req.(*UnbindSourceRequest))
+		return srv.(ClusterAPIServer).UnbindSource(ctx, req.(*UnbindSourceRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _AdminAPI_ListSourceBindings_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _ClusterAPI_ListSourceBindings_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(Empty)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(AdminAPIServer).ListSourceBindings(ctx, in)
+		return srv.(ClusterAPIServer).ListSourceBindings(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: AdminAPI_ListSourceBindings_FullMethodName,
+		FullMethod: ClusterAPI_ListSourceBindings_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AdminAPIServer).ListSourceBindings(ctx, req.(*Empty))
+		return srv.(ClusterAPIServer).ListSourceBindings(ctx, req.(*Empty))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _AdminAPI_RevokeCert_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _ClusterAPI_RevokeCert_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(RevokeCertRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(AdminAPIServer).RevokeCert(ctx, in)
+		return srv.(ClusterAPIServer).RevokeCert(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: AdminAPI_RevokeCert_FullMethodName,
+		FullMethod: ClusterAPI_RevokeCert_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AdminAPIServer).RevokeCert(ctx, req.(*RevokeCertRequest))
+		return srv.(ClusterAPIServer).RevokeCert(ctx, req.(*RevokeCertRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _AdminAPI_ListRevokedCerts_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _ClusterAPI_ListRevokedCerts_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(Empty)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(AdminAPIServer).ListRevokedCerts(ctx, in)
+		return srv.(ClusterAPIServer).ListRevokedCerts(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: AdminAPI_ListRevokedCerts_FullMethodName,
+		FullMethod: ClusterAPI_ListRevokedCerts_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AdminAPIServer).ListRevokedCerts(ctx, req.(*Empty))
+		return srv.(ClusterAPIServer).ListRevokedCerts(ctx, req.(*Empty))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _AdminAPI_InstallTrustAnchors_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _ClusterAPI_InstallTrustAnchors_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(InstallTrustAnchorsRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(AdminAPIServer).InstallTrustAnchors(ctx, in)
+		return srv.(ClusterAPIServer).InstallTrustAnchors(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: AdminAPI_InstallTrustAnchors_FullMethodName,
+		FullMethod: ClusterAPI_InstallTrustAnchors_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AdminAPIServer).InstallTrustAnchors(ctx, req.(*InstallTrustAnchorsRequest))
+		return srv.(ClusterAPIServer).InstallTrustAnchors(ctx, req.(*InstallTrustAnchorsRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _AdminAPI_ReserveSubdomain_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ReserveSubdomainRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(AdminAPIServer).ReserveSubdomain(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: AdminAPI_ReserveSubdomain_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AdminAPIServer).ReserveSubdomain(ctx, req.(*ReserveSubdomainRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _AdminAPI_ListSubdomains_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _ClusterAPI_ListRelays_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(Empty)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(AdminAPIServer).ListSubdomains(ctx, in)
+		return srv.(ClusterAPIServer).ListRelays(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: AdminAPI_ListSubdomains_FullMethodName,
+		FullMethod: ClusterAPI_ListRelays_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AdminAPIServer).ListSubdomains(ctx, req.(*Empty))
+		return srv.(ClusterAPIServer).ListRelays(ctx, req.(*Empty))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _AdminAPI_ReleaseSubdomain_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ReleaseSubdomainRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(AdminAPIServer).ReleaseSubdomain(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: AdminAPI_ReleaseSubdomain_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AdminAPIServer).ReleaseSubdomain(ctx, req.(*ReleaseSubdomainRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _AdminAPI_CreateFunnel_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(CreateFunnelRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(AdminAPIServer).CreateFunnel(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: AdminAPI_CreateFunnel_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AdminAPIServer).CreateFunnel(ctx, req.(*CreateFunnelRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _AdminAPI_ListFunnels_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(Empty)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(AdminAPIServer).ListFunnels(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: AdminAPI_ListFunnels_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AdminAPIServer).ListFunnels(ctx, req.(*Empty))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _AdminAPI_DeleteFunnel_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(DeleteFunnelRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(AdminAPIServer).DeleteFunnel(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: AdminAPI_DeleteFunnel_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AdminAPIServer).DeleteFunnel(ctx, req.(*DeleteFunnelRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _AdminAPI_ListRelays_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(Empty)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(AdminAPIServer).ListRelays(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: AdminAPI_ListRelays_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AdminAPIServer).ListRelays(ctx, req.(*Empty))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-// AdminAPI_ServiceDesc is the grpc.ServiceDesc for AdminAPI service.
+// ClusterAPI_ServiceDesc is the grpc.ServiceDesc for ClusterAPI service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
-var AdminAPI_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "geneza.v1.AdminAPI",
-	HandlerType: (*AdminAPIServer)(nil),
+var ClusterAPI_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "geneza.v1.ClusterAPI",
+	HandlerType: (*ClusterAPIServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
-			MethodName: "CreateJoinToken",
-			Handler:    _AdminAPI_CreateJoinToken_Handler,
-		},
-		{
-			MethodName: "ApproveNode",
-			Handler:    _AdminAPI_ApproveNode_Handler,
-		},
-		{
 			MethodName: "ListWorkspaces",
-			Handler:    _AdminAPI_ListWorkspaces_Handler,
-		},
-		{
-			MethodName: "RemoveNode",
-			Handler:    _AdminAPI_RemoveNode_Handler,
+			Handler:    _ClusterAPI_ListWorkspaces_Handler,
 		},
 		{
 			MethodName: "SetDesiredVersion",
-			Handler:    _AdminAPI_SetDesiredVersion_Handler,
+			Handler:    _ClusterAPI_SetDesiredVersion_Handler,
 		},
 		{
 			MethodName: "StartRollout",
-			Handler:    _AdminAPI_StartRollout_Handler,
+			Handler:    _ClusterAPI_StartRollout_Handler,
 		},
 		{
 			MethodName: "GetRolloutStatus",
-			Handler:    _AdminAPI_GetRolloutStatus_Handler,
+			Handler:    _ClusterAPI_GetRolloutStatus_Handler,
 		},
 		{
 			MethodName: "PauseRollout",
-			Handler:    _AdminAPI_PauseRollout_Handler,
+			Handler:    _ClusterAPI_PauseRollout_Handler,
 		},
 		{
 			MethodName: "ResumeRollout",
-			Handler:    _AdminAPI_ResumeRollout_Handler,
+			Handler:    _ClusterAPI_ResumeRollout_Handler,
 		},
 		{
 			MethodName: "AbortRollout",
-			Handler:    _AdminAPI_AbortRollout_Handler,
+			Handler:    _ClusterAPI_AbortRollout_Handler,
 		},
 		{
 			MethodName: "SetAutoUpdate",
-			Handler:    _AdminAPI_SetAutoUpdate_Handler,
+			Handler:    _ClusterAPI_SetAutoUpdate_Handler,
 		},
 		{
 			MethodName: "GetFleetStatus",
-			Handler:    _AdminAPI_GetFleetStatus_Handler,
+			Handler:    _ClusterAPI_GetFleetStatus_Handler,
 		},
 		{
 			MethodName: "ReloadPolicy",
-			Handler:    _AdminAPI_ReloadPolicy_Handler,
-		},
-		{
-			MethodName: "QueryAudit",
-			Handler:    _AdminAPI_QueryAudit_Handler,
-		},
-		{
-			MethodName: "RevokeSession",
-			Handler:    _AdminAPI_RevokeSession_Handler,
+			Handler:    _ClusterAPI_ReloadPolicy_Handler,
 		},
 		{
 			MethodName: "RevokeUser",
-			Handler:    _AdminAPI_RevokeUser_Handler,
+			Handler:    _ClusterAPI_RevokeUser_Handler,
 		},
 		{
 			MethodName: "SuspendPrincipal",
-			Handler:    _AdminAPI_SuspendPrincipal_Handler,
+			Handler:    _ClusterAPI_SuspendPrincipal_Handler,
 		},
 		{
 			MethodName: "LiftSuspension",
-			Handler:    _AdminAPI_LiftSuspension_Handler,
+			Handler:    _ClusterAPI_LiftSuspension_Handler,
 		},
 		{
 			MethodName: "ListSuspensions",
-			Handler:    _AdminAPI_ListSuspensions_Handler,
-		},
-		{
-			MethodName: "SetNodeModules",
-			Handler:    _AdminAPI_SetNodeModules_Handler,
-		},
-		{
-			MethodName: "GetNodeModules",
-			Handler:    _AdminAPI_GetNodeModules_Handler,
+			Handler:    _ClusterAPI_ListSuspensions_Handler,
 		},
 		{
 			MethodName: "BindSource",
-			Handler:    _AdminAPI_BindSource_Handler,
+			Handler:    _ClusterAPI_BindSource_Handler,
 		},
 		{
 			MethodName: "UnbindSource",
-			Handler:    _AdminAPI_UnbindSource_Handler,
+			Handler:    _ClusterAPI_UnbindSource_Handler,
 		},
 		{
 			MethodName: "ListSourceBindings",
-			Handler:    _AdminAPI_ListSourceBindings_Handler,
+			Handler:    _ClusterAPI_ListSourceBindings_Handler,
 		},
 		{
 			MethodName: "RevokeCert",
-			Handler:    _AdminAPI_RevokeCert_Handler,
+			Handler:    _ClusterAPI_RevokeCert_Handler,
 		},
 		{
 			MethodName: "ListRevokedCerts",
-			Handler:    _AdminAPI_ListRevokedCerts_Handler,
+			Handler:    _ClusterAPI_ListRevokedCerts_Handler,
 		},
 		{
 			MethodName: "InstallTrustAnchors",
-			Handler:    _AdminAPI_InstallTrustAnchors_Handler,
-		},
-		{
-			MethodName: "ReserveSubdomain",
-			Handler:    _AdminAPI_ReserveSubdomain_Handler,
-		},
-		{
-			MethodName: "ListSubdomains",
-			Handler:    _AdminAPI_ListSubdomains_Handler,
-		},
-		{
-			MethodName: "ReleaseSubdomain",
-			Handler:    _AdminAPI_ReleaseSubdomain_Handler,
-		},
-		{
-			MethodName: "CreateFunnel",
-			Handler:    _AdminAPI_CreateFunnel_Handler,
-		},
-		{
-			MethodName: "ListFunnels",
-			Handler:    _AdminAPI_ListFunnels_Handler,
-		},
-		{
-			MethodName: "DeleteFunnel",
-			Handler:    _AdminAPI_DeleteFunnel_Handler,
+			Handler:    _ClusterAPI_InstallTrustAnchors_Handler,
 		},
 		{
 			MethodName: "ListRelays",
-			Handler:    _AdminAPI_ListRelays_Handler,
+			Handler:    _ClusterAPI_ListRelays_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{
 		{
 			StreamName:    "PublishArtifact",
-			Handler:       _AdminAPI_PublishArtifact_Handler,
+			Handler:       _ClusterAPI_PublishArtifact_Handler,
 			ClientStreams: true,
 		},
 	},

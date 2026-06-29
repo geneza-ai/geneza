@@ -58,7 +58,7 @@ func newNodeEnrollCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			cc, api, err := dialAdmin(e)
+			cc, api, _, err := dialUser(e)
 			if err != nil {
 				return err
 			}
@@ -116,7 +116,7 @@ func newNodeApproveCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			cc, api, err := dialAdmin(e)
+			cc, api, _, err := dialUser(e)
 			if err != nil {
 				return err
 			}
@@ -147,7 +147,7 @@ func newNodeQuarantineCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			cc, api, err := dialAdmin(e)
+			cc, api, _, err := dialUser(e)
 			if err != nil {
 				return err
 			}
@@ -178,7 +178,7 @@ func newNodeRetireCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			cc, api, err := dialAdmin(e)
+			cc, api, _, err := dialUser(e)
 			if err != nil {
 				return err
 			}
@@ -258,7 +258,7 @@ func newNodeMonitorCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			cc, api, err := dialAdmin(e)
+			cc, api, _, err := dialUser(e)
 			if err != nil {
 				return err
 			}

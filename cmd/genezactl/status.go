@@ -23,7 +23,7 @@ func newStatusCmd() *cobra.Command {
 		Short: "Cluster roster: nodes plus desired agent/relay versions per ring",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return withAdmin(cmd.Context(), 30*time.Second, func(ctx context.Context, api genezav1.AdminAPIClient) error {
+			return withAdmin(cmd.Context(), 30*time.Second, func(ctx context.Context, api genezav1.ClusterAPIClient) error {
 				resp, err := api.GetFleetStatus(ctx, &genezav1.Empty{})
 				if err != nil {
 					return client.Humanize(err)

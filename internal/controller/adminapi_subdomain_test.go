@@ -14,7 +14,7 @@ func TestAdminSubdomainRPCs(t *testing.T) {
 	srv.cfg.ManagedDomain = ManagedDomainConfig{
 		Domains: []ManagedDomainEntry{{Base: "geneza.app", DNSProvider: "cf"}},
 	}
-	a := &adminAPIService{s: srv}
+	a := &workspaceAPIService{s: srv}
 	ctx := userCtx(defaultWorkspace, "adm", roleWSAdmin)
 
 	info, err := a.ReserveSubdomain(ctx, &genezav1.ReserveSubdomainRequest{Domain: "geneza.app", Label: "acme"})

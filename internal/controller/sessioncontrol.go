@@ -18,7 +18,7 @@ import (
 // on revoke/end/expiry), the client disconnects, or the stream context ends. The
 // reauth sweep touches the entry every tick so the ICE-sized TTL never reaps a
 // live session's control channel.
-func (u *userAPIService) SessionControl(stream genezav1.UserAPI_SessionControlServer) error {
+func (u *workspaceAPIService) SessionControl(stream genezav1.WorkspaceAPI_SessionControlServer) error {
 	ident, _, ok := identityFrom(stream.Context())
 	if !ok {
 		return status.Error(codes.Unauthenticated, "no verified identity")

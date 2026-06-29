@@ -38,7 +38,7 @@ func LoadEnv(profile string) (*Env, error) {
 // DialUser opens the mTLS gRPC connection used by every post-login command. It
 // also returns the client cert so a session command can follow a cross-
 // controller redirect (re-dial the owner controller with the same identity).
-func (e *Env) DialUser() (*grpc.ClientConn, genezav1.UserAPIClient, *tls.Certificate, error) {
+func (e *Env) DialUser() (*grpc.ClientConn, genezav1.WorkspaceAPIClient, *tls.Certificate, error) {
 	cert, _, err := e.Store.ClientCert()
 	if err != nil {
 		return nil, nil, nil, err
@@ -47,11 +47,11 @@ func (e *Env) DialUser() (*grpc.ClientConn, genezav1.UserAPIClient, *tls.Certifi
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	return cc, genezav1.NewUserAPIClient(cc), cert, nil
+	return cc, genezav1.NewWorkspaceAPIClient(cc), cert, nil
 }
 
-// DialAdmin opens the mTLS gRPC connection for AdminAPI calls.
-func (e *Env) DialAdmin() (*grpc.ClientConn, genezav1.AdminAPIClient, error) {
+// DialAdmin opens the mTLS gRPC connection for ClusterAPI calls.
+func (e *Env) DialAdmin() (*grpc.ClientConn, genezav1.ClusterAPIClient, error) {
 	cert, _, err := e.Store.ClientCert()
 	if err != nil {
 		return nil, nil, err
@@ -60,5 +60,5 @@ func (e *Env) DialAdmin() (*grpc.ClientConn, genezav1.AdminAPIClient, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	return cc, genezav1.NewAdminAPIClient(cc), nil
+	return cc, genezav1.NewClusterAPIClient(cc), nil
 }

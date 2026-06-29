@@ -23,8 +23,8 @@ import (
 	"geneza.io/internal/types"
 )
 
-type adminAPIService struct {
-	genezav1.UnimplementedAdminAPIServer
+type clusterAPIService struct {
+	genezav1.UnimplementedClusterAPIServer
 	s *Server
 }
 
@@ -51,7 +51,10 @@ func actorWorkspace(ctx context.Context) string {
 	return defaultWorkspace
 }
 
-func (a *adminAPIService) CreateJoinToken(ctx context.Context, req *genezav1.CreateJoinTokenRequest) (*genezav1.CreateJoinTokenResponse, error) {
+func (a *workspaceAPIService) CreateJoinToken(ctx context.Context, req *genezav1.CreateJoinTokenRequest) (*genezav1.CreateJoinTokenResponse, error) {
+	if err := requireWSAdmin(ctx); err != nil {
+		return nil, err
+	}
 	s := a.s
 	ttl := time.Duration(req.GetTtlSeconds()) * time.Second
 	if ttl <= 0 {
@@ -76,7 +79,7 @@ func (a *adminAPIService) CreateJoinToken(ctx context.Context, req *genezav1.Cre
 		return nil, status.Errorf(codes.Internal, "store token: %v", err)
 	}
 	// The token value itself never reaches the audit log.
-	if err := s.audit.Append("token_create", adminActor(ctx), "", "", map[string]string{
+	if err := s.audit.AppendWS(actorWorkspace(ctx), "token_create", adminActor(ctx), "", "", map[string]string{
 		"ttl_seconds":  strconv.FormatInt(int64(ttl/time.Second), 10),
 		"max_uses":     strconv.FormatInt(int64(maxUses), 10),
 		"labels":       labelString(req.GetLabels()),
@@ -95,7 +98,10 @@ func (a *adminAPIService) CreateJoinToken(ctx context.Context, req *genezav1.Cre
 // makes a pending node usable; approve=false re-quarantines it (and the next
 // continuous-authz sweep tears down any live sessions, since the gate is also
 // re-checked there — see continuousauthz.go).
-func (a *adminAPIService) ApproveNode(ctx context.Context, req *genezav1.ApproveNodeRequest) (*genezav1.Empty, error) {
+func (a *workspaceAPIService) ApproveNode(ctx context.Context, req *genezav1.ApproveNodeRequest) (*genezav1.Empty, error) {
+	if err := requireWSAdmin(ctx); err != nil {
+		return nil, err
+	}
 	s := a.s
 	ws := actorWorkspace(ctx)
 	node, err := s.store.FindNode(ws, req.GetNode())
@@ -131,10 +137,26 @@ func requirePlatformAdmin(ctx context.Context) error {
 	return nil
 }
 
+// requireWSAdmin gates a WorkspaceAPI MUTATION on workspace-admin standing. The
+// WorkspaceAPI listener gate only proves a valid user cert (any role); this is the
+// per-method check that a plain ws-member/ws-viewer cannot enroll, approve, remove,
+// or expose. The reserved cluster admin/platform-admin satisfy it; the action still
+// binds to the caller's own workspace.
+func requireWSAdmin(ctx context.Context) error {
+	ident, _, ok := identityFrom(ctx)
+	if !ok || ident == nil {
+		return status.Error(codes.Unauthenticated, "workspace-admin certificate required")
+	}
+	if hasRole(ident, roleWSAdmin) || hasRole(ident, roleAdmin) || hasRole(ident, rolePlatformAdmin) {
+		return nil
+	}
+	return status.Error(codes.PermissionDenied, "workspace-admin role required")
+}
+
 // BindSource binds a cloud-qualified external source (e.g. an OpenStack project)
 // to a workspace — the operator pre-bind path. Requires platform-admin; the
 // target workspace must exist.
-func (a *adminAPIService) BindSource(ctx context.Context, req *genezav1.BindSourceRequest) (*genezav1.Empty, error) {
+func (a *clusterAPIService) BindSource(ctx context.Context, req *genezav1.BindSourceRequest) (*genezav1.Empty, error) {
 	if err := requirePlatformAdmin(ctx); err != nil {
 		return nil, err
 	}
@@ -166,7 +188,7 @@ func (a *adminAPIService) BindSource(ctx context.Context, req *genezav1.BindSour
 
 // UnbindSource removes a source binding (operator unbind path). Requires
 // platform-admin.
-func (a *adminAPIService) UnbindSource(ctx context.Context, req *genezav1.UnbindSourceRequest) (*genezav1.Empty, error) {
+func (a *clusterAPIService) UnbindSource(ctx context.Context, req *genezav1.UnbindSourceRequest) (*genezav1.Empty, error) {
 	if err := requirePlatformAdmin(ctx); err != nil {
 		return nil, err
 	}
@@ -187,7 +209,7 @@ func (a *adminAPIService) UnbindSource(ctx context.Context, req *genezav1.Unbind
 }
 
 // ListSourceBindings lists all cloud-qualified source bindings.
-func (a *adminAPIService) ListSourceBindings(_ context.Context, _ *genezav1.Empty) (*genezav1.ListSourceBindingsResponse, error) {
+func (a *clusterAPIService) ListSourceBindings(_ context.Context, _ *genezav1.Empty) (*genezav1.ListSourceBindingsResponse, error) {
 	bs, err := a.s.store.ListSourceBindings()
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "list bindings: %v", err)
@@ -204,8 +226,8 @@ func (a *adminAPIService) ListSourceBindings(_ context.Context, _ *genezav1.Empt
 
 // RevokeCert adds a leaf cert's serial to the revocation denylist: the next
 // authenticated RPC from that cert is denied, killing it before TTL without a
-// fleet CA re-key. Admin-gated (the AdminAPI is already admin-only).
-func (a *adminAPIService) RevokeCert(ctx context.Context, req *genezav1.RevokeCertRequest) (*genezav1.Empty, error) {
+// fleet CA re-key. Admin-gated (the ClusterAPI is already admin-only).
+func (a *clusterAPIService) RevokeCert(ctx context.Context, req *genezav1.RevokeCertRequest) (*genezav1.Empty, error) {
 	serial := strings.ToLower(strings.TrimSpace(req.GetSerial()))
 	if serial == "" {
 		return nil, status.Error(codes.InvalidArgument, "serial is required")
@@ -234,8 +256,8 @@ func (a *adminAPIService) RevokeCert(ctx context.Context, req *genezav1.RevokeCe
 // (assembled by geneza-trust) and CASes it into the store, activating split mode.
 // The controller holds no trust key and cannot author the anchor — it only stores the
 // operator-supplied one and re-pins the routine map to it. Cluster-admin gated by the
-// AdminAPI interceptor.
-func (a *adminAPIService) InstallTrustAnchors(ctx context.Context, req *genezav1.InstallTrustAnchorsRequest) (*genezav1.InstallTrustAnchorsResponse, error) {
+// ClusterAPI interceptor.
+func (a *clusterAPIService) InstallTrustAnchors(ctx context.Context, req *genezav1.InstallTrustAnchorsRequest) (*genezav1.InstallTrustAnchorsResponse, error) {
 	if len(req.GetTrustAnchors()) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "trust_anchors is required")
 	}
@@ -253,7 +275,7 @@ func (a *adminAPIService) InstallTrustAnchors(ctx context.Context, req *genezav1
 	return &genezav1.InstallTrustAnchorsResponse{AnchorVersion: anchorVersion, ConfigVersion: configVersion}, nil
 }
 
-func (a *adminAPIService) ListRevokedCerts(_ context.Context, _ *genezav1.Empty) (*genezav1.ListRevokedCertsResponse, error) {
+func (a *clusterAPIService) ListRevokedCerts(_ context.Context, _ *genezav1.Empty) (*genezav1.ListRevokedCertsResponse, error) {
 	rs, err := a.s.store.ListRevokedCerts()
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "list revoked: %v", err)
@@ -268,7 +290,7 @@ func (a *adminAPIService) ListRevokedCerts(_ context.Context, _ *genezav1.Empty)
 }
 
 // ListWorkspaces lists the tenants this controller hosts (from the store registry).
-func (a *adminAPIService) ListWorkspaces(ctx context.Context, _ *genezav1.Empty) (*genezav1.ListWorkspacesResponse, error) {
+func (a *clusterAPIService) ListWorkspaces(ctx context.Context, _ *genezav1.Empty) (*genezav1.ListWorkspacesResponse, error) {
 	wss, err := a.s.store.ListWorkspaces()
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "list workspaces: %v", err)
@@ -284,7 +306,10 @@ func (a *adminAPIService) ListWorkspaces(ctx context.Context, _ *genezav1.Empty)
 // record so it leaves the fleet and must re-enroll (and be re-approved) to come
 // back. The node's own cert keeps working until it expires (short TTL), but with
 // no record the broker denies every session to it.
-func (a *adminAPIService) RemoveNode(ctx context.Context, req *genezav1.RemoveNodeRequest) (*genezav1.Empty, error) {
+func (a *workspaceAPIService) RemoveNode(ctx context.Context, req *genezav1.RemoveNodeRequest) (*genezav1.Empty, error) {
+	if err := requireWSAdmin(ctx); err != nil {
+		return nil, err
+	}
 	s := a.s
 	ws := actorWorkspace(ctx)
 	node, err := s.store.FindNode(ws, req.GetNode())
@@ -305,7 +330,7 @@ func (a *adminAPIService) RemoveNode(ctx context.Context, req *genezav1.RemoveNo
 	if err := s.store.DeleteNode(ws, node.ID); err != nil {
 		return nil, status.Errorf(codes.Internal, "delete node: %v", err)
 	}
-	if err := s.audit.Append("node_remove", adminActor(ctx), node.ID, "", map[string]string{
+	if err := s.audit.AppendWS(ws, "node_remove", adminActor(ctx), node.ID, "", map[string]string{
 		"name": node.Name,
 	}); err != nil {
 		return nil, status.Errorf(codes.Internal, "audit append: %v", err)
@@ -333,7 +358,7 @@ func labelString(m map[string]string) string {
 // OFFLINE-signed manifest. The controller verifies the blob against the
 // manifest hash, and the manifest signature too when artifact_pubkey_file is
 // configured — but it can never produce a manifest itself (no signing key).
-func (a *adminAPIService) PublishArtifact(stream grpc.ClientStreamingServer[genezav1.ArtifactChunk, genezav1.PublishArtifactResponse]) error {
+func (a *clusterAPIService) PublishArtifact(stream grpc.ClientStreamingServer[genezav1.ArtifactChunk, genezav1.PublishArtifactResponse]) error {
 	s := a.s
 	first, err := stream.Recv()
 	if err != nil {
@@ -491,7 +516,7 @@ func (s *Server) ringForProduct(product string) (rolloutRing, error) {
 // while a canary ring exists requires every canary member to be live, healthy
 // (<60s heartbeat) and already running that version — the health gate that
 // keeps a bad build from reaching the whole fleet.
-func (a *adminAPIService) SetDesiredVersion(ctx context.Context, req *genezav1.SetDesiredVersionRequest) (*genezav1.Empty, error) {
+func (a *clusterAPIService) SetDesiredVersion(ctx context.Context, req *genezav1.SetDesiredVersionRequest) (*genezav1.Empty, error) {
 	s := a.s
 	ring := req.GetRing()
 	version := req.GetVersion()
@@ -639,7 +664,7 @@ func (s *Server) relayCanaryBlockers(canaryRelays []string, version string) []st
 	return blockers
 }
 
-func (a *adminAPIService) GetFleetStatus(ctx context.Context, _ *genezav1.Empty) (*genezav1.FleetStatus, error) {
+func (a *clusterAPIService) GetFleetStatus(ctx context.Context, _ *genezav1.Empty) (*genezav1.FleetStatus, error) {
 	s := a.s
 	nodes, err := s.nodeSummaries(actorWorkspace(ctx))
 	if err != nil {
@@ -680,7 +705,7 @@ func (a *adminAPIService) GetFleetStatus(ctx context.Context, _ *genezav1.Empty)
 	}, nil
 }
 
-func (a *adminAPIService) ListRelays(ctx context.Context, _ *genezav1.Empty) (*genezav1.RelayList, error) {
+func (a *clusterAPIService) ListRelays(ctx context.Context, _ *genezav1.Empty) (*genezav1.RelayList, error) {
 	relays, err := a.s.store.ListRelays("")
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "list relays: %v", err)
@@ -702,7 +727,7 @@ func (a *adminAPIService) ListRelays(ctx context.Context, _ *genezav1.Empty) (*g
 	return &genezav1.RelayList{Relays: out}, nil
 }
 
-func (a *adminAPIService) ReloadPolicy(ctx context.Context, _ *genezav1.Empty) (*genezav1.Empty, error) {
+func (a *clusterAPIService) ReloadPolicy(ctx context.Context, _ *genezav1.Empty) (*genezav1.Empty, error) {
 	s := a.s
 	// Reload every workspace's policy file (fail closed: previous stays on error).
 	if err := s.reloadPolicies(); err != nil {
@@ -721,7 +746,10 @@ func (a *adminAPIService) ReloadPolicy(ctx context.Context, _ *genezav1.Empty) (
 }
 
 // RevokeSession force-terminates one live session (admin "kick").
-func (a *adminAPIService) RevokeSession(ctx context.Context, req *genezav1.RevokeSessionRequest) (*genezav1.Empty, error) {
+func (a *workspaceAPIService) RevokeSession(ctx context.Context, req *genezav1.RevokeSessionRequest) (*genezav1.Empty, error) {
+	if err := requireWSAdmin(ctx); err != nil {
+		return nil, err
+	}
 	if req.GetSessionId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "session_id required")
 	}
@@ -736,7 +764,7 @@ func (a *adminAPIService) RevokeSession(ctx context.Context, req *genezav1.Revok
 }
 
 // RevokeUser force-terminates all of a user's live sessions.
-func (a *adminAPIService) RevokeUser(ctx context.Context, req *genezav1.RevokeUserRequest) (*genezav1.RevokeCountResponse, error) {
+func (a *clusterAPIService) RevokeUser(ctx context.Context, req *genezav1.RevokeUserRequest) (*genezav1.RevokeCountResponse, error) {
 	if req.GetUser() == "" {
 		return nil, status.Error(codes.InvalidArgument, "user required")
 	}
@@ -758,7 +786,7 @@ type principalRef struct{ provider, subject, username string }
 // otherwise the principal is resolved from live sessions + member rows + (for
 // local) the username itself — so an operator can `suspend bob` without knowing
 // bob's stable subject id.
-func (a *adminAPIService) resolveSuspendTargets(ws, provider, subject, username string) []principalRef {
+func (s *Server) resolveSuspendTargets(ws, provider, subject, username string) []principalRef {
 	seen := map[string]bool{}
 	var out []principalRef
 	add := func(p, s, u string) {
@@ -781,14 +809,14 @@ func (a *adminAPIService) resolveSuspendTargets(ws, provider, subject, username 
 		add(p, subject, username)
 		return out
 	}
-	if sessions, err := a.s.store.ListSessions(ws); err == nil {
+	if sessions, err := s.store.ListSessions(ws); err == nil {
 		for _, rec := range sessions {
 			if rec.User == username && rec.Subject != "" {
 				add(rec.Provider, rec.Subject, rec.User)
 			}
 		}
 	}
-	if members, err := a.s.store.ListMembers(ws); err == nil {
+	if members, err := s.store.ListMembers(ws); err == nil {
 		for _, m := range members {
 			if m.Username == username {
 				add(m.Provider, m.Subject, m.Username)
@@ -801,12 +829,12 @@ func (a *adminAPIService) resolveSuspendTargets(ws, provider, subject, username 
 	return out
 }
 
-func (a *adminAPIService) SuspendPrincipal(ctx context.Context, req *genezav1.SuspendPrincipalRequest) (*genezav1.Empty, error) {
+func (a *clusterAPIService) SuspendPrincipal(ctx context.Context, req *genezav1.SuspendPrincipalRequest) (*genezav1.Empty, error) {
 	ws := req.GetWorkspace()
 	if ws == "" {
 		ws = defaultWorkspace
 	}
-	targets := a.resolveSuspendTargets(ws, req.GetProvider(), req.GetSubject(), req.GetUsername())
+	targets := a.s.resolveSuspendTargets(ws, req.GetProvider(), req.GetSubject(), req.GetUsername())
 	if len(targets) == 0 {
 		return nil, status.Error(codes.NotFound, "could not resolve a principal to suspend; pass --subject")
 	}
@@ -823,7 +851,7 @@ func (a *adminAPIService) SuspendPrincipal(ctx context.Context, req *genezav1.Su
 	return &genezav1.Empty{}, nil
 }
 
-func (a *adminAPIService) LiftSuspension(ctx context.Context, req *genezav1.SuspendPrincipalRequest) (*genezav1.Empty, error) {
+func (a *clusterAPIService) LiftSuspension(ctx context.Context, req *genezav1.SuspendPrincipalRequest) (*genezav1.Empty, error) {
 	ws := req.GetWorkspace()
 	if ws == "" {
 		ws = defaultWorkspace
@@ -856,7 +884,7 @@ func (a *adminAPIService) LiftSuspension(ctx context.Context, req *genezav1.Susp
 	return &genezav1.Empty{}, nil
 }
 
-func (a *adminAPIService) ListSuspensions(ctx context.Context, _ *genezav1.Empty) (*genezav1.ListSuspensionsResponse, error) {
+func (a *clusterAPIService) ListSuspensions(ctx context.Context, _ *genezav1.Empty) (*genezav1.ListSuspensionsResponse, error) {
 	rows, err := a.s.store.ListSuspensions("")
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "list suspensions: %v", err)
@@ -874,7 +902,10 @@ func (a *adminAPIService) ListSuspensions(ctx context.Context, _ *genezav1.Empty
 // SetNodeModules replaces a node's desired agent-module set and pushes it in
 // realtime (monitoring on/off, future exporters). Persisted so it survives
 // agent reconnects and controller restarts.
-func (a *adminAPIService) SetNodeModules(ctx context.Context, req *genezav1.SetNodeModulesRequest) (*genezav1.Empty, error) {
+func (a *workspaceAPIService) SetNodeModules(ctx context.Context, req *genezav1.SetNodeModulesRequest) (*genezav1.Empty, error) {
+	if err := requireWSAdmin(ctx); err != nil {
+		return nil, err
+	}
 	ws := actorWorkspace(ctx)
 	node, err := a.s.store.FindNode(ws, req.GetNode())
 	if err != nil {
@@ -891,7 +922,7 @@ func (a *adminAPIService) SetNodeModules(ctx context.Context, req *genezav1.SetN
 		return nil, status.Errorf(codes.Internal, "store node modules: %v", err)
 	}
 	a.s.pushNodeModules(ws, node.ID)
-	if err := a.s.audit.Append("agent_modules_set", adminActor(ctx), node.ID, "", map[string]string{
+	if err := a.s.audit.AppendWS(actorWorkspace(ctx), "agent_modules_set", adminActor(ctx), node.ID, "", map[string]string{
 		"modules": strconv.Itoa(len(modules)),
 	}); err != nil {
 		slog.Error("audit append failed", "type", "agent_modules_set", "err", err)
@@ -899,7 +930,7 @@ func (a *adminAPIService) SetNodeModules(ctx context.Context, req *genezav1.SetN
 	return &genezav1.Empty{}, nil
 }
 
-func (a *adminAPIService) GetNodeModules(ctx context.Context, req *genezav1.GetNodeModulesRequest) (*genezav1.NodeModulesResponse, error) {
+func (a *workspaceAPIService) GetNodeModules(ctx context.Context, req *genezav1.GetNodeModulesRequest) (*genezav1.NodeModulesResponse, error) {
 	ws := actorWorkspace(ctx)
 	node, err := a.s.store.FindNode(ws, req.GetNode())
 	if err != nil {
@@ -912,14 +943,14 @@ func (a *adminAPIService) GetNodeModules(ctx context.Context, req *genezav1.GetN
 	return &genezav1.NodeModulesResponse{Modules: moduleConfigProto(rec).Modules}, nil
 }
 
-func (a *adminAPIService) QueryAudit(ctx context.Context, req *genezav1.QueryAuditRequest) (*genezav1.QueryAuditResponse, error) {
+func (a *workspaceAPIService) QueryAudit(ctx context.Context, req *genezav1.QueryAuditRequest) (*genezav1.QueryAuditResponse, error) {
 	limit := int(req.GetLimit())
 	if limit <= 0 {
 		limit = 100
 	}
-	// The AdminAPI is the break-glass cluster-admin plane (auth.go gates it on the
-	// reserved "admin" role), so it sees the whole chain across tenants.
-	lines, chainOK, err := a.s.audit.Query(req.GetSinceUnix(), req.GetTypeFilter(), "", limit)
+	// Workspace plane: scope the audit slice to the caller's own tenant. (The
+	// cross-tenant chain view stays on the cluster operator plane.)
+	lines, chainOK, err := a.s.audit.Query(req.GetSinceUnix(), req.GetTypeFilter(), actorWorkspace(ctx), limit)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "audit query: %v", err)
 	}

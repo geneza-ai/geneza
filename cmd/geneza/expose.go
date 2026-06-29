@@ -28,7 +28,7 @@ func newExposeCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			cc, api, err := dialAdmin(e)
+			cc, api, _, err := dialUser(e)
 			if err != nil {
 				return err
 			}
@@ -61,7 +61,7 @@ func newUnexposeCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			cc, api, err := dialAdmin(e)
+			cc, api, _, err := dialUser(e)
 			if err != nil {
 				return err
 			}
@@ -88,7 +88,7 @@ func newExposedCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			cc, api, err := dialAdmin(e)
+			cc, api, _, err := dialUser(e)
 			if err != nil {
 				return err
 			}

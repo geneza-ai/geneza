@@ -77,7 +77,7 @@ func newAttachCmd() *cobra.Command {
 
 // findSession resolves a user-supplied id against ListSessions, accepting
 // either the controller session id or the host session id.
-func findSession(ctx context.Context, api genezav1.UserAPIClient, sid string) (*genezav1.SessionInfo, error) {
+func findSession(ctx context.Context, api genezav1.WorkspaceAPIClient, sid string) (*genezav1.SessionInfo, error) {
 	// Resolve against the most recent sessions (the server page cap); a session you
 	// are reattaching to is recent, so it falls in this window.
 	resp, err := api.ListSessions(ctx, &genezav1.ListSessionsRequest{MineOnly: false, Limit: 1000})

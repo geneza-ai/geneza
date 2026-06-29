@@ -28,12 +28,12 @@ func relayCredsFromProto(cands []*genezav1.RelayCandidate) []icewire.RelayCred {
 	return out
 }
 
-// clientSignaler drives sessionconn.Signaler over a UserAPI.SessionSignal stream. Every
+// clientSignaler drives sessionconn.Signaler over a WorkspaceAPI.SessionSignal stream. Every
 // ClientSignal carries the session_id so the controller routes it to the agent
 // holding the other ICE end (and only that agent).
 type clientSignaler struct {
 	sessionID string
-	stream    genezav1.UserAPI_SessionSignalClient
+	stream    genezav1.WorkspaceAPI_SessionSignalClient
 	pending   []string // extra candidates from a multi-candidate ControllerSignal
 }
 
@@ -89,7 +89,7 @@ func (c *clientSignaler) Recv(ctx context.Context) (*sessionconn.Signal, error) 
 // stays open for the life of the session (ctx) for ICE re-nomination trickle.
 // Returns an error (so the caller can fall back to the relay floor) rather than
 // disturbing the relay path on failure.
-func dialSessionICE(ctx context.Context, api genezav1.UserAPIClient, resp *genezav1.CreateSessionResponse, key noise.DHKey) (*Session, error) {
+func dialSessionICE(ctx context.Context, api genezav1.WorkspaceAPIClient, resp *genezav1.CreateSessionResponse, key noise.DHKey) (*Session, error) {
 	t := resp.GetTurn()
 	if t == nil {
 		return nil, errSessionP2PUnavailable
@@ -130,7 +130,7 @@ func dialSessionICE(ctx context.Context, api genezav1.UserAPIClient, resp *genez
 // session. It trusts the mTLS channel to the controller (no per-message signature
 // check needed client-side); it closes the session on an explicit revoke, on a
 // full-cut delta, or when the controller's lease stops refreshing before expiry.
-func sessionControlClient(ctx context.Context, api genezav1.UserAPIClient, sess *Session) {
+func sessionControlClient(ctx context.Context, api genezav1.WorkspaceAPIClient, sess *Session) {
 	stream, err := api.SessionControl(ctx)
 	if err != nil {
 		slog.Debug("session control unavailable", "session", sess.ID, "err", err)

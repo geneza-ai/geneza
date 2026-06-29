@@ -254,7 +254,7 @@ func (c *consoleAPI) authenticateSessionHash(tokenHash string) (*consoleUser, er
 // isWorkspaceAdmin reports whether a role set satisfies the console mutation
 // gate. ws-admin is the workspace-scoped admin granted by login/membership;
 // admin is the (break-glass-only) cluster role, which also implies console
-// admin. The gRPC AdminAPI gate, by contrast, accepts ONLY the cluster admin.
+// admin. The gRPC ClusterAPI gate, by contrast, accepts ONLY the cluster admin.
 func isWorkspaceAdmin(roles []string) bool {
 	return contains(roles, roleAdmin) || contains(roles, roleWSAdmin)
 }
@@ -626,7 +626,7 @@ func (c *consoleAPI) handleApproveNode(w http.ResponseWriter, r *http.Request, u
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	by := "console:" + u.Name
-	// Route through the same central entrypoint as the gRPC AdminAPI so a console
+	// Route through the same central entrypoint as the gRPC ClusterAPI so a console
 	// deny writes the quarantine cause-row + revokes sessions, and a console
 	// re-approval of a quarantined node still requires a recorded reason.
 	if err := c.s.approveNodeWithReason(u.Workspace, node, body.Approve, body.Reason, by); err != nil {

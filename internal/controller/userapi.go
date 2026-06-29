@@ -9,12 +9,12 @@ import (
 	genezav1 "geneza.io/internal/pb/geneza/v1"
 )
 
-type userAPIService struct {
-	genezav1.UnimplementedUserAPIServer
+type workspaceAPIService struct {
+	genezav1.UnimplementedWorkspaceAPIServer
 	s *Server
 }
 
-func (u *userAPIService) ListNodes(ctx context.Context, req *genezav1.ListNodesRequest) (*genezav1.ListNodesResponse, error) {
+func (u *workspaceAPIService) ListNodes(ctx context.Context, req *genezav1.ListNodesRequest) (*genezav1.ListNodesResponse, error) {
 	ident, _, ok := identityFrom(ctx)
 	if !ok {
 		return nil, status.Error(codes.Unauthenticated, "no verified identity")
@@ -30,7 +30,7 @@ func (u *userAPIService) ListNodes(ctx context.Context, req *genezav1.ListNodesR
 
 // ListServices returns the services exposed across the fleet (implicit host
 // services + agent-advertised), optionally filtered to one node.
-func (u *userAPIService) ListServices(ctx context.Context, req *genezav1.ListServicesRequest) (*genezav1.ListServicesResponse, error) {
+func (u *workspaceAPIService) ListServices(ctx context.Context, req *genezav1.ListServicesRequest) (*genezav1.ListServicesResponse, error) {
 	ident, _, ok := identityFrom(ctx)
 	if !ok {
 		return nil, status.Error(codes.Unauthenticated, "no verified identity")
@@ -62,7 +62,7 @@ func (u *userAPIService) ListServices(ctx context.Context, req *genezav1.ListSer
 	return &genezav1.ListServicesResponse{Services: out}, nil
 }
 
-func (u *userAPIService) CreateSession(ctx context.Context, req *genezav1.CreateSessionRequest) (*genezav1.CreateSessionResponse, error) {
+func (u *workspaceAPIService) CreateSession(ctx context.Context, req *genezav1.CreateSessionRequest) (*genezav1.CreateSessionResponse, error) {
 	ident, _, ok := identityFrom(ctx)
 	if !ok {
 		return nil, status.Error(codes.Unauthenticated, "no verified identity")
@@ -77,7 +77,7 @@ func (u *userAPIService) CreateSession(ctx context.Context, req *genezav1.Create
 // — and does NOT stamp, so the session goes stale and the sweep reaps it. The auth
 // interceptor already denies a suspended principal before this runs; verifyPresence
 // re-checks (belt-and-suspenders).
-func (u *userAPIService) Heartbeat(ctx context.Context, req *genezav1.HeartbeatRequest) (*genezav1.HeartbeatResponse, error) {
+func (u *workspaceAPIService) Heartbeat(ctx context.Context, req *genezav1.HeartbeatRequest) (*genezav1.HeartbeatResponse, error) {
 	ident, _, ok := identityFrom(ctx)
 	if !ok {
 		return nil, status.Error(codes.Unauthenticated, "no verified identity")
@@ -112,7 +112,7 @@ func (u *userAPIService) Heartbeat(ctx context.Context, req *genezav1.HeartbeatR
 // controller forwards ICE creds/candidates between this stream and the agent's
 // NodeControl disco path, keyed by session_id, ONLY between the two principals
 // named in the brokered grant. It carries ICE signaling only, never session data.
-func (u *userAPIService) SessionSignal(stream genezav1.UserAPI_SessionSignalServer) error {
+func (u *workspaceAPIService) SessionSignal(stream genezav1.WorkspaceAPI_SessionSignalServer) error {
 	ident, _, ok := identityFrom(stream.Context())
 	if !ok {
 		return status.Error(codes.Unauthenticated, "no verified identity")
@@ -188,7 +188,7 @@ func (u *userAPIService) SessionSignal(stream genezav1.UserAPI_SessionSignalServ
 
 // ListSessions: everyone sees their own sessions; only admins may widen the
 // view with mine_only=false.
-func (u *userAPIService) ListSessions(ctx context.Context, req *genezav1.ListSessionsRequest) (*genezav1.ListSessionsResponse, error) {
+func (u *workspaceAPIService) ListSessions(ctx context.Context, req *genezav1.ListSessionsRequest) (*genezav1.ListSessionsResponse, error) {
 	ident, _, ok := identityFrom(ctx)
 	if !ok {
 		return nil, status.Error(codes.Unauthenticated, "no verified identity")
@@ -223,7 +223,7 @@ func (u *userAPIService) ListSessions(ctx context.Context, req *genezav1.ListSes
 	return &genezav1.ListSessionsResponse{Sessions: out, Total: int32(total)}, nil
 }
 
-func (u *userAPIService) WhoAmI(ctx context.Context, _ *genezav1.Empty) (*genezav1.WhoAmIResponse, error) {
+func (u *workspaceAPIService) WhoAmI(ctx context.Context, _ *genezav1.Empty) (*genezav1.WhoAmIResponse, error) {
 	ident, leaf, ok := identityFrom(ctx)
 	if !ok {
 		return nil, status.Error(codes.Unauthenticated, "no verified identity")

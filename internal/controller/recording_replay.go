@@ -24,7 +24,7 @@ const recordingChunkBytes = 64 << 10
 // is privileged, so this is gated by the audit/replay capability — an ordinary
 // operator cannot enumerate who-recorded-what. The rows are metadata only (no
 // ciphertext); the controller never reads the blobs.
-func (u *userAPIService) ListRecordings(ctx context.Context, req *genezav1.ListRecordingsRequest) (*genezav1.ListRecordingsResponse, error) {
+func (u *workspaceAPIService) ListRecordings(ctx context.Context, req *genezav1.ListRecordingsRequest) (*genezav1.ListRecordingsResponse, error) {
 	ident, _, ok := identityFrom(ctx)
 	if !ok {
 		return nil, status.Error(codes.Unauthenticated, "no verified identity")
@@ -79,7 +79,7 @@ func (u *userAPIService) ListRecordings(ctx context.Context, req *genezav1.ListR
 // Before streaming, the served bytes are verified against the index row's sha256,
 // so at-rest corruption or tamper surfaces as an error rather than a silently bad
 // cast. Every fetch is itself audited (the auditor is audited).
-func (u *userAPIService) GetRecording(req *genezav1.GetRecordingRequest, stream genezav1.UserAPI_GetRecordingServer) error {
+func (u *workspaceAPIService) GetRecording(req *genezav1.GetRecordingRequest, stream genezav1.WorkspaceAPI_GetRecordingServer) error {
 	ident, _, ok := identityFrom(stream.Context())
 	if !ok {
 		return status.Error(codes.Unauthenticated, "no verified identity")
@@ -168,7 +168,7 @@ func (u *userAPIService) GetRecording(req *genezav1.GetRecordingRequest, stream 
 
 // auditRecordingAccess records a recording access or a denied attempt on the audit
 // ledger. A sink failure is logged, not fatal, matching the other audit call sites.
-func (u *userAPIService) auditRecordingAccess(event, actor, node, session string, fields map[string]string) {
+func (u *workspaceAPIService) auditRecordingAccess(event, actor, node, session string, fields map[string]string) {
 	if err := u.s.audit.Append(event, actor, node, session, fields); err != nil {
 		slog.Error("audit append failed", "type", event, "err", err)
 	}

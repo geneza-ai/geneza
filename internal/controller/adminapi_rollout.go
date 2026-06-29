@@ -54,7 +54,7 @@ func (s *Server) rolloutStatusResp(product string) (*genezav1.RolloutStatusRespo
 	return resp, nil
 }
 
-func (a *adminAPIService) StartRollout(ctx context.Context, req *genezav1.StartRolloutRequest) (*genezav1.RolloutStatusResponse, error) {
+func (a *clusterAPIService) StartRollout(ctx context.Context, req *genezav1.StartRolloutRequest) (*genezav1.RolloutStatusResponse, error) {
 	waves := make([]int, len(req.GetWaves()))
 	for i, w := range req.GetWaves() {
 		waves[i] = int(w)
@@ -65,32 +65,32 @@ func (a *adminAPIService) StartRollout(ctx context.Context, req *genezav1.StartR
 	return a.s.rolloutStatusResp(req.GetProduct())
 }
 
-func (a *adminAPIService) GetRolloutStatus(ctx context.Context, req *genezav1.RolloutControlRequest) (*genezav1.RolloutStatusResponse, error) {
+func (a *clusterAPIService) GetRolloutStatus(ctx context.Context, req *genezav1.RolloutControlRequest) (*genezav1.RolloutStatusResponse, error) {
 	return a.s.rolloutStatusResp(req.GetProduct())
 }
 
-func (a *adminAPIService) PauseRollout(ctx context.Context, req *genezav1.RolloutControlRequest) (*genezav1.RolloutStatusResponse, error) {
+func (a *clusterAPIService) PauseRollout(ctx context.Context, req *genezav1.RolloutControlRequest) (*genezav1.RolloutStatusResponse, error) {
 	if _, err := a.s.pauseRollout(req.GetProduct(), adminActor(ctx)); err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "%v", err)
 	}
 	return a.s.rolloutStatusResp(req.GetProduct())
 }
 
-func (a *adminAPIService) ResumeRollout(ctx context.Context, req *genezav1.RolloutControlRequest) (*genezav1.RolloutStatusResponse, error) {
+func (a *clusterAPIService) ResumeRollout(ctx context.Context, req *genezav1.RolloutControlRequest) (*genezav1.RolloutStatusResponse, error) {
 	if _, err := a.s.resumeRollout(req.GetProduct(), adminActor(ctx)); err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "%v", err)
 	}
 	return a.s.rolloutStatusResp(req.GetProduct())
 }
 
-func (a *adminAPIService) AbortRollout(ctx context.Context, req *genezav1.RolloutControlRequest) (*genezav1.RolloutStatusResponse, error) {
+func (a *clusterAPIService) AbortRollout(ctx context.Context, req *genezav1.RolloutControlRequest) (*genezav1.RolloutStatusResponse, error) {
 	if _, err := a.s.abortRollout(req.GetProduct(), adminActor(ctx)); err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "%v", err)
 	}
 	return a.s.rolloutStatusResp(req.GetProduct())
 }
 
-func (a *adminAPIService) SetAutoUpdate(ctx context.Context, req *genezav1.SetAutoUpdateRequest) (*genezav1.Empty, error) {
+func (a *clusterAPIService) SetAutoUpdate(ctx context.Context, req *genezav1.SetAutoUpdateRequest) (*genezav1.Empty, error) {
 	if err := a.s.setAutoUpdate(req.GetProduct(), req.GetEnabled()); err != nil {
 		return nil, status.Errorf(codes.Internal, "set auto-update: %v", err)
 	}

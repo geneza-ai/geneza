@@ -551,7 +551,7 @@ func (s *Server) quarantineNode(ws, nodeID, reason, by string, detail map[string
 }
 
 // approveNodeWithReason is the single admission-toggle entrypoint shared by the gRPC
-// AdminAPI and the console, so a deny/re-approve from either surface behaves
+// ClusterAPI and the console, so a deny/re-approve from either surface behaves
 // identically. On approve=false it quarantines through quarantineNode (reason
 // "manual" if none given) — same state, teardown, overlay cut, and audit as an
 // automatic quarantine. On approve=true it requires a recorded reason to clear a
@@ -713,6 +713,29 @@ func (s *Server) revokeUser(user, reason string) (int, error) {
 		slog.Error("revokeUser: drop auth sessions failed", "user", user, "err", derr)
 	} else if killed > 0 {
 		slog.Info("revokeUser: dropped browser sessions", "user", user, "count", killed)
+	}
+	return n, nil
+}
+
+// revokeUserInWorkspace revokes a user's live sessions within ONE workspace (the
+// tenant-scoped counterpart of revokeUser, which spans all tenants). Used by the
+// WorkspaceAPI so a ws-admin can kick a user from their own workspace only.
+func (s *Server) revokeUserInWorkspace(ws, user, reason string) (int, error) {
+	sessions, err := s.store.ListAllSessions()
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, rec := range sessions {
+		if rec.WorkspaceID != ws || rec.User != user {
+			continue
+		}
+		if rec.State != SessionActive && rec.State != SessionDetached {
+			continue
+		}
+		if err := s.revokeSession(rec, reason); err == nil {
+			n++
+		}
 	}
 	return n, nil
 }

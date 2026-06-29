@@ -14,7 +14,7 @@ import (
 // The workspace is taken from the caller's cert (never a request field), so a query
 // can only ever read the caller's own tenant — a node in another workspace is
 // invisible even by id. affected_only narrows the view to the still-actionable rows.
-func (u *userAPIService) ListNodeCVEs(ctx context.Context, req *genezav1.ListNodeCVEsRequest) (*genezav1.ListNodeCVEsResponse, error) {
+func (u *workspaceAPIService) ListNodeCVEs(ctx context.Context, req *genezav1.ListNodeCVEsRequest) (*genezav1.ListNodeCVEsResponse, error) {
 	ident, _, ok := identityFrom(ctx)
 	if !ok {
 		return nil, status.Error(codes.Unauthenticated, "no verified identity")
@@ -53,7 +53,7 @@ func (u *userAPIService) ListNodeCVEs(ctx context.Context, req *genezav1.ListNod
 // the caller's workspace fleet. Same cert-scoped tenancy: the rows come only from
 // the caller's workspace, so the blast-radius view of one tenant's CVE never reveals
 // another tenant's nodes.
-func (u *userAPIService) ListNodesAffectedByCVE(ctx context.Context, req *genezav1.ListNodesAffectedByCVERequest) (*genezav1.ListNodesAffectedByCVEResponse, error) {
+func (u *workspaceAPIService) ListNodesAffectedByCVE(ctx context.Context, req *genezav1.ListNodesAffectedByCVERequest) (*genezav1.ListNodesAffectedByCVEResponse, error) {
 	ident, _, ok := identityFrom(ctx)
 	if !ok {
 		return nil, status.Error(codes.Unauthenticated, "no verified identity")
@@ -84,7 +84,7 @@ func (u *userAPIService) ListNodesAffectedByCVE(ctx context.Context, req *geneza
 // verdicts unioned), the representative severity/status, and a fixing version. The
 // workspace is taken from the caller's cert, so the rollup never spans tenants. An
 // optional cve filter narrows the listing by a case-insensitive substring.
-func (u *userAPIService) ListWorkspaceCVEs(ctx context.Context, req *genezav1.ListWorkspaceCVEsRequest) (*genezav1.ListWorkspaceCVEsResponse, error) {
+func (u *workspaceAPIService) ListWorkspaceCVEs(ctx context.Context, req *genezav1.ListWorkspaceCVEsRequest) (*genezav1.ListWorkspaceCVEsResponse, error) {
 	ident, _, ok := identityFrom(ctx)
 	if !ok {
 		return nil, status.Error(codes.Unauthenticated, "no verified identity")
@@ -137,7 +137,7 @@ func workspaceCVEInfo(r WorkspaceCVERollup) *genezav1.WorkspaceCVEInfo {
 // ListNodeComponents returns a node's resolved software inventory (the flattened
 // component set the matcher joins against). Workspace-scoped from the cert, like the
 // CVE queries.
-func (u *userAPIService) ListNodeComponents(ctx context.Context, req *genezav1.ListNodeComponentsRequest) (*genezav1.ListNodeComponentsResponse, error) {
+func (u *workspaceAPIService) ListNodeComponents(ctx context.Context, req *genezav1.ListNodeComponentsRequest) (*genezav1.ListNodeComponentsResponse, error) {
 	ident, _, ok := identityFrom(ctx)
 	if !ok {
 		return nil, status.Error(codes.Unauthenticated, "no verified identity")

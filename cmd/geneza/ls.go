@@ -74,7 +74,7 @@ func newLsCmd() *cobra.Command {
 
 // listNodeServices renders the services a single node exposes (rdp, db,
 // http, subnet-route, exit-node, ...) — the `geneza ls NODE` form.
-func listNodeServices(ctx context.Context, api genezav1.UserAPIClient, node string, asJSON bool) error {
+func listNodeServices(ctx context.Context, api genezav1.WorkspaceAPIClient, node string, asJSON bool) error {
 	resp, err := api.ListServices(ctx, &genezav1.ListServicesRequest{Node: node})
 	if err != nil {
 		return client.Humanize(err)

@@ -20,7 +20,7 @@ import (
 // it reads the node's current (effective) module set, applies the change, and
 // writes the full set back. SetNodeModules replaces the whole set, so callers
 // must send everything they want to keep — this is the non-clobbering wrapper.
-func setNodeModuleMerged(ctx context.Context, api genezav1.AdminAPIClient, node, name string, enabled bool, settings map[string]string) error {
+func setNodeModuleMerged(ctx context.Context, api genezav1.WorkspaceAPIClient, node, name string, enabled bool, settings map[string]string) error {
 	cur, err := api.GetNodeModules(ctx, &genezav1.GetNodeModulesRequest{Node: node})
 	if err != nil {
 		return client.Humanize(err)
@@ -76,7 +76,7 @@ func newNodeInventoryToggleCmd(enable bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			cc, api, err := dialAdmin(e)
+			cc, api, _, err := dialUser(e)
 			if err != nil {
 				return err
 			}

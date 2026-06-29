@@ -219,7 +219,7 @@ func seedRelay(t *testing.T, srv *Server, id, version string, lastSeen time.Time
 // allowed once every canary relay reports the candidate freshly.
 func TestRelayCanaryGate(t *testing.T) {
 	srv := newDataPlaneServer(t)
-	admin := &adminAPIService{s: srv}
+	admin := &clusterAPIService{s: srv}
 	ctx := context.Background()
 	set := func(ring, version string, relays []string) error {
 		_, err := admin.SetDesiredVersion(ctx, &genezav1.SetDesiredVersionRequest{

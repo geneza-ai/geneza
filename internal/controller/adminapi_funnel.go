@@ -10,7 +10,7 @@ import (
 	genezav1 "geneza.io/internal/pb/geneza/v1"
 )
 
-// Funnel exposures over the AdminAPI (ws-admin scoped to the caller's workspace),
+// Funnel exposures over the ClusterAPI (ws-admin scoped to the caller's workspace),
 // mirroring the console REST surface; both call the same Server methods.
 
 func funnelInfo(f *FunnelBinding) *genezav1.FunnelInfo {
@@ -35,7 +35,10 @@ func funnelErr(err error) error {
 	}
 }
 
-func (a *adminAPIService) CreateFunnel(ctx context.Context, req *genezav1.CreateFunnelRequest) (*genezav1.FunnelInfo, error) {
+func (a *workspaceAPIService) CreateFunnel(ctx context.Context, req *genezav1.CreateFunnelRequest) (*genezav1.FunnelInfo, error) {
+	if err := requireWSAdmin(ctx); err != nil {
+		return nil, err
+	}
 	rec, err := a.s.createFunnel(actorWorkspace(ctx), req.GetHostname(), req.GetNode(), req.GetTarget(), req.GetMode(), adminActor(ctx))
 	if err != nil {
 		return nil, funnelErr(err)
@@ -43,7 +46,7 @@ func (a *adminAPIService) CreateFunnel(ctx context.Context, req *genezav1.Create
 	return funnelInfo(rec), nil
 }
 
-func (a *adminAPIService) ListFunnels(ctx context.Context, _ *genezav1.Empty) (*genezav1.ListFunnelsResponse, error) {
+func (a *workspaceAPIService) ListFunnels(ctx context.Context, _ *genezav1.Empty) (*genezav1.ListFunnelsResponse, error) {
 	fs, err := a.s.store.ListWorkspaceFunnels(actorWorkspace(ctx))
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "list funnels: %v", err)
@@ -55,7 +58,10 @@ func (a *adminAPIService) ListFunnels(ctx context.Context, _ *genezav1.Empty) (*
 	return &genezav1.ListFunnelsResponse{Funnels: out}, nil
 }
 
-func (a *adminAPIService) DeleteFunnel(ctx context.Context, req *genezav1.DeleteFunnelRequest) (*genezav1.Empty, error) {
+func (a *workspaceAPIService) DeleteFunnel(ctx context.Context, req *genezav1.DeleteFunnelRequest) (*genezav1.Empty, error) {
+	if err := requireWSAdmin(ctx); err != nil {
+		return nil, err
+	}
 	if err := a.s.deleteFunnel(actorWorkspace(ctx), req.GetHostname(), adminActor(ctx)); err != nil {
 		if errors.Is(err, errFunnelTaken) {
 			return nil, status.Error(codes.PermissionDenied, "that funnel belongs to another workspace")

@@ -154,7 +154,7 @@ func newReleaseTargetCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return withAdmin(cmd.Context(), 30*time.Second, func(ctx context.Context, api genezav1.AdminAPIClient) error {
+			return withAdmin(cmd.Context(), 30*time.Second, func(ctx context.Context, api genezav1.ClusterAPIClient) error {
 				if show {
 					st, err := api.GetFleetStatus(ctx, &genezav1.Empty{})
 					if err != nil {
@@ -283,7 +283,7 @@ func newRolloutStartCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return withAdmin(cmd.Context(), 30*time.Second, func(ctx context.Context, api genezav1.AdminAPIClient) error {
+			return withAdmin(cmd.Context(), 30*time.Second, func(ctx context.Context, api genezav1.ClusterAPIClient) error {
 				resp, err := api.StartRollout(ctx, &genezav1.StartRolloutRequest{
 					Product:            prod,
 					Version:            version,
@@ -318,7 +318,7 @@ func newRolloutStatusCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return withAdmin(cmd.Context(), 30*time.Second, func(ctx context.Context, api genezav1.AdminAPIClient) error {
+			return withAdmin(cmd.Context(), 30*time.Second, func(ctx context.Context, api genezav1.ClusterAPIClient) error {
 				resp, err := api.GetRolloutStatus(ctx, &genezav1.RolloutControlRequest{Product: prod})
 				if err != nil {
 					return client.Humanize(err)
@@ -343,7 +343,7 @@ func newRolloutControlCmd(verb, short string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return withAdmin(cmd.Context(), 30*time.Second, func(ctx context.Context, api genezav1.AdminAPIClient) error {
+			return withAdmin(cmd.Context(), 30*time.Second, func(ctx context.Context, api genezav1.ClusterAPIClient) error {
 				req := &genezav1.RolloutControlRequest{Product: prod}
 				var resp *genezav1.RolloutStatusResponse
 				var cerr error
@@ -387,7 +387,7 @@ func newRolloutAutoCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return withAdmin(cmd.Context(), 30*time.Second, func(ctx context.Context, api genezav1.AdminAPIClient) error {
+			return withAdmin(cmd.Context(), 30*time.Second, func(ctx context.Context, api genezav1.ClusterAPIClient) error {
 				if _, err := api.SetAutoUpdate(ctx, &genezav1.SetAutoUpdateRequest{Product: prod, Enabled: enabled}); err != nil {
 					return client.Humanize(err)
 				}

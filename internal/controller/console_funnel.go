@@ -7,7 +7,7 @@ import (
 )
 
 // Funnel exposures, console REST. List (any member) + create/delete (ws-admin),
-// mirroring the AdminAPI; both call the same Server methods.
+// mirroring the ClusterAPI; both call the same Server methods.
 
 func funnelJSON(f *FunnelBinding) map[string]any {
 	return map[string]any{

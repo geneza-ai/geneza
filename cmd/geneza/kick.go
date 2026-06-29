@@ -32,7 +32,7 @@ func newKickCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			cc, api, err := dialAdmin(e)
+			cc, api, _, err := dialUser(e)
 			if err != nil {
 				return err
 			}

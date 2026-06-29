@@ -38,7 +38,7 @@ func newTrustInstallCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return withAdmin(cmd.Context(), 30*time.Second, func(ctx context.Context, api genezav1.AdminAPIClient) error {
+			return withAdmin(cmd.Context(), 30*time.Second, func(ctx context.Context, api genezav1.ClusterAPIClient) error {
 				resp, err := api.InstallTrustAnchors(ctx, &genezav1.InstallTrustAnchorsRequest{TrustAnchors: raw})
 				if err != nil {
 					return client.Humanize(err)

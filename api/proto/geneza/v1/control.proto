@@ -709,7 +709,11 @@ message Ping {
 // UserAPI (operator-facing; Login is cert-less, the rest require user mTLS)
 // ---------------------------------------------------------------------------
 
-service UserAPI {
+// WorkspaceAPI is the tenant plane: every method is scoped to the caller's
+// workspace (ident.Workspace), reached by the geneza CLI. Reads require ws-member;
+// the administrative mutations require ws-admin (the reserved cluster admin
+// satisfies both). Nothing here can touch another tenant.
+service WorkspaceAPI {
   rpc ListNodes(ListNodesRequest) returns (ListNodesResponse);
   rpc ListServices(ListServicesRequest) returns (ListServicesResponse);
   rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse);
@@ -755,6 +759,37 @@ service UserAPI {
   // of distinct affected nodes (host and container-image verdicts unioned), and a
   // fixing version. Same cert-scoped tenancy and ws-member gate as the others.
   rpc ListWorkspaceCVEs(ListWorkspaceCVEsRequest) returns (ListWorkspaceCVEsResponse);
+
+  // --- workspace administration (ws-admin), moved off the former AdminAPI so a
+  // workspace admin manages their OWN tenant; all bind to the caller's workspace ---
+  // CreateJoinToken mints a one-time enrollment code bound to the caller's
+  // workspace; ApproveNode gates admission; RemoveNode decommissions.
+  rpc CreateJoinToken(CreateJoinTokenRequest) returns (CreateJoinTokenResponse);
+  rpc ApproveNode(ApproveNodeRequest) returns (Empty);
+  rpc RemoveNode(RemoveNodeRequest) returns (Empty);
+  // RevokeSession force-terminates one of this workspace's live sessions ("kick").
+  rpc RevokeSession(RevokeSessionRequest) returns (Empty);
+  // QueryAudit returns THIS workspace's audit slice (scoped to the caller's tenant).
+  rpc QueryAudit(QueryAuditRequest) returns (QueryAuditResponse);
+  // Per-node agent modules (monitoring / inventory) on the workspace's own nodes.
+  rpc SetNodeModules(SetNodeModulesRequest) returns (Empty);
+  rpc GetNodeModules(GetNodeModulesRequest) returns (NodeModulesResponse);
+  // Managed-domain subdomain reservations for the workspace.
+  rpc ReserveSubdomain(ReserveSubdomainRequest) returns (SubdomainReservationInfo);
+  rpc ListSubdomains(Empty) returns (ListSubdomainsResponse);
+  rpc ReleaseSubdomain(ReleaseSubdomainRequest) returns (Empty);
+  // Funnel: expose a workspace service publicly under one of its reservations.
+  rpc CreateFunnel(CreateFunnelRequest) returns (FunnelInfo);
+  rpc ListFunnels(Empty) returns (ListFunnelsResponse);
+  rpc DeleteFunnel(DeleteFunnelRequest) returns (Empty);
+  // Principal authorization within THIS workspace: suspend/unsuspend a member and
+  // list the workspace's suspensions. Bound to the caller's workspace (any Workspace
+  // field in the request is ignored). RevokeUser drops a user's live sessions in
+  // this workspace. The cross-tenant operator equivalents live on ClusterAPI.
+  rpc SuspendPrincipal(SuspendPrincipalRequest) returns (Empty);
+  rpc LiftSuspension(SuspendPrincipalRequest) returns (Empty);
+  rpc ListSuspensions(Empty) returns (ListSuspensionsResponse);
+  rpc RevokeUser(RevokeUserRequest) returns (RevokeCountResponse);
 }
 
 message RecordingInfo {
@@ -1055,17 +1090,12 @@ message ListWorkspaceCVEsResponse {
 // AdminAPI (requires user mTLS with role "admin")
 // ---------------------------------------------------------------------------
 
-service AdminAPI {
-  rpc CreateJoinToken(CreateJoinTokenRequest) returns (CreateJoinTokenResponse);
-  // ApproveNode flips a node's pending-approval gate (zero-trust admission
-  // control): an unapproved node has an identity but no session can be brokered
-  // to it until an admin approves. approve=false re-quarantines a node.
-  rpc ApproveNode(ApproveNodeRequest) returns (Empty);
+// ClusterAPI is the cluster-operator plane: fleet-global and cross-tenant state,
+// reached by genezactl and gated to the reserved break-glass admin/platform-admin
+// cert. Per-workspace operations live on WorkspaceAPI instead.
+service ClusterAPI {
   // ListWorkspaces lists the tenants this controller hosts.
   rpc ListWorkspaces(Empty) returns (ListWorkspacesResponse);
-  // RemoveNode decommissions a machine: deletes its record so it no longer
-  // appears in the fleet and must re-enroll (and re-be-approved) to return.
-  rpc RemoveNode(RemoveNodeRequest) returns (Empty);
   rpc PublishArtifact(stream ArtifactChunk) returns (PublishArtifactResponse);
   rpc SetDesiredVersion(SetDesiredVersionRequest) returns (Empty);
   // Staggered rollout control: drive a product (agent/relay) through percentage
@@ -1077,24 +1107,21 @@ service AdminAPI {
   rpc ResumeRollout(RolloutControlRequest) returns (RolloutStatusResponse);
   rpc AbortRollout(RolloutControlRequest) returns (RolloutStatusResponse);
   rpc SetAutoUpdate(SetAutoUpdateRequest) returns (Empty);
+  // GetFleetStatus pairs the caller-workspace node summary with the cluster-global
+  // agent/relay version rings; consumed by genezactl status/release.
   rpc GetFleetStatus(Empty) returns (FleetStatus);
   rpc ReloadPolicy(Empty) returns (Empty);
-  rpc QueryAudit(QueryAuditRequest) returns (QueryAuditResponse);
-  // RevokeSession force-terminates a live session (admin "kick"). RevokeUser
-  // revokes all of a user's sessions.
-  rpc RevokeSession(RevokeSessionRequest) returns (Empty);
+  // RevokeUser revokes all of a user's sessions across the fleet (cross-tenant: it
+  // matches by username over every workspace).
   rpc RevokeUser(RevokeUserRequest) returns (RevokeCountResponse);
   // Authorization (separate from authentication): SuspendPrincipal revokes a
   // principal's authorization even while their token/cert stays valid — nukes
   // their live tunnel + browser sessions and DENIES new ones (login, broker,
-  // cert-issuance, sweep) until LiftSuspension. Sticky across re-login.
+  // cert-issuance, sweep) until LiftSuspension. Cross-tenant: the operator targets
+  // any workspace via the request.
   rpc SuspendPrincipal(SuspendPrincipalRequest) returns (Empty);
   rpc LiftSuspension(SuspendPrincipalRequest) returns (Empty);
   rpc ListSuspensions(Empty) returns (ListSuspensionsResponse);
-  // Per-node agent modules (enable/disable monitoring & future exporters). The
-  // controller persists the desired set and pushes it to the node in realtime.
-  rpc SetNodeModules(SetNodeModulesRequest) returns (Empty);
-  rpc GetNodeModules(GetNodeModulesRequest) returns (NodeModulesResponse);
   // Cloud-qualified SOURCE bindings (workspace-as-hub): bind an external
   // identity source (e.g. openstack:project:<svc>:<uuid>, idp:group:<realm>:<g>)
   // to a workspace so its VMs/users enroll/land there. Operator pre-bind path.
@@ -1109,21 +1136,8 @@ service AdminAPI {
   // (assembled by geneza-trust) and CASes it into the store, flipping the cluster
   // into split mode. The controller holds NO trust key: it only stores the
   // operator-supplied anchor and re-pins the routine map to it; it can never author
-  // or alter the anchor. Cluster-admin gated like the rest of the AdminAPI.
+  // or alter the anchor. Cluster-admin gated like the rest of ClusterAPI.
   rpc InstallTrustAnchors(InstallTrustAnchorsRequest) returns (InstallTrustAnchorsResponse);
-  // Managed-domain subdomain reservations (ws-admin scoped to the caller's
-  // workspace): claim a subdomain label on a configured managed domain, list the
-  // workspace's reservations + claimable domains, release one. The cert manager
-  // issues a wildcard per reservation.
-  rpc ReserveSubdomain(ReserveSubdomainRequest) returns (SubdomainReservationInfo);
-  rpc ListSubdomains(Empty) returns (ListSubdomainsResponse);
-  rpc ReleaseSubdomain(ReleaseSubdomainRequest) returns (Empty);
-  // Funnel: expose a workspace service to the PUBLIC internet at a hostname under
-  // one of the workspace's reservations. The controller mints a narrow leaf and a
-  // relay pool terminates public TLS + reverse-proxies into the overlay.
-  rpc CreateFunnel(CreateFunnelRequest) returns (FunnelInfo);
-  rpc ListFunnels(Empty) returns (ListFunnelsResponse);
-  rpc DeleteFunnel(DeleteFunnelRequest) returns (Empty);
   // Relay fleet view: presence rows for the registered relays, including each
   // relay's CURRENT identity-cert serial — the value to pass to RevokeCert to
   // decommission it (the serial rotates on renewal, so read it live from here).

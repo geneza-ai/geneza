@@ -103,12 +103,10 @@ func newVersionCmd() *cobra.Command {
 
 func loadEnv() (*client.Env, error) { return client.LoadEnv(flagProfile) }
 
-func dialUser(e *client.Env) (*grpc.ClientConn, genezav1.UserAPIClient, *tls.Certificate, error) {
+// dialUser is the ONLY controller dial the tenant CLI makes: the WorkspaceAPI,
+// scoped to the caller's workspace. Cluster-operator RPCs live in genezactl.
+func dialUser(e *client.Env) (*grpc.ClientConn, genezav1.WorkspaceAPIClient, *tls.Certificate, error) {
 	return e.DialUser()
-}
-
-func dialAdmin(e *client.Env) (*grpc.ClientConn, genezav1.AdminAPIClient, error) {
-	return e.DialAdmin()
 }
 
 func printJSON(m proto.Message) error   { return client.PrintJSON(m) }

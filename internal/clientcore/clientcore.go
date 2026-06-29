@@ -29,7 +29,7 @@ type Client struct {
 	pool    *x509.CertPool
 	cert    *tls.Certificate
 	cc      *grpc.ClientConn
-	api     genezav1.UserAPIClient
+	api     genezav1.WorkspaceAPIClient
 }
 
 // Open loads the named profile (empty = "default"), dials the controller over mTLS,
@@ -58,15 +58,15 @@ func Open(profile string) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Client{store: st, profile: prof, pool: pool, cert: cert, cc: cc, api: genezav1.NewUserAPIClient(cc)}, nil
+	return &Client{store: st, profile: prof, pool: pool, cert: cert, cc: cc, api: genezav1.NewWorkspaceAPIClient(cc)}, nil
 }
 
 // Close releases the controller connection.
 func (c *Client) Close() error { return c.cc.Close() }
 
-// API exposes the controller UserAPI for callers needing RPCs beyond the helpers
+// API exposes the controller WorkspaceAPI for callers needing RPCs beyond the helpers
 // here (sessions, policy, audit, metrics, tokens).
-func (c *Client) API() genezav1.UserAPIClient { return c.api }
+func (c *Client) API() genezav1.WorkspaceAPIClient { return c.api }
 
 // Profile returns the loaded profile (controller addresses, identity, trust pin).
 func (c *Client) Profile() *client.Profile { return c.profile }

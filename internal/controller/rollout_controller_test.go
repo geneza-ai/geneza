@@ -261,7 +261,7 @@ func TestManualDesiredRejectedDuringRollout(t *testing.T) {
 	if _, err := s.startRollout("geneza-agent", "2.0.0", []int{100}, 10, 60, TriggerAdmin, "admin"); err != nil {
 		t.Fatal(err)
 	}
-	api := &adminAPIService{s: s}
+	api := &clusterAPIService{s: s}
 	_, err := api.SetDesiredVersion(context.Background(), &genezav1.SetDesiredVersionRequest{
 		Ring: "stable", Version: "3.0.0", Product: "geneza-agent",
 	})

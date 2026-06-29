@@ -70,10 +70,10 @@ func newVersionCmd() *cobra.Command {
 	}
 }
 
-// withAdmin loads the profile, dials the AdminAPI, and runs fn under a timeout —
+// withAdmin loads the profile, dials the ClusterAPI, and runs fn under a timeout —
 // the connection boilerplate every cluster command shares. Streaming commands
 // (publish) dial directly instead, since they manage their own deadline.
-func withAdmin(ctx context.Context, timeout time.Duration, fn func(context.Context, genezav1.AdminAPIClient) error) error {
+func withAdmin(ctx context.Context, timeout time.Duration, fn func(context.Context, genezav1.ClusterAPIClient) error) error {
 	e, err := client.LoadEnv(flagProfile)
 	if err != nil {
 		return err

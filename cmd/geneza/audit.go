@@ -47,7 +47,7 @@ func newAuditLogCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			cc, api, err := dialAdmin(e)
+			cc, api, _, err := dialUser(e)
 			if err != nil {
 				return err
 			}
@@ -222,7 +222,7 @@ func newAuditRecPullCmd() *cobra.Command {
 
 // readRecordingStream drains the GetRecording stream into the full ciphertext plus
 // the manifest carried on the first chunk.
-func readRecordingStream(stream genezav1.UserAPI_GetRecordingClient) ([]byte, *genezav1.RecordingManifest, error) {
+func readRecordingStream(stream genezav1.WorkspaceAPI_GetRecordingClient) ([]byte, *genezav1.RecordingManifest, error) {
 	var buf bytes.Buffer
 	var manifest *genezav1.RecordingManifest
 	for {
