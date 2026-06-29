@@ -7,11 +7,13 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
 
@@ -105,8 +107,28 @@ func loadEnv() (*client.Env, error) { return client.LoadEnv(flagProfile) }
 
 // dialUser is the ONLY controller dial the tenant CLI makes: the WorkspaceAPI,
 // scoped to the caller's workspace. Cluster-operator RPCs live in genezactl.
+//
+// If the session cert has expired and a human is at the terminal, it re-runs the
+// login flow automatically (re-using the profile's controller + pinned CA) and
+// retries — so daily use never dead-ends on "run geneza login". A non-interactive
+// caller (script/cron) gets the plain expiry error instead of a hung browser prompt.
 func dialUser(e *client.Env) (*grpc.ClientConn, genezav1.WorkspaceAPIClient, *tls.Certificate, error) {
-	return e.DialUser()
+	cc, api, cert, err := e.DialUser()
+	if err == nil {
+		return cc, api, cert, nil
+	}
+	if !errors.Is(err, client.ErrCertExpired) || !term.IsTerminal(int(os.Stderr.Fd())) {
+		return nil, nil, nil, err
+	}
+	fmt.Fprintln(os.Stderr, "Your Geneza session has expired — signing you in…")
+	if lerr := runLogin(context.Background(), &loginOpts{}); lerr != nil {
+		return nil, nil, nil, lerr
+	}
+	e2, lerr := loadEnv()
+	if lerr != nil {
+		return nil, nil, nil, lerr
+	}
+	return e2.DialUser()
 }
 
 func printJSON(m proto.Message) error   { return client.PrintJSON(m) }

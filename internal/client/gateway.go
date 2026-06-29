@@ -30,6 +30,11 @@ func (s *Store) LoadCAPool(pin string) (*x509.CertPool, error) {
 	return ca.PoolFromPEM(pemBytes)
 }
 
+// ErrCertExpired is returned by ClientCert when the stored user cert has expired,
+// so callers (the CLI dispatch) can recognize it and offer to re-login rather than
+// just failing.
+var ErrCertExpired = errors.New("session expired")
+
 // ClientCert loads the operator's mTLS keypair and rejects expired certs
 // early with an actionable message (the controller would reject them anyway).
 func (s *Store) ClientCert() (*tls.Certificate, *x509.Certificate, error) {
@@ -56,7 +61,7 @@ func (s *Store) ClientCert() (*tls.Certificate, *x509.Certificate, error) {
 		return nil, nil, err
 	}
 	if time.Now().After(leaf.NotAfter) {
-		return nil, nil, fmt.Errorf("certificate expired %s — run 'geneza login'", leaf.NotAfter.Local().Format(time.RFC3339))
+		return nil, nil, fmt.Errorf("%w %s — run 'geneza login'", ErrCertExpired, leaf.NotAfter.Local().Format(time.RFC3339))
 	}
 	return &pair, leaf, nil
 }

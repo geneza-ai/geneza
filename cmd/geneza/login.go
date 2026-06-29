@@ -61,23 +61,26 @@ func runLogin(ctx context.Context, o *loginOpts) error {
 		return err
 	}
 
-	host := o.controller
-	if host == "" && prev != nil {
-		if h, _, err := net.SplitHostPort(prev.ControllerGRPC); err == nil {
-			host = h
+	var controllerGRPC, controllerHTTP string
+	switch {
+	case o.controller != "":
+		host := o.controller
+		if strings.Contains(host, "://") {
+			return fmt.Errorf("--controller %q: pass a bare host name or IP (no scheme)", host)
 		}
-	}
-	if host == "" {
+		if _, _, err := net.SplitHostPort(host); err == nil {
+			return fmt.Errorf("--controller %q: pass the host only; set ports with --http-port/--grpc-port", host)
+		}
+		controllerGRPC = net.JoinHostPort(host, strconv.Itoa(o.grpcPort))
+		controllerHTTP = "https://" + net.JoinHostPort(host, strconv.Itoa(o.httpPort))
+	case prev != nil && prev.ControllerGRPC != "":
+		// Re-login: reuse the EXACT endpoint the profile was established with (host
+		// and ports), so a re-auth hits the same controller and the pinned CA matches.
+		controllerGRPC = prev.ControllerGRPC
+		controllerHTTP = prev.ControllerHTTP
+	default:
 		return errors.New("--controller is required on first login")
 	}
-	if strings.Contains(host, "://") {
-		return fmt.Errorf("--controller %q: pass a bare host name or IP (no scheme)", host)
-	}
-	if _, _, err := net.SplitHostPort(host); err == nil {
-		return fmt.Errorf("--controller %q: pass the host only; set ports with --http-port/--grpc-port", host)
-	}
-	controllerGRPC := net.JoinHostPort(host, strconv.Itoa(o.grpcPort))
-	controllerHTTP := "https://" + net.JoinHostPort(host, strconv.Itoa(o.httpPort))
 
 	// --- 1. CA trust: --ca-file > pinned ca.pem > TOFU fetch --------------------
 	caPEM, pin, err := establishCATrust(ctx, st, prev, o.caFile, controllerHTTP)
@@ -116,12 +119,15 @@ func runLogin(ctx context.Context, o *loginOpts) error {
 		return err
 	}
 
-	fmt.Fprintf(os.Stderr, "\nTo sign in, open this URL in a browser and enter the code:\n\n")
-	fmt.Fprintf(os.Stderr, "    %s\n", da.VerificationURI)
-	fmt.Fprintf(os.Stderr, "    code: %s\n\n", da.UserCode)
+	// Lead with the COMPLETE url (the code is embedded), so on a remote/SSH session
+	// there is one link to open — no code to copy separately. Keep the bare url +
+	// code as the fallback, and still try to open a local browser.
 	if !o.noBrowser {
 		_ = openBrowser(da.VerificationURIComplete)
 	}
+	fmt.Fprintf(os.Stderr, "\nTo sign in, open this link (it already includes your code):\n\n")
+	fmt.Fprintf(os.Stderr, "    %s\n\n", da.VerificationURIComplete)
+	fmt.Fprintf(os.Stderr, "(or open %s and enter code %s)\n\n", da.VerificationURI, da.UserCode)
 	fmt.Fprintf(os.Stderr, "Waiting for approval…\n")
 
 	// --- 4. Poll for the issued cert -------------------------------------------
