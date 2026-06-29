@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"crypto/x509"
+	"encoding/pem"
 	"log/slog"
 	"net"
 	"strconv"
@@ -83,6 +84,7 @@ func (r *relayRegistryService) validateAndUpsertRelay(ctx context.Context, hb *g
 		LastSeenUnix: time.Now().Unix(),
 		Version:      hb.GetVersion(),
 		ActiveCount:  hb.GetActiveCount(),
+		CertSerial:   serialHex(leaf),
 		SealPub:      hb.GetSealPub(),
 		FunnelIP:     hb.GetFunnelIp(),
 	}
@@ -124,6 +126,14 @@ func (r *relayRegistryService) maybeRenewRelayCert(ctx context.Context, rec *Rel
 	if err != nil {
 		slog.Warn("relay cert renewal failed", "relay", rec.RelayID, "err", err)
 		return nil, nil
+	}
+	// Record the just-issued serial so the fleet view (and a revoke) targets the cert
+	// the relay now holds, not the one it presented on connect.
+	if blk, _ := pem.Decode(certPEM); blk != nil {
+		if issued, perr := x509.ParseCertificate(blk.Bytes); perr == nil {
+			rec.CertSerial = serialHex(issued)
+			_ = r.s.store.UpsertRelay(rec)
+		}
 	}
 	if err := r.s.audit.Append("relay_cert_renew", "system", rec.RelayID, "", nil); err != nil {
 		slog.Error("audit append failed", "type", "relay_cert_renew", "err", err)

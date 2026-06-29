@@ -33,6 +33,10 @@ type RelayRecord struct {
 	// is what tells a rollout the relay has cleared and is safe to swap. It rides the
 	// presence row only (never the signed map), alongside LastSeenUnix/Version.
 	ActiveCount int32 `json:"active_count,omitempty"`
+	// CertSerial is the relay's current identity-cert serial (hex), refreshed on every
+	// register and on renewal. Presence row only — the value an operator passes to
+	// RevokeCert to decommission the relay, surfaced because renewal rotates it.
+	CertSerial string `json:"cert_serial,omitempty"`
 	// SealPub is the relay's ephemeral X25519 public key (from its mTLS heartbeat)
 	// the controller seals this relay's funnel certs to. Presence row only.
 	SealPub []byte `json:"seal_pub,omitempty"`

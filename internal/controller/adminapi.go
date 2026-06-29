@@ -680,6 +680,28 @@ func (a *adminAPIService) GetFleetStatus(ctx context.Context, _ *genezav1.Empty)
 	}, nil
 }
 
+func (a *adminAPIService) ListRelays(ctx context.Context, _ *genezav1.Empty) (*genezav1.RelayList, error) {
+	relays, err := a.s.store.ListRelays("")
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "list relays: %v", err)
+	}
+	out := make([]*genezav1.RelayInfo, 0, len(relays))
+	for _, rl := range relays {
+		out = append(out, &genezav1.RelayInfo{
+			RelayId:      rl.RelayID,
+			RegionId:     rl.RegionID,
+			Addrs:        rl.Addrs,
+			ControlAddr:  rl.ControlAddr,
+			Version:      rl.Version,
+			LastSeenUnix: rl.LastSeenUnix,
+			ActiveCount:  rl.ActiveCount,
+			Draining:     rl.Draining,
+			CertSerial:   rl.CertSerial,
+		})
+	}
+	return &genezav1.RelayList{Relays: out}, nil
+}
+
 func (a *adminAPIService) ReloadPolicy(ctx context.Context, _ *genezav1.Empty) (*genezav1.Empty, error) {
 	s := a.s
 	// Reload every workspace's policy file (fail closed: previous stays on error).

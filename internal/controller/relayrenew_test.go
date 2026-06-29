@@ -12,8 +12,33 @@ import (
 	"time"
 
 	"geneza.io/internal/ca"
+	genezav1 "geneza.io/internal/pb/geneza/v1"
 	"geneza.io/internal/types"
 )
+
+func TestListRelaysSurfacesSerial(t *testing.T) {
+	srv := newReplayServer(t)
+	a := &adminAPIService{s: srv}
+	if err := srv.store.UpsertRelay(&RelayRecord{
+		RelayNode:    types.RelayNode{RegionID: "r1", RelayID: "relay-a", Addrs: []string{"1.2.3.4:7404"}},
+		Version:      "1.0.0",
+		LastSeenUnix: time.Now().Unix(),
+		CertSerial:   "deadbeef",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := a.ListRelays(context.Background(), &genezav1.Empty{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.GetRelays()) != 1 {
+		t.Fatalf("want 1 relay, got %d", len(resp.GetRelays()))
+	}
+	r := resp.GetRelays()[0]
+	if r.GetRelayId() != "relay-a" || r.GetCertSerial() != "deadbeef" {
+		t.Errorf("relay %q serial %q, want relay-a/deadbeef", r.GetRelayId(), r.GetCertSerial())
+	}
+}
 
 func TestMaybeRenewRelayCert(t *testing.T) {
 	s := newReplayServer(t)
@@ -84,5 +109,10 @@ func TestMaybeRenewRelayCert(t *testing.T) {
 	renewedPub, _ := x509.MarshalPKIXPublicKey(renewed.PublicKey)
 	if string(csrPub) != string(renewedPub) {
 		t.Error("renewed cert must bind the CSR's key")
+	}
+	// The relay record tracks the just-issued serial, so the fleet view / a revoke
+	// targets the cert the relay now holds.
+	if rec.CertSerial != serialHex(renewed) {
+		t.Errorf("record serial = %q, want the renewed cert serial %q", rec.CertSerial, serialHex(renewed))
 	}
 }

@@ -50,6 +50,7 @@ func main() {
 		newCertCmd(),
 		newTrustCmd(),
 		newPolicyCmd(),
+		newRelayCmd(),
 	)
 
 	if err := root.ExecuteContext(context.Background()); err != nil {

@@ -1124,6 +1124,26 @@ service AdminAPI {
   rpc CreateFunnel(CreateFunnelRequest) returns (FunnelInfo);
   rpc ListFunnels(Empty) returns (ListFunnelsResponse);
   rpc DeleteFunnel(DeleteFunnelRequest) returns (Empty);
+  // Relay fleet view: presence rows for the registered relays, including each
+  // relay's CURRENT identity-cert serial — the value to pass to RevokeCert to
+  // decommission it (the serial rotates on renewal, so read it live from here).
+  rpc ListRelays(Empty) returns (RelayList);
+}
+
+message RelayInfo {
+  string relay_id = 1;
+  string region_id = 2;
+  repeated string addrs = 3;
+  string control_addr = 4;
+  string version = 5;
+  int64 last_seen_unix = 6;
+  int32 active_count = 7;
+  bool draining = 8;
+  string cert_serial = 9; // current identity-cert serial; pass to RevokeCert to kill the relay
+}
+
+message RelayList {
+  repeated RelayInfo relays = 1;
 }
 
 message CreateFunnelRequest {
