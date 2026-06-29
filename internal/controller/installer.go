@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"geneza.io/internal/releasetrust"
 )
 
 // The curl|bash installer. Convenience for "stand up a new node", built so
@@ -28,15 +30,29 @@ import (
 // name is interpolated into a filesystem path, so it must be strictly bounded.
 var installBinRe = regexp.MustCompile(`^geneza-(agent|bootstrap)-(linux|darwin)-(amd64|arm64)$`)
 
-// rootFingerprint is sha256 of the served root public key PEM bytes, formatted
-// "sha256:<hex>". Empty when no root pubkey is configured. The installer
-// recomputes the same hash over the bytes it downloads and compares.
-func (s *Server) rootFingerprint() string {
-	if s.cfg.RootPubkeyFile == "" {
-		return ""
+// rootPubkeyPEM is the root public-key PEM the controller serves at /v1/root-pubkey
+// and fingerprints into the enroll one-liner. By default it is the key compiled into
+// this binary (releasetrust, injected at build) — the controller already carries the
+// root it signs releases under, so no file or config is needed. An explicit
+// root_pubkey_file overrides it (a private deployment pinning its own root). Nil only
+// in an uninjected dev build with no file set.
+func (s *Server) rootPubkeyPEM() []byte {
+	if s.cfg.RootPubkeyFile != "" {
+		b, err := os.ReadFile(s.cfg.RootPubkeyFile)
+		if err != nil {
+			return nil
+		}
+		return b
 	}
-	b, err := os.ReadFile(s.cfg.RootPubkeyFile)
-	if err != nil {
+	return releasetrust.RootPubPEM
+}
+
+// rootFingerprint is sha256 of the served root public key PEM bytes, formatted
+// "sha256:<hex>". Empty when this build pins no root and none is configured. The
+// installer recomputes the same hash over the bytes it downloads and compares.
+func (s *Server) rootFingerprint() string {
+	b := s.rootPubkeyPEM()
+	if len(b) == 0 {
 		return ""
 	}
 	sum := sha256.Sum256(b)
@@ -79,13 +95,9 @@ func (s *Server) registerInstallerRoutes(mux *http.ServeMux) {
 	})
 
 	mux.HandleFunc("GET /v1/root-pubkey", func(w http.ResponseWriter, _ *http.Request) {
-		if s.cfg.RootPubkeyFile == "" {
+		b := s.rootPubkeyPEM()
+		if len(b) == 0 {
 			http.Error(w, "no root pubkey configured", http.StatusNotFound)
-			return
-		}
-		b, err := os.ReadFile(s.cfg.RootPubkeyFile)
-		if err != nil {
-			http.Error(w, "root pubkey unavailable", http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "application/x-pem-file")

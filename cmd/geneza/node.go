@@ -85,8 +85,15 @@ func newNodeEnrollCmd() *cobra.Command {
 				// One opaque code carries the token + the pinned root fingerprint
 				// (and, on split-front deploys, the endpoints). install.sh decodes it.
 				code := enrollcode.Encode(enrollcode.Fields{Token: resp.GetToken(), RootFP: fp})
-				fmt.Printf("\nRun this on the new node:\n  curl -fsSL %s/install.sh | sudo sh -s -- %s\n",
-					e.Profile.ControllerHTTP, code)
+				// Fetch over the controller's PUBLIC, publicly-trusted front (its console
+				// external URL behind the ACME proxy) so curl on a bare host trusts the TLS;
+				// the internal :7402 API serves the private Geneza CA cert. Fall back to the
+				// API URL only when no public front is configured (lab/self-signed).
+				base := resp.GetInstallerUrl()
+				if base == "" {
+					base = e.Profile.ControllerHTTP
+				}
+				fmt.Printf("\nRun this on the new node:\n  curl -fsSL %s/install.sh | sudo sh -s -- %s\n", base, code)
 				if !autoApprove {
 					fmt.Println("\nThen approve it:  geneza node approve <node>   (watch arrivals: geneza node pending)")
 				}

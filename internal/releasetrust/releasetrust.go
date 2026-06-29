@@ -46,6 +46,11 @@ var rootPubB64 string
 // none (dev/test).
 var RootPub ed25519.PublicKey
 
+// RootPubPEM is the PEM the root public key was injected as (the bytes a deploy
+// serves at /v1/root-pubkey so the curl|bash installer can pin it). Nil in an
+// uninjected dev/test build.
+var RootPubPEM []byte
+
 func init() {
 	if rootPubB64 == "" {
 		return
@@ -62,6 +67,7 @@ func init() {
 		panic("releasetrust: injected rootPubB64 is not a valid public key: " + err.Error())
 	}
 	RootPub = k
+	RootPubPEM = pemBytes
 }
 
 // contextReleaseSums domain-separates the SHA256SUMS signature from every other

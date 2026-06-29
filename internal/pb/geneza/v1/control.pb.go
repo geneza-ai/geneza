@@ -8417,8 +8417,14 @@ type CreateJoinTokenResponse struct {
 	// one-liner as --root-fp so the new machine verifies the trust anchor it
 	// fetches at bootstrap (defeats a controller-MITM swapping the root key).
 	RootFingerprint string `protobuf:"bytes,3,opt,name=root_fingerprint,json=rootFingerprint,proto3" json:"root_fingerprint,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// installer_url is the controller's PUBLIC, browser/curl-trusted front (the
+	// console external URL, e.g. https://geneza.example.com fronted by the ACME proxy)
+	// — NOT the internal :7402 API whose cert is the private Geneza CA. The curl|bash
+	// one-liner must fetch over this so an unauthenticated host trusts the TLS. Empty
+	// on deployments with no public front, where the CLI falls back to the API URL.
+	InstallerUrl  string `protobuf:"bytes,4,opt,name=installer_url,json=installerUrl,proto3" json:"installer_url,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CreateJoinTokenResponse) Reset() {
@@ -8468,6 +8474,13 @@ func (x *CreateJoinTokenResponse) GetExpiresUnix() int64 {
 func (x *CreateJoinTokenResponse) GetRootFingerprint() string {
 	if x != nil {
 		return x.RootFingerprint
+	}
+	return ""
+}
+
+func (x *CreateJoinTokenResponse) GetInstallerUrl() string {
+	if x != nil {
+		return x.InstallerUrl
 	}
 	return ""
 }
@@ -10590,11 +10603,12 @@ const file_geneza_v1_control_proto_rawDesc = "" +
 	"\fauto_approve\x18\x04 \x01(\bR\vautoApprove\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"}\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xa2\x01\n" +
 	"\x17CreateJoinTokenResponse\x12\x14\n" +
 	"\x05token\x18\x01 \x01(\tR\x05token\x12!\n" +
 	"\fexpires_unix\x18\x02 \x01(\x03R\vexpiresUnix\x12)\n" +
-	"\x10root_fingerprint\x18\x03 \x01(\tR\x0frootFingerprint\"Z\n" +
+	"\x10root_fingerprint\x18\x03 \x01(\tR\x0frootFingerprint\x12#\n" +
+	"\rinstaller_url\x18\x04 \x01(\tR\finstallerUrl\"Z\n" +
 	"\x12ApproveNodeRequest\x12\x12\n" +
 	"\x04node\x18\x01 \x01(\tR\x04node\x12\x18\n" +
 	"\aapprove\x18\x02 \x01(\bR\aapprove\x12\x16\n" +

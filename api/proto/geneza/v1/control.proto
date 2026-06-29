@@ -1284,6 +1284,12 @@ message CreateJoinTokenResponse {
   // one-liner as --root-fp so the new machine verifies the trust anchor it
   // fetches at bootstrap (defeats a controller-MITM swapping the root key).
   string root_fingerprint = 3;
+  // installer_url is the controller's PUBLIC, browser/curl-trusted front (the
+  // console external URL, e.g. https://geneza.example.com fronted by the ACME proxy)
+  // — NOT the internal :7402 API whose cert is the private Geneza CA. The curl|bash
+  // one-liner must fetch over this so an unauthenticated host trusts the TLS. Empty
+  // on deployments with no public front, where the CLI falls back to the API URL.
+  string installer_url = 4;
 }
 
 message ApproveNodeRequest {

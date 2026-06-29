@@ -91,6 +91,7 @@ func (a *workspaceAPIService) CreateJoinToken(ctx context.Context, req *genezav1
 		Token:           token,
 		ExpiresUnix:     expires,
 		RootFingerprint: s.rootFingerprint(),
+		InstallerUrl:    s.consoleExternalURL(),
 	}, nil
 }
 

@@ -283,14 +283,13 @@ relay_shared_secret: ${RELAY_SECRET}
 policy_file: /etc/geneza/policy.yaml
 metrics_url: "${METRICS}"
 
-# curl|bash agent install: serve the PUBLIC root key (baked into the image) and keep
-# install_dir populated with the SIGNED geneza-node release pulled from GitHub, so
-# 'geneza node enroll' prints a verifiable one-liner. agent_release.tag empty = the
-# latest published release; needs the controller to reach GitHub. (No published
-# release yet, or air-gapped? Remove BOTH root_pubkey_file and agent_release and the
-# curl|bash line is disabled; enroll still mints the token to install the agent
-# another way.)
-root_pubkey_file: /etc/geneza/root-keys.json
+# curl|bash agent install: the controller serves the root signing key it already
+# carries (compiled into the binary) at /v1/root-pubkey, and install_dir holds the
+# stage-1 binaries. agent_release keeps install_dir populated with the SIGNED
+# geneza-node release pulled from GitHub (tag empty = latest; needs GitHub egress).
+# 'geneza node enroll' then prints a verifiable one-liner. (Air-gapped / no release?
+# Remove agent_release; enroll still mints the token to install the agent another way.
+# Pin your OWN root instead of the built-in by setting root_pubkey_file.)
 install_dir: /var/lib/geneza/install
 agent_release:
   pull: true
