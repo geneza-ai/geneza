@@ -28,6 +28,7 @@ POSTGRES_DSN=""                          # external Postgres DSN (HA): omits the
 METRICS_URL=""                           # external VictoriaMetrics (HA): omits the bundled one
 CONTROLLER_ID=""                            # stable per-controller id (REQUIRED, unique, in HA)
 IMAGE_TAG="${GENEZA_IMAGE_TAG:-latest}"  # image tag for controller/relay
+AGENT_TAG="${GENEZA_AGENT_TAG:-}"        # signed geneza-node release the controller serves (empty = latest)
 REGISTRY="${GENEZA_REGISTRY:-ghcr.io/geneza-ai}"
 # relay-only:
 RELAY_ID=""                              # relay identity; MUST match issue-relay-cert --name (default: derived from the cert)
@@ -60,7 +61,7 @@ write_env() {
       # which both `. .env` (bash) and docker compose's .env interpolation would
       # otherwise expand/mangle. Single quotes are literal to both.
       for _k in ROLE SITE PUBLIC_IP ACME_EMAIL POSTGRES_DSN METRICS_URL CONTROLLER_ID \
-                IMAGE_TAG CONTROLLER_ADDR RELAY_SECRET POSTGRES_PASSWORD ADMIN_BCRYPT; do
+                IMAGE_TAG AGENT_TAG CONTROLLER_ADDR RELAY_SECRET POSTGRES_PASSWORD ADMIN_BCRYPT; do
         printf "%s='%s'\n" "$_k" "${!_k:-}"
       done
     } > "$ENVFILE"
@@ -75,6 +76,7 @@ usage: install.sh [--role controller|controller+relay|relay] [options]
     --role ROLE           controller | controller+relay | relay
     --dir PATH            install root (default: /opt/geneza)
     --image-tag TAG       controller/relay image tag (default: latest)
+    --agent-tag TAG       signed geneza-node release the controller serves (default: latest)
     --yes                 accept defaults, never prompt (unattended)
     --no-start            render + bootstrap but do not 'up -d'
     --uninstall           stop the stack and remove the systemd-managed services
@@ -114,6 +116,7 @@ while [ $# -gt 0 ]; do
     --metrics-url)    METRICS_URL="${2:-}"; shift 2 ;;
     --controller-id)     CONTROLLER_ID="${2:-}"; shift 2 ;;
     --image-tag)      IMAGE_TAG="${2:-}"; shift 2 ;;
+    --agent-tag)      AGENT_TAG="${2:-}"; shift 2 ;;
     --controller)        CONTROLLER_ADDR="${2:-}"; shift 2 ;;
     --relay-id)       RELAY_ID="${2:-}"; shift 2 ;;
     --cert)           RELAY_CERT="${2:-}"; shift 2 ;;
@@ -264,7 +267,19 @@ relay_shared_secret: ${RELAY_SECRET}
 
 policy_file: /etc/geneza/policy.yaml
 metrics_url: "${METRICS}"
+
+# curl|bash agent install: serve the PUBLIC root key (baked into the image) and keep
+# install_dir populated with the SIGNED geneza-node release pulled from GitHub, so
+# 'geneza node enroll' prints a verifiable one-liner. agent_release.tag empty = the
+# latest published release; needs the controller to reach GitHub. (No published
+# release yet, or air-gapped? Remove BOTH root_pubkey_file and agent_release and the
+# curl|bash line is disabled; enroll still mints the token to install the agent
+# another way.)
+root_pubkey_file: /etc/geneza/root-keys.json
 install_dir: /var/lib/geneza/install
+agent_release:
+  pull: true
+  tag: "${AGENT_TAG}"
 
 cert_ttl:
   node: 24h

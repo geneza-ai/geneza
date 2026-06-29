@@ -52,6 +52,9 @@ COPY --from=build /out/geneza-controller /usr/local/bin/geneza-controller
 # Baked agent stack the installer serves (set install_dir: /var/lib/geneza/install);
 # owned by the nonroot uid so an enabled agent_release.pull can refresh it.
 COPY --from=build --chown=65532:65532 /out/install /var/lib/geneza/install
+# The PUBLIC TUF-lite root key, so a deploy can serve the verifiable curl|bash agent
+# installer (set root_pubkey_file: /etc/geneza/root-keys.json). Public — safe to bake.
+COPY deploy/release/root-keys.json /etc/geneza/root-keys.json
 # Built web consoles. Point console.static_dir at /var/lib/geneza/console-web (and
 # cluster_console.static_dir at the cluster build) to serve the SPA from the image.
 COPY --from=web /src/web/apps/console/dist /var/lib/geneza/console-web
