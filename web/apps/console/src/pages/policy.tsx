@@ -41,7 +41,14 @@ export function PolicyPage() {
   const seq = useRef(0)
   useEffect(() => {
     if (!data) return
-    if (draft === loadedYaml && validation === null) return // nothing typed yet
+    // Pristine (no edits since load): nothing to validate, and never leave the
+    // spinner on. NOTE: do NOT depend on `validation` here — this effect SETS it, so
+    // listing it would self-trigger forever (Validating… never ends, Save stays
+    // disabled). Re-validate only when the draft (or the loaded doc) changes.
+    if (draft === loadedYaml) {
+      setValidating(false)
+      return
+    }
     const mine = ++seq.current
     setValidating(true)
     const t = setTimeout(async () => {
@@ -56,7 +63,7 @@ export function PolicyPage() {
       }
     }, 450)
     return () => clearTimeout(t)
-  }, [draft, data, loadedYaml, validation])
+  }, [draft, data, loadedYaml])
 
   // Preview source: the freshly-validated structure when valid, else the last
   // good loaded policy so the preview never blanks while typing an invalid edit.
