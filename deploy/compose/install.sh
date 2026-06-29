@@ -301,12 +301,11 @@ cert_ttl:
 grant_ttl: 2m
 default_max_session_ttl: 12h
 
-# Break-glass local admin. The bcrypt is filled in at bootstrap; federate human
-# login by adding an oidc:/clouds: block (see docs).
-local_users:
-  - username: admin
-    password_bcrypt: "__ADMIN_BCRYPT__"
-    groups: [geneza-admins]
+# Break-glass local admin lives in its OWN file (written once, never re-rendered),
+# so re-running the installer can't clobber a changed password or extra users. Edit
+# /opt/geneza/config/local_users.yml to manage them. Federate human login by adding
+# an oidc:/clouds: block (see docs).
+local_users_file: /etc/geneza/local_users.yml
 
 agent_policy:
   forbid_detach: false
@@ -501,6 +500,7 @@ $( [ -n "$DEPENDS" ] && printf '    depends_on:\n%s' "$DEPENDS" )
       - "7402:7402" # HTTPS: ca-roots, updates, console, device login
     volumes:
       - ./generated/controller.yaml:/etc/geneza/controller.yaml:ro
+      - ./generated/local_users.yml:/etc/geneza/local_users.yml:ro
       - ./config/policy.yaml:/etc/geneza/policy.yaml:ro
       - ./data/controller:/var/lib/geneza/controller
 
@@ -581,6 +581,22 @@ if [ "$IS_CONTROLLER" = 1 ]; then
     ADMIN_BCRYPT="$(printf '%s' "$ADMIN_PASSWORD" | docker run -i --rm "$GW_IMAGE" hash-password)"
     [ -n "$ADMIN_BCRYPT" ] || die "failed to hash admin password"
     write_env
+  fi
+  # The credential file the controller loads via local_users_file. Written ONCE: a
+  # re-run never overwrites it, so a password changed here (or extra users added)
+  # survives upgrades. The bcrypt's '$' is why this goes through sed, not a heredoc var.
+  if [ ! -f "$DIR/generated/local_users.yml" ]; then
+    sed "s|__ADMIN_BCRYPT__|${ADMIN_BCRYPT}|" > "$DIR/generated/local_users.yml" <<'EOF'
+# Geneza local users — written once by the installer, NOT re-rendered on upgrade, so
+# edits here (change a password, add users) are safe. password_bcrypt is a bcrypt
+# hash; mint one with: docker run -i --rm <controller-image> hash-password.
+local_users:
+  - username: admin
+    password_bcrypt: "__ADMIN_BCRYPT__"
+    groups: [geneza-admins]
+EOF
+    chown "$NONROOT_UID:$NONROOT_UID" "$DIR/generated/local_users.yml"
+    chmod 600 "$DIR/generated/local_users.yml"
   fi
   sed "s|__ADMIN_BCRYPT__|${ADMIN_BCRYPT}|" "$DIR/config/controller.yaml" > "$DIR/generated/controller.yaml"
   chown "$NONROOT_UID:$NONROOT_UID" "$DIR/generated/controller.yaml"

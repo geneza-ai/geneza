@@ -341,6 +341,11 @@ type Config struct {
 	Presence           PresenceConfig    `yaml:"presence"` // continuous-presence factor
 	OIDC               *OIDCConfig       `yaml:"oidc"`
 	LocalUsers         []LocalUser       `yaml:"local_users"`
+	// LocalUsersFile loads ADDITIONAL local_users from a separate YAML file (a
+	// document with a top-level local_users: list), appended to any inline ones. It
+	// lets a deploy keep credentials in their own file that an installer writes once
+	// and never clobbers, so controller.yaml can be re-rendered freely.
+	LocalUsersFile     string            `yaml:"local_users_file"`
 	AgentPolicy        AgentPolicyConfig `yaml:"agent_policy"`
 	ArtifactPubkeyFile string            `yaml:"artifact_pubkey_file"`
 	// RootKeysFile points at the offline-signed root-keys.json (TUF-lite trust
@@ -965,11 +970,39 @@ func LoadConfig(path string) (*Config, error) {
 	if err := unmarshalStrict(b, &c); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
+	if c.LocalUsersFile != "" {
+		if err := c.loadLocalUsersFile(filepath.Dir(path)); err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+	}
 	c.applyDefaults()
 	if err := c.validate(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return &c, nil
+}
+
+// loadLocalUsersFile merges local_users from the external local_users_file into the
+// config. A relative path resolves against the controller.yaml's directory. Keeping
+// credentials in their own file lets an installer write them once and re-render the
+// main config without ever rotating a password.
+func (c *Config) loadLocalUsersFile(baseDir string) error {
+	p := c.LocalUsersFile
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(baseDir, p)
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return fmt.Errorf("local_users_file: %w", err)
+	}
+	var ext struct {
+		LocalUsers []LocalUser `yaml:"local_users"`
+	}
+	if err := unmarshalStrict(b, &ext); err != nil {
+		return fmt.Errorf("local_users_file %s: %w", p, err)
+	}
+	c.LocalUsers = append(c.LocalUsers, ext.LocalUsers...)
+	return nil
 }
 
 func unmarshalStrict(b []byte, out any) error {

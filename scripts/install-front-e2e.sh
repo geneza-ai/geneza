@@ -140,4 +140,19 @@ GENEZA_HOME="$GHOME" "$GENEZA" --profile admin node ls 2>/dev/null | grep -qiE "
 	|| die "node did not register on the controller"
 ok "node registered on the controller"
 
+say "7) re-running the installer preserves local_users.yml (no password clobber)"
+LUF="$WORK/generated/local_users.yml"
+[ -f "$LUF" ] || die "local_users.yml was not written"
+# simulate an operator changing the admin password in the file
+sed -i 's#password_bcrypt: ".*"#password_bcrypt: "$2y$10$OPERATORchangedTHISpasswordHASHvaluexxxxxxxxxxxxxxxxxxx"#' "$LUF"
+EDITED=$(sha256sum "$LUF" | cut -d' ' -f1)
+GENEZA_DIR="$WORK" bash "$ROOT/deploy/compose/install.sh" --role controller --image-tag "$IMAGE_TAG" \
+	--site localhost --public-ip 127.0.0.1 --yes >/dev/null 2>&1 || die "installer re-run failed"
+[ "$(sha256sum "$LUF" | cut -d' ' -f1)" = "$EDITED" ] \
+	|| die "installer re-run CLOBBERED local_users.yml — the bug this change fixes"
+# and prove the re-run DID re-render the main config (it's not just skipping everything)
+grep -q 'local_users_file: /etc/geneza/local_users.yml' "$WORK/generated/controller.yaml" \
+	|| die "controller.yaml lost its local_users_file reference on re-render"
+ok "local_users.yml survived the re-run; controller.yaml still references it"
+
 printf '\n\033[1;32mALL CHECKS PASSED\033[0m — node-behind-a-front install works end to end.\n'
