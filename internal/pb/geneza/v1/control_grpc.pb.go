@@ -1161,6 +1161,7 @@ const (
 	AdminAPI_CreateFunnel_FullMethodName        = "/geneza.v1.AdminAPI/CreateFunnel"
 	AdminAPI_ListFunnels_FullMethodName         = "/geneza.v1.AdminAPI/ListFunnels"
 	AdminAPI_DeleteFunnel_FullMethodName        = "/geneza.v1.AdminAPI/DeleteFunnel"
+	AdminAPI_ListRelays_FullMethodName          = "/geneza.v1.AdminAPI/ListRelays"
 )
 
 // AdminAPIClient is the client API for AdminAPI service.
@@ -1235,6 +1236,10 @@ type AdminAPIClient interface {
 	CreateFunnel(ctx context.Context, in *CreateFunnelRequest, opts ...grpc.CallOption) (*FunnelInfo, error)
 	ListFunnels(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*ListFunnelsResponse, error)
 	DeleteFunnel(ctx context.Context, in *DeleteFunnelRequest, opts ...grpc.CallOption) (*Empty, error)
+	// Relay fleet view: presence rows for the registered relays, including each
+	// relay's CURRENT identity-cert serial — the value to pass to RevokeCert to
+	// decommission it (the serial rotates on renewal, so read it live from here).
+	ListRelays(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*RelayList, error)
 }
 
 type adminAPIClient struct {
@@ -1588,6 +1593,16 @@ func (c *adminAPIClient) DeleteFunnel(ctx context.Context, in *DeleteFunnelReque
 	return out, nil
 }
 
+func (c *adminAPIClient) ListRelays(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*RelayList, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RelayList)
+	err := c.cc.Invoke(ctx, AdminAPI_ListRelays_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AdminAPIServer is the server API for AdminAPI service.
 // All implementations must embed UnimplementedAdminAPIServer
 // for forward compatibility.
@@ -1660,6 +1675,10 @@ type AdminAPIServer interface {
 	CreateFunnel(context.Context, *CreateFunnelRequest) (*FunnelInfo, error)
 	ListFunnels(context.Context, *Empty) (*ListFunnelsResponse, error)
 	DeleteFunnel(context.Context, *DeleteFunnelRequest) (*Empty, error)
+	// Relay fleet view: presence rows for the registered relays, including each
+	// relay's CURRENT identity-cert serial — the value to pass to RevokeCert to
+	// decommission it (the serial rotates on renewal, so read it live from here).
+	ListRelays(context.Context, *Empty) (*RelayList, error)
 	mustEmbedUnimplementedAdminAPIServer()
 }
 
@@ -1771,6 +1790,9 @@ func (UnimplementedAdminAPIServer) ListFunnels(context.Context, *Empty) (*ListFu
 }
 func (UnimplementedAdminAPIServer) DeleteFunnel(context.Context, *DeleteFunnelRequest) (*Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteFunnel not implemented")
+}
+func (UnimplementedAdminAPIServer) ListRelays(context.Context, *Empty) (*RelayList, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListRelays not implemented")
 }
 func (UnimplementedAdminAPIServer) mustEmbedUnimplementedAdminAPIServer() {}
 func (UnimplementedAdminAPIServer) testEmbeddedByValue()                  {}
@@ -2394,6 +2416,24 @@ func _AdminAPI_DeleteFunnel_Handler(srv interface{}, ctx context.Context, dec fu
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AdminAPI_ListRelays_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminAPIServer).ListRelays(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminAPI_ListRelays_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminAPIServer).ListRelays(ctx, req.(*Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AdminAPI_ServiceDesc is the grpc.ServiceDesc for AdminAPI service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -2532,6 +2572,10 @@ var AdminAPI_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteFunnel",
 			Handler:    _AdminAPI_DeleteFunnel_Handler,
+		},
+		{
+			MethodName: "ListRelays",
+			Handler:    _AdminAPI_ListRelays_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{
