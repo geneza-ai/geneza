@@ -37,6 +37,7 @@ ASSUME_YES=0
 NO_START=0
 RENDER_ONLY="${GENEZA_RENDER_ONLY:-0}"   # render files but never touch docker (for testing)
 DO_UNINSTALL=0
+GENERATED_PW=0                            # set when we mint a random admin password (must be shown once)
 
 NONROOT_UID=65532 # distroless nonroot — owns the controller/relay data dirs
 
@@ -44,6 +45,26 @@ die() { echo "install: $*" >&2; exit 1; }
 log() { echo "==> $*"; }
 randhex() { head -c32 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
 randpw()  { head -c24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c24; }
+
+# write_env persists the single source of truth ($DIR/.env): every var docker compose
+# interpolates plus every answer an upgrade re-run must reproduce. Mode 600 — it holds
+# the postgres password, relay secret, and admin hash.
+write_env() {
+  ( umask 077
+    {
+      echo "# Geneza install state: secrets + answers + admin hash (chmod 600)."
+      echo "# docker compose reads this for \${...} interpolation; the installer"
+      echo "# re-sources it on every upgrade. A flag to install.sh overrides it."
+      # Single-quote every value: the bcrypt hash contains '$' (and a DSN might),
+      # which both `. .env` (bash) and docker compose's .env interpolation would
+      # otherwise expand/mangle. Single quotes are literal to both.
+      for _k in ROLE SITE PUBLIC_IP ACME_EMAIL POSTGRES_DSN METRICS_URL CONTROLLER_ID \
+                IMAGE_TAG CONTROLLER_ADDR RELAY_SECRET POSTGRES_PASSWORD ADMIN_BCRYPT; do
+        printf "%s='%s'\n" "$_k" "${!_k:-}"
+      done
+    } > "$ENVFILE"
+  )
+}
 
 usage() {
   cat >&2 <<'EOF'
@@ -155,25 +176,16 @@ UPGRADE=0; [ -f "$DIR/docker-compose.yml" ] && UPGRADE=1
 mkdir -p "$DIR" "$DIR/config" "$DIR/data"
 echo "$ROLE" > "$DIR/role"
 
-# Secrets are generated once and reused on every upgrade so a re-run never
-# rotates a key out from under a running fleet.
-SECRETS="$DIR/secrets.env"
+# All persistent install state — generated secrets, your answers, and the resolved
+# admin password hash — lives in ONE file: $DIR/.env. The installer re-sources it on
+# every upgrade (re-runs reproduce the topology and never rotate a secret), and
+# docker compose auto-loads it for ${...} interpolation. A flag passed this run wins.
+ENVFILE="$DIR/.env"
 # shellcheck source=/dev/null
-[ -f "$SECRETS" ] && . "$SECRETS"
+[ -f "$ENVFILE" ] && . "$ENVFILE"
 : "${RELAY_SECRET:=$(randhex)}"
 : "${POSTGRES_PASSWORD:=$(randpw)}"
-umask 077; { echo "RELAY_SECRET=$RELAY_SECRET"; echo "POSTGRES_PASSWORD=$POSTGRES_PASSWORD"; } > "$SECRETS"
-
-# Non-secret answers persist so an upgrade re-run reproduces the same topology
-# (an HA controller keeps its external DSN, etc.). A flag passed this run wins; only
-# empty vars are filled from the saved set.
-ANSWERS="$DIR/answers.env"
-if [ -f "$ANSWERS" ]; then
-  while IFS='=' read -r _k _v; do
-    case "$_k" in ''|\#*) continue ;; esac
-    [ -z "${!_k:-}" ] && printf -v "$_k" '%s' "$_v"
-  done < "$ANSWERS"
-fi
+: "${ADMIN_BCRYPT:=}"
 
 ###############################################################################
 # CONTROLLER  (controller / controller+relay)
@@ -264,13 +276,21 @@ agent_policy:
 EOF
 
   cat > "$DIR/config/policy.yaml" <<'EOF'
-# Minimal starting policy: members of geneza-admins get full access. Grow this
-# into per-workspace RBAC/ABAC; see docs/ for the policy-as-data model.
-version: 1
+# Minimal starting policy (policy-as-data): the geneza-admins group + the local
+# admin user get ws-admin — every action on this workspace's nodes. `roles` is a
+# MAP of role -> allow rules; `bindings` maps users/groups onto a role. The reserved
+# cluster role `admin` is break-glass-cert only and cannot be bound here. Grow this
+# into per-workspace RBAC/ABAC; see docs/ for the full model.
 roles:
-  - name: admin
+  ws-admin:
+    allow:
+      - actions: ["*"]
+        node_labels: {"*": "*"}
+        record: true
+bindings:
+  - role: ws-admin
+    users: [admin]
     groups: [geneza-admins]
-    allow: ["*"]
 EOF
 
   cat > "$DIR/config/Caddyfile" <<EOF
@@ -374,17 +394,10 @@ fi
 ###############################################################################
 # Render docker-compose.yml for the chosen role
 ###############################################################################
-# persist this run's answers for the next (upgrade) run
-{
-  for _k in SITE PUBLIC_IP ACME_EMAIL POSTGRES_DSN METRICS_URL CONTROLLER_ID IMAGE_TAG CONTROLLER_ADDR; do
-    printf '%s=%s\n' "$_k" "${!_k:-}"
-  done
-} > "$ANSWERS"
-
 log "rendering docker-compose.yml ($ROLE)"
 {
   echo "# Geneza — rendered by deploy/compose/install.sh (role: $ROLE). Re-run the"
-  echo "# installer to upgrade; it pulls newer images and re-renders from secrets.env."
+  echo "# installer to upgrade; it pulls newer images and re-renders from .env."
   echo "name: geneza"
   echo
   echo "services:"
@@ -473,12 +486,24 @@ EOF
   fi
 } > "$DIR/docker-compose.yml"
 
+# Persist the single source of truth now that every answer is resolved, so the
+# first `docker compose` call below interpolates ${POSTGRES_PASSWORD} from it.
+write_env
+
+# The rendered config files AND the geneza data dirs are read/written INSIDE the
+# containers by the distroless nonroot user, so they must be owned by it. Two
+# failure modes this prevents: configs unreadable ("open /etc/geneza/*.yaml:
+# permission denied"), and — because docker auto-creates a missing bind-mount source
+# as ROOT — the data dirs unwritable ("mkdir /var/lib/geneza/...: permission
+# denied"). Pre-create the geneza data dirs so we own them before the first mount;
+# postgres and caddy manage their own. Secrets stay in .env (root-only 600).
+mkdir -p "$DIR/generated" "$DIR/data/controller" "$DIR/data/relay/tls"
+chown -R "$NONROOT_UID:$NONROOT_UID" "$DIR/config" "$DIR/generated" "$DIR/data/controller" "$DIR/data/relay" 2>/dev/null || true
+chmod -R u=rwX,go= "$DIR/config" 2>/dev/null || true
+
 if [ "$RENDER_ONLY" = 1 ]; then
   log "render-only: wrote $DIR (docker untouched)"; exit 0
 fi
-
-mkdir -p "$DIR/generated"
-chown -R "$NONROOT_UID:$NONROOT_UID" "$DIR/data" 2>/dev/null || true
 
 ###############################################################################
 # Bootstrap the controller (first install only): CA, admin password, admin identity
@@ -496,19 +521,20 @@ if [ "$IS_CONTROLLER" = 1 ]; then
     done
   fi
 
-  if [ "$UPGRADE" = 0 ]; then
-    [ -n "$ADMIN_PASSWORD" ] || ADMIN_PASSWORD="$(randpw)"
+  # The config carries a __ADMIN_BCRYPT__ placeholder. Hash the admin password the
+  # first time only; ADMIN_BCRYPT is then persisted in .env and re-sourced on every
+  # upgrade, so a re-run never re-hashes or rotates the credential (and the var is
+  # always defined — no unbound-variable abort).
+  if [ -z "$ADMIN_BCRYPT" ]; then
+    if [ -z "$ADMIN_PASSWORD" ]; then ADMIN_PASSWORD="$(randpw)"; GENERATED_PW=1; fi
     log "hashing the admin password"
     ADMIN_BCRYPT="$(printf '%s' "$ADMIN_PASSWORD" | docker run -i --rm "$GW_IMAGE" hash-password)"
     [ -n "$ADMIN_BCRYPT" ] || die "failed to hash admin password"
+    write_env
   fi
-  # render the bcrypt into the live config (placeholder on first run; idempotent after)
-  if grep -q '__ADMIN_BCRYPT__' "$DIR/config/controller.yaml"; then
-    sed "s|__ADMIN_BCRYPT__|${ADMIN_BCRYPT}|" "$DIR/config/controller.yaml" > "$DIR/generated/controller.yaml"
-  else
-    cp "$DIR/config/controller.yaml" "$DIR/generated/controller.yaml"
-  fi
-  chown -R "$NONROOT_UID:$NONROOT_UID" "$DIR/generated"
+  sed "s|__ADMIN_BCRYPT__|${ADMIN_BCRYPT}|" "$DIR/config/controller.yaml" > "$DIR/generated/controller.yaml"
+  chown "$NONROOT_UID:$NONROOT_UID" "$DIR/generated/controller.yaml"
+  chmod u=rw,go= "$DIR/generated/controller.yaml"
 
   if [ ! -f "$DIR/data/controller/ca/issuing-ca.key" ]; then
     log "initializing the controller CA + keys"
@@ -527,6 +553,8 @@ if [ "$IS_CONTROLLER" = 1 ]; then
   if [ ! -f "$DIR/generated/admin/user.crt" ]; then
     log "issuing a break-glass admin identity into $DIR/generated/admin"
     mkdir -p "$DIR/generated/admin"
+    # own it as the container user BEFORE the run, so issue-user-cert can write /out.
+    chown "$NONROOT_UID:$NONROOT_UID" "$DIR/generated/admin"
     ( cd "$DIR" && "${DC[@]}" run --rm -v "$DIR/generated/admin:/out" controller \
         issue-user-cert --config /etc/geneza/controller.yaml \
         --name admin --roles admin,platform-admin --ttl 168h --out-dir /out )
@@ -549,15 +577,19 @@ log "starting the stack"
 
 echo
 log "done ($ROLE) — $DIR"
-if [ "$IS_CONTROLLER" = 1 ] && [ "$UPGRADE" = 0 ]; then
+if [ "$IS_CONTROLLER" = 1 ] && [ "$GENERATED_PW" = 1 ]; then
   cat <<EOF
 
    admin password:  ${ADMIN_PASSWORD}
    (login user 'admin'; saved nowhere else — copy it now)
+EOF
+fi
+if [ "$IS_CONTROLLER" = 1 ] && { [ "$UPGRADE" = 0 ] || [ "$GENERATED_PW" = 1 ]; }; then
+  cat <<EOF
 
    Drive the fleet:
      export GENEZA_HOME=$DIR/generated
-     geneza --profile admin admin tokens new --ttl 1h     # -> a join token
+     geneza --profile admin node enroll --ttl 1h     # -> an enrollment code + install one-liner
 EOF
   [ -n "$SITE" ] && echo "   Console: https://${SITE}/"
 fi

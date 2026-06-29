@@ -25,9 +25,10 @@ controller. `victoriametrics` is published on loopback only.
 
 ## Upgrades
 
-Re-run the installer. It pulls newer images, re-renders from your saved answers
-(`/opt/geneza/answers.env`) and secrets (`secrets.env`, generated once and
-reused), and `docker compose up -d`. Nothing rotates; a live fleet is undisturbed.
+Re-run the installer. It pulls newer images, re-renders from your saved state
+(`/opt/geneza/.env` — answers, generated secrets, and the admin hash, all in one
+file, generated once and reused), and `docker compose up -d`. Nothing rotates; a
+live fleet is undisturbed.
 
 ```sh
 curl -fsSL .../install.sh | sudo bash -s -- --image-tag v1.4.0   # pin a version
@@ -90,8 +91,8 @@ docker-compose.yml     rendered for your role
 config/                controller.yaml · relay.yaml · policy.yaml · Caddyfile
 generated/             admin identity + the live controller.yaml (with the admin hash)
 data/                  postgres · controller CA/state · relay tls · caddy certs · metrics
-secrets.env            generated relay secret + postgres password (chmod 600)
-answers.env            your non-secret answers, replayed on upgrade
+.env                   single source of truth: answers + secrets + admin hash (chmod 600,
+                       auto-loaded by docker compose for ${...} interpolation)
 ```
 
 ## Uninstall
