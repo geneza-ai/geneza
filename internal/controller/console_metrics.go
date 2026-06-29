@@ -104,7 +104,7 @@ func (c *consoleAPI) handleGetNodeModules(w http.ResponseWriter, r *http.Request
 		writeErr(w, http.StatusInternalServerError, "load modules: "+err.Error())
 		return
 	}
-	writeJSON(w, map[string]any{"nodeId": node.ID, "version": rec.Version, "modules": rec.Modules})
+	writeJSON(w, map[string]any{"nodeId": node.ID, "version": rec.Version, "modules": effectiveNodeModules(rec)})
 }
 
 // handleSetNodeModules (admin) replaces a node's module set and pushes it live.

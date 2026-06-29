@@ -75,3 +75,19 @@ func VerifiedHTTPClient(pool *x509.CertPool) *http.Client {
 		},
 	}
 }
+
+// MutualTLSHTTPClient trusts the pinned pool AND presents the user's client cert,
+// so it can reach the controller's cert-authed :7402 endpoints (the same mount
+// the desktop app uses) — e.g. the CycloneDX SBOM / OpenVEX exports.
+func MutualTLSHTTPClient(pool *x509.CertPool, cert *tls.Certificate) *http.Client {
+	return &http.Client{
+		Timeout: 60 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				RootCAs:      pool,
+				Certificates: []tls.Certificate{*cert},
+				MinVersion:   tls.VersionTLS12,
+			},
+		},
+	}
+}

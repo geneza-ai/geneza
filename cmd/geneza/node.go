@@ -29,6 +29,7 @@ func newNodeCmd() *cobra.Command {
 		newNodeRetireCmd(),
 		newNodePendingCmd(),
 		newNodeMonitorCmd(),
+		newNodeInventoryCmd(),
 	)
 	return cmd
 }
@@ -288,11 +289,10 @@ func newNodeMonitorCmd() *cobra.Command {
 			if interval > 0 {
 				settings["scrape_interval_seconds"] = fmt.Sprintf("%d", interval)
 			}
-			spec := &genezav1.ModuleSpec{Name: "node-exporter", Enabled: !off, Settings: settings}
-			if _, err := api.SetNodeModules(ctx, &genezav1.SetNodeModulesRequest{
-				Node: args[0], Modules: []*genezav1.ModuleSpec{spec},
-			}); err != nil {
-				return client.Humanize(err)
+			// Merge, don't replace: toggling node-exporter must not wipe the
+			// node's other modules (e.g. the default-on inventory module).
+			if err := setNodeModuleMerged(ctx, api, args[0], "node-exporter", !off, settings); err != nil {
+				return err
 			}
 			if off {
 				fmt.Printf("Monitoring disabled on %s.\n", args[0])

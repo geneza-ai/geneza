@@ -3,10 +3,39 @@ package controller
 import (
 	"log/slog"
 	"net"
+	"sort"
 	"time"
 
 	genezav1 "geneza.io/internal/pb/geneza/v1"
 )
+
+// defaultNodeModules are enabled on every node unless a stored entry overrides
+// them. Inventory (SBOM collection — the source of the CVE/vuln surface) is on by
+// default so a freshly enrolled node reports its software set out of the box; an
+// admin can turn it off with an explicit disabled entry.
+var defaultNodeModules = []NodeModule{{Name: "inventory", Enabled: true}}
+
+// effectiveNodeModules merges a node's stored module set over the defaults: a
+// stored entry (enabled OR disabled) wins, defaults fill in the rest. This is
+// what the agent is told to run and what the admin sees, so default-on holds for
+// every node, new or existing, without rewriting any stored record.
+func effectiveNodeModules(rec *NodeModulesRecord) []NodeModule {
+	byName := map[string]NodeModule{}
+	for _, d := range defaultNodeModules {
+		byName[d.Name] = d
+	}
+	if rec != nil {
+		for _, m := range rec.Modules {
+			byName[m.Name] = m
+		}
+	}
+	out := make([]NodeModule, 0, len(byName))
+	for _, m := range byName {
+		out = append(out, m)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
 
 // localRelayAddr is where the in-process web-shell proxy dials the relay: the
 // relay listens on this VM, so use loopback with the relay's port (taken from
@@ -22,10 +51,16 @@ func (s *Server) localRelayAddr() string {
 	return net.JoinHostPort("127.0.0.1", port)
 }
 
-// moduleConfigProto builds the wire ModuleConfig from a stored record.
+// moduleConfigProto builds the wire ModuleConfig from a stored record, applying
+// the module defaults (so the default-on inventory module is pushed/shown even
+// when the node has no stored entry for it).
 func moduleConfigProto(rec *NodeModulesRecord) *genezav1.ModuleConfig {
-	cfg := &genezav1.ModuleConfig{Version: rec.Version}
-	for _, m := range rec.Modules {
+	var version int64
+	if rec != nil {
+		version = rec.Version
+	}
+	cfg := &genezav1.ModuleConfig{Version: version}
+	for _, m := range effectiveNodeModules(rec) {
 		cfg.Modules = append(cfg.Modules, &genezav1.ModuleSpec{
 			Name:     m.Name,
 			Enabled:  m.Enabled,
