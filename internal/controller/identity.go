@@ -90,9 +90,9 @@ func extractOIDCIdentity(cfg *OIDCConfig, claims map[string]any) (oidcIdentity, 
 	return oidcIdentity{User: user, Subject: subject, Groups: groups, Exp: int64(exp)}, nil
 }
 
-func (ia *identityAuth) authenticateLocal(username, password string) (string, []string, error) {
+func (ia *identityAuth) authenticateLocal(username, password string) (user, subject string, groups []string, err error) {
 	if len(ia.local) == 0 {
-		return "", nil, fmt.Errorf("local login is not configured")
+		return "", "", nil, fmt.Errorf("local login is not configured")
 	}
 	var found *LocalUser
 	for i := range ia.local {
@@ -103,12 +103,16 @@ func (ia *identityAuth) authenticateLocal(username, password string) (string, []
 	}
 	if found == nil {
 		_ = bcrypt.CompareHashAndPassword(ia.dummyHash, []byte(password))
-		return "", nil, fmt.Errorf("invalid username or password")
+		return "", "", nil, fmt.Errorf("invalid username or password")
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(found.PasswordBcrypt), []byte(password)); err != nil {
-		return "", nil, fmt.Errorf("invalid username or password")
+		return "", "", nil, fmt.Errorf("invalid username or password")
 	}
-	return found.Username, found.Groups, nil
+	subj := found.Subject
+	if subj == "" {
+		subj = found.Username // config defaulting normally fills this; guard anyway
+	}
+	return found.Username, subj, found.Groups, nil
 }
 
 // issueUserCert mints a short-TTL user cert from a CSR, baking in the resolved

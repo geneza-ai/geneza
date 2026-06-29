@@ -54,13 +54,13 @@ func (c *consoleAPI) handleSessionLocal(w http.ResponseWriter, r *http.Request) 
 		writeErr(w, http.StatusBadRequest, "invalid request")
 		return
 	}
-	user, groups, err := c.s.identity.authenticateLocal(req.Username, req.Password)
+	user, subject, groups, err := c.s.identity.authenticateLocal(req.Username, req.Password)
 	if err != nil {
 		c.auditLoginDenied(req.Username, providerLocal, err.Error())
 		writeErr(w, http.StatusUnauthorized, "invalid username or password")
 		return
 	}
-	c.establishSession(w, r, authnResult{provider: providerLocal, user: user, subject: user, groups: groups}, req.Workspace)
+	c.establishSession(w, r, authnResult{provider: providerLocal, user: user, subject: subject, groups: groups}, req.Workspace)
 }
 
 func (c *consoleAPI) handleSessionOIDC(w http.ResponseWriter, r *http.Request) {

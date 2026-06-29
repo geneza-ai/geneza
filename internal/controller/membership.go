@@ -277,15 +277,21 @@ func (s *Server) workspacesForUserStore(provider, user, subject string, groups [
 // that happens to share a name.
 func (s *Server) rolesForMember(ws, provider, user, subject string, groups []string) []string {
 	set := map[string]bool{}
+	// A persisted member row, when present, defines the principal's groups FOR THIS
+	// workspace, so the same principal can carry different groups (and map to
+	// different roles) per tenant. Absent a row, the global authn groups apply — that
+	// keeps config/OIDC group bindings working with no membership row.
+	effectiveGroups := groups
 	if rec, err := s.store.GetMember(ws, provider, subject); err == nil {
 		for _, r := range rec.Roles {
 			set[r] = true
 		}
+		effectiveGroups = rec.Groups
 	} else if !errors.Is(err, ErrNotFound) {
 		slog.Error("rolesForMember: store lookup failed", "ws", ws, "provider", provider, "err", err)
 	}
 	if provider != providerKeystone {
-		for _, r := range s.policyFor(ws).RolesFor(user, groups) {
+		for _, r := range s.policyFor(ws).RolesFor(user, effectiveGroups) {
 			set[r] = true
 		}
 	}

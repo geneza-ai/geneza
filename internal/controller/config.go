@@ -162,6 +162,11 @@ type LocalUser struct {
 	Username       string   `yaml:"username"`
 	PasswordBcrypt string   `yaml:"password_bcrypt"`
 	Groups         []string `yaml:"groups"`
+	// Subject is the stable principal id used everywhere durable (member key,
+	// suspension, presence, the cert Subject claim). Defaults to Username, so a
+	// rename is editing Username while keeping Subject — the rename then can't fork
+	// the identity or slip a suspension. Set it explicitly to decouple the two.
+	Subject string `yaml:"subject"`
 }
 
 // AgentPolicyConfig mirrors types.AgentPolicy with YAML tags (the shared type
@@ -751,8 +756,8 @@ type ClusterConsoleConfig struct {
 // when the oidc block is present, because the cluster admin gate is a distinct
 // audience from the tenant console's client.
 type ClusterConsoleOIDCConfig struct {
-	Issuer       string `yaml:"issuer,omitempty"` // empty = inherit the top-level oidc.issuer
-	ClientID     string `yaml:"client_id"`        // required: the cluster console's OIDC audience
+	Issuer        string `yaml:"issuer,omitempty"` // empty = inherit the top-level oidc.issuer
+	ClientID      string `yaml:"client_id"`        // required: the cluster console's OIDC audience
 	UsernameClaim string `yaml:"username_claim,omitempty"`
 	GroupsClaim   string `yaml:"groups_claim,omitempty"`
 }
@@ -1073,6 +1078,9 @@ func (c *Config) validate() error {
 		if u.Username == "" || u.PasswordBcrypt == "" {
 			return fmt.Errorf("local_users[%d]: username and password_bcrypt are required", i)
 		}
+		if u.Subject == "" {
+			c.LocalUsers[i].Subject = u.Username // default: subject == username
+		}
 	}
 	if err := c.CAKeySource.validate("ca_key_source"); err != nil {
 		return err
@@ -1324,7 +1332,7 @@ func (c *Config) RecordingsDir() string   { return filepath.Join(c.DataDir, "rec
 
 func (c *Config) controllerCertPath() string { return filepath.Join(c.TLSDir(), "controller.crt") }
 func (c *Config) controllerKeyPath() string  { return filepath.Join(c.TLSDir(), "controller.key") }
-func (c *Config) relayCertPath() string   { return filepath.Join(c.TLSDir(), "relay.crt") }
+func (c *Config) relayCertPath() string      { return filepath.Join(c.TLSDir(), "relay.crt") }
 
 // relayDataAddr returns the relay's UDP data endpoint agents dial out to:
 // relay_data_addrs[0] if set, else host(relay_addrs[0]):RelayDataPort.

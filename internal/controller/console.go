@@ -101,6 +101,10 @@ func (c *consoleAPI) handler() http.Handler {
 	mux.Handle("POST /api/v1/policy/validate", c.auth(c.handleValidatePolicy))
 	mux.Handle("GET /api/v1/audit", c.auth(c.handleAudit))
 	mux.Handle("POST /api/v1/tokens", c.authAdmin(c.handleMintToken))
+	// Per-workspace membership (ws-admin), scoped to the session's tenant.
+	mux.Handle("GET /api/v1/members", c.authAdmin(c.handleListMembers))
+	mux.Handle("POST /api/v1/members", c.authAdmin(c.handlePutMember))
+	mux.Handle("DELETE /api/v1/members/{provider}/{subject}", c.authAdmin(c.handleDeleteMember))
 	// Managed-domain subdomain reservations: list (any member) + reserve/release
 	// (ws-admin). The cert manager issues a wildcard per reservation.
 	mux.Handle("GET /api/v1/subdomains", c.auth(c.handleListSubdomains))

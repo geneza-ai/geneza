@@ -19,17 +19,17 @@ func TestLocalLoginBcryptAndRoleMapping(t *testing.T) {
 		},
 	})
 
-	user, groups, err := ia.authenticateLocal("admin", "hunter2")
+	user, subject, groups, err := ia.authenticateLocal("admin", "hunter2")
 	if err != nil {
 		t.Fatalf("good password rejected: %v", err)
 	}
-	if user != "admin" || len(groups) != 1 || groups[0] != "admins" {
-		t.Fatalf("identity wrong: %q %v", user, groups)
+	if user != "admin" || subject != "admin" || len(groups) != 1 || groups[0] != "admins" {
+		t.Fatalf("identity wrong: user=%q subject=%q %v", user, subject, groups)
 	}
-	if _, _, err := ia.authenticateLocal("admin", "wrong"); err == nil {
+	if _, _, _, err := ia.authenticateLocal("admin", "wrong"); err == nil {
 		t.Fatal("wrong password accepted")
 	}
-	if _, _, err := ia.authenticateLocal("ghost", "hunter2"); err == nil {
+	if _, _, _, err := ia.authenticateLocal("ghost", "hunter2"); err == nil {
 		t.Fatal("unknown user accepted")
 	}
 
@@ -50,7 +50,7 @@ func TestLocalLoginBcryptAndRoleMapping(t *testing.T) {
 
 func TestLocalLoginDisabled(t *testing.T) {
 	ia := newIdentityAuth(&Config{})
-	if _, _, err := ia.authenticateLocal("admin", "x"); err == nil {
+	if _, _, _, err := ia.authenticateLocal("admin", "x"); err == nil {
 		t.Fatal("local login must fail when no local_users configured")
 	}
 	if len(ia.local) != 0 {
