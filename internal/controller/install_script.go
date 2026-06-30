@@ -131,6 +131,16 @@ install -m0755 "$TMP/geneza-agent"     /opt/geneza/bin/geneza-agent
 install -m0644 "$TMP/root.pub"         /etc/geneza/root.pub
 install -m0644 "$TMP/ca-roots.pem"     /var/lib/geneza/agent/ca-roots.pem
 
+# Seed the just-fetched agent as the bootstrap's FIRST worker so the node comes
+# online immediately. The bootstrap adopts a single pre-placed versions_dir entry
+# (versions/<version>/geneza-agent) and runs it; the signed update channel then
+# drives upgrades from there. Without this seed a fresh node idles forever waiting
+# for a published desired version — which a self-hosted controller has none of.
+AGENT_VER="$("$TMP/geneza-agent" version 2>/dev/null | head -1)"
+[ -n "$AGENT_VER" ] || AGENT_VER="0.0.0+seed"
+mkdir -p "/var/lib/geneza/versions/$AGENT_VER"
+install -m0755 "$TMP/geneza-agent" "/var/lib/geneza/versions/$AGENT_VER/geneza-agent"
+
 cat > /etc/geneza/bootstrap.json <<EOF
 {
   "controller_http_url": "$CONTROLLER_HTTP_RUNTIME",

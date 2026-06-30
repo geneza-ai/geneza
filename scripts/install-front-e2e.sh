@@ -12,16 +12,19 @@
 #   2. `geneza node enroll` bakes the Geneza-CA runtime + gRPC endpoints into the code,
 #   3. install.sh FETCHES over the front (a publicly/Caddy-trusted CA) and succeeds,
 #   4. the resulting bootstrap.json runtime points at the Geneza-CA :7402 (NOT the front),
-#   5. the real bootstrap POLLS that endpoint with NO "unknown authority" TLS error,
-#   6. the node registers on the controller.
+#   5. the bootstrap ADOPTS the install-seeded worker (no published update channel
+#      needed) and the node comes ONLINE on the controller,
+#   6. re-running the installer preserves local_users.yml (no password clobber).
 #
 # Repeatable + self-cleaning: re-run any time; it tears its stack down on exit.
 #
 # Requires: docker (+ compose v2), curl, openssl, base64; the node container needs
 # outbound network (apt). Host knobs (env):
-#   GENEZA_IMAGE_TAG   controller image to test (default: build :local from this tree)
-#   PG_APPARMOR_UNCONFINED=1   add apparmor=unconfined to postgres (hosts whose
-#                              AppArmor blocks postgres-in-docker, e.g. this Proxmox box)
+#   GENEZA_IMAGE_TAG   controller image to test. Default builds :local from this tree;
+#                      set to a published tag (e.g. 0.0.8) to test EXACTLY what a fresh
+#                      install from GitHub pulls (released image + agent_release).
+#   APPARMOR_UNCONFINED=1   apparmor=unconfined for postgres AND the node container,
+#                              for hosts whose AppArmor mediation breaks unix sockets in
 #   FRONT_HTTPS_PORT / FRONT_HTTP_PORT / VM_PORT   host ports for the Caddy front + VM
 set -uo pipefail
 
@@ -34,7 +37,7 @@ IMAGE="ghcr.io/geneza-ai/geneza-controller:${IMAGE_TAG}"
 FRONT_HTTPS_PORT="${FRONT_HTTPS_PORT:-18443}"
 FRONT_HTTP_PORT="${FRONT_HTTP_PORT:-18080}"
 VM_PORT="${VM_PORT:-19429}"
-PG_APPARMOR_UNCONFINED="${PG_APPARMOR_UNCONFINED:-0}"
+APPARMOR_UNCONFINED="${APPARMOR_UNCONFINED:-0}"
 NODE_CTR="geneza-front-e2e-node"
 
 say()  { printf '\n\033[1;36m== %s\033[0m\n' "$*"; }
@@ -46,7 +49,7 @@ cleanup() {
 	[ -f "$WORK/docker-compose.yml" ] && ( cd "$WORK" && docker compose down -v >/dev/null 2>&1 ) || true
 	rm -rf "$WORK"
 }
-trap cleanup EXIT
+trap '[ "${NO_CLEANUP:-}" = 1 ] || cleanup' EXIT
 
 command -v docker >/dev/null 2>&1 || die "docker is required"
 command -v curl   >/dev/null 2>&1 || die "curl is required"
@@ -76,7 +79,7 @@ cat > "$WORK/docker-compose.override.yml" <<YAML
 services:
   victoriametrics: { ports: !override ["127.0.0.1:${VM_PORT}:8428"] }
   caddy: { ports: !override ["${FRONT_HTTP_PORT}:80","${FRONT_HTTPS_PORT}:443"] }
-$( [ "$PG_APPARMOR_UNCONFINED" = 1 ] && printf '  postgres: { security_opt: [apparmor=unconfined] }' )
+$( [ "$APPARMOR_UNCONFINED" = 1 ] && printf '  postgres: { security_opt: [apparmor=unconfined] }' )
 YAML
 GENEZA_DIR="$WORK" bash "$ROOT/deploy/compose/install.sh" --role controller --image-tag "$IMAGE_TAG" \
 	--site localhost --public-ip 127.0.0.1 --admin-password testpass123 --yes >/dev/null 2>&1 \
@@ -110,9 +113,13 @@ docker cp "$CADDY_CID:/data/caddy/pki/authorities/local/root.crt" "$RIG/caddy-ro
 [ -s "$RIG/caddy-root.crt" ] || die "could not extract the Caddy front CA"
 ok "front CA extracted"
 
-say "4-6) throwaway node: run the REAL install.sh over the front, then the bootstrap"
-LOG="$RIG/node.log"
-docker run --name "$NODE_CTR" --network host \
+say "4-6) throwaway node: REAL install.sh over the front, adopt the seed, come ONLINE"
+# Detached: install.sh runs (fetch over the front, enroll, SEED the worker), then we
+# exec the bootstrap in the foreground so the container stays alive running the worker.
+# apparmor=unconfined: the agent's session-host opens a unix socket in /run/geneza,
+# which this host's AppArmor mediation otherwise denies (same quirk as postgres).
+SECOPT=""; [ "$APPARMOR_UNCONFINED" = 1 ] && SECOPT="--security-opt apparmor=unconfined"
+docker run -d --name "$NODE_CTR" $SECOPT --network host \
 	-e CODE="$CODE" -e PORT="$FRONT_HTTPS_PORT" \
 	-v "$RIG/caddy-root.crt:/caddy-root.crt:ro" debian:stable-slim bash -c '
 	set -e
@@ -121,24 +128,56 @@ docker run --name "$NODE_CTR" --network host \
 	echo "### install.sh (fetched over the front https://localhost:$PORT)"
 	curl -fsSL "https://localhost:$PORT/install.sh" | sh -s -- "$CODE"
 	echo "### bootstrap.json runtime:"; grep controller_http_url /etc/geneza/bootstrap.json
-	echo "### bootstrap poll:"
-	timeout 14 /opt/geneza/bin/geneza-bootstrap --config /etc/geneza/bootstrap.json 2>&1 \
-		| grep -iE "root key|polling|desired|unknown authority" | head -6
-' >"$LOG" 2>&1 || true
-sed 's/^/  /' "$LOG"
+	echo "### starting bootstrap (adopts the seeded worker, runs it)"
+	exec /opt/geneza/bin/geneza-bootstrap --config /etc/geneza/bootstrap.json
+' >/dev/null 2>&1 || die "could not start node container"
+
+# Wait for the node to register (container apt+install+enroll can take a couple min),
+# capturing the container log for the assertions.
+NODEID=""
+for i in $(seq 1 90); do
+	docker ps -q --filter "name=$NODE_CTR" | grep -q . || die "node container died — install.sh failed (see: docker logs $NODE_CTR)"
+	NODEID=$(GENEZA_HOME="$GHOME" "$GENEZA" --profile admin ls --json 2>/dev/null | grep -oE 'n-[0-9a-f]+' | head -1)
+	[ -n "$NODEID" ] || NODEID=$(GENEZA_HOME="$GHOME" "$GENEZA" --profile admin node pending 2>/dev/null | grep -oE 'n-[0-9a-f]+' | head -1)
+	[ -n "$NODEID" ] && break
+	sleep 3
+done
+if [ -z "$NODEID" ]; then
+	echo "  --- debug: ls ---"; GENEZA_HOME="$GHOME" "$GENEZA" --profile admin ls 2>&1 | sed 's/^/  /' | head
+	echo "  --- debug: node pending ---"; GENEZA_HOME="$GHOME" "$GENEZA" --profile admin node pending 2>&1 | sed 's/^/  /' | head
+fi
+LOG="$RIG/node.log"; docker logs "$NODE_CTR" >"$LOG" 2>&1 || true
+grep -iE "install.sh|enrolled|controller_http_url|adopting|root key|unknown authority|starting bootstrap" "$LOG" | sed 's/^/  /' | head -12
 
 grep -q "enrolled" "$LOG"                       || die "install.sh did not enroll the node"
 ok "install.sh fetched over the front + enrolled"
 grep -q 'controller_http_url": "https://127.0.0.1:7402"' "$LOG" \
 	|| die "bootstrap runtime is NOT the Geneza-CA :7402 (would hit the front)"
 ok "bootstrap runtime is the Geneza-CA :7402, not the front"
-grep -qi "unknown authority" "$LOG" && die "bootstrap poll hit 'unknown authority' (runtime cert mismatch)"
-grep -qiE "polling|desired" "$LOG"              || die "bootstrap never polled the controller"
-ok "bootstrap polled the Geneza-CA endpoint with no TLS error"
-for i in $(seq 1 10); do GENEZA_HOME="$GHOME" "$GENEZA" --profile admin node pending 2>/dev/null | grep -q . && break; sleep 1; done
-GENEZA_HOME="$GHOME" "$GENEZA" --profile admin node ls 2>/dev/null | grep -qiE "awaiting|approved|online|node" \
-	|| die "node did not register on the controller"
-ok "node registered on the controller"
+grep -qi "unknown authority" "$LOG" && die "bootstrap hit 'unknown authority' (runtime cert mismatch)"
+grep -qi "adopting deploy-seeded worker" "$LOG" \
+	|| die "bootstrap did NOT adopt the seeded worker — node would idle offline (the bug)"
+ok "bootstrap adopted the seeded worker (no published update channel needed)"
+[ -n "$NODEID" ]                                || die "node never registered on the controller"
+ok "node registered ($NODEID)"
+
+# Approve it — only an admitted node counts as online (the registry tracks admitted
+# control streams), which is also the real operator flow.
+GENEZA_HOME="$GHOME" "$GENEZA" --profile admin node approve "$NODEID" >/dev/null 2>&1 \
+	&& ok "node approved" || ok "node approve (already approved / auto)"
+
+# THE point: the seeded worker must connect and report ONLINE, not just register.
+for i in $(seq 1 30); do
+	GENEZA_HOME="$GHOME" "$GENEZA" --profile admin ls --json 2>/dev/null | grep -qE '"online":[[:space:]]*true' && { ONLINE=1; break; }
+	sleep 3
+done
+GENEZA_HOME="$GHOME" "$GENEZA" --profile admin ls 2>/dev/null | sed 's/^/  /'
+if [ "${ONLINE:-}" != 1 ]; then
+	echo "  --- debug: node container log (full tail) ---"
+	docker logs "$NODE_CTR" 2>&1 | tail -35 | sed 's/^/  /'
+	die "node enrolled + seeded but never came ONLINE (worker not connected)"
+fi
+ok "node is ONLINE — the seeded worker connected to the controller"
 
 say "7) re-running the installer preserves local_users.yml (no password clobber)"
 LUF="$WORK/generated/local_users.yml"
