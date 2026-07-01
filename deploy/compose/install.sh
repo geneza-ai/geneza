@@ -245,6 +245,12 @@ if [ "$IS_CONTROLLER" = 1 ]; then
     RELAY_IP="$PUBLIC_IP"
   fi
   [ -n "$RELAY_IP" ] || RELAY_IP="$PUBLIC_IP"
+  # The colocated relay's TLS server cert is issued from the controller's advertise IPs,
+  # so it MUST cover the routable address clients dial the relay at — otherwise the tunnel
+  # fails cert verification (SAN mismatch) even once relay_addrs is routable.
+  if [ -n "$RELAY_IP" ] && [ "$RELAY_IP" != "127.0.0.1" ] && ! printf '%s' "$ADV_IPS" | grep -qF "$RELAY_IP"; then
+    ADV_IPS="${ADV_IPS%]}, ${RELAY_IP}]"
+  fi
   # Caddy needs a HOST NAME to terminate TLS — a port-only ":443" block with
   # `tls internal` cannot issue a cert and fails every handshake. With an FQDN, use
   # it (ACME or internal); without one (lab), serve internal TLS for localhost (+ the

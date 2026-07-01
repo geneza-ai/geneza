@@ -81,7 +81,7 @@ services:
   caddy: { ports: !override ["${FRONT_HTTP_PORT}:80","${FRONT_HTTPS_PORT}:443"] }
 $( [ "$APPARMOR_UNCONFINED" = 1 ] && printf '  postgres: { security_opt: [apparmor=unconfined] }' )
 YAML
-GENEZA_VULN_FEED="" GENEZA_DIR="$WORK" bash "$ROOT/deploy/compose/install.sh" --role controller --image-tag "$IMAGE_TAG" \
+GENEZA_VULN_FEED="" GENEZA_DIR="$WORK" bash "$ROOT/deploy/compose/install.sh" --role controller+relay --image-tag "$IMAGE_TAG" \
 	--site localhost --public-ip 127.0.0.1 --admin-password testpass123 --yes >/dev/null 2>&1 \
 	|| die "installer failed"
 ( cd "$WORK" && docker compose up -d >/dev/null 2>&1 ) || die "compose up"
@@ -179,6 +179,35 @@ if [ "${ONLINE:-}" != 1 ]; then
 fi
 ok "node is ONLINE — the seeded worker connected to the controller"
 
+say "6b) session THROUGH the colocated relay"
+# The advertised relay must be a ROUTABLE address reachable from a container's OWN
+# netns — the controller's session-host runs there, so a loopback relay_addrs (the bug)
+# is unreachable and every tunnel refuses.
+RELAY_ADDR=$(grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:7403' "$WORK/generated/controller.yaml" | head -1)
+echo "  advertised relay_addrs: ${RELAY_ADDR:-<none>}"
+[ -n "$RELAY_ADDR" ] && ! echo "$RELAY_ADDR" | grep -q '^127\.' \
+	|| die "relay_addrs is missing/loopback — a containerized controller can't reach it"
+CNET=$( cd "$WORK" && docker inspect "$(docker compose ps -q relay)" --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{"\n"}}{{end}}' 2>/dev/null | head -1 )
+docker run --rm --network "$CNET" nicolaka/netshoot nc -z -w4 "${RELAY_ADDR%:*}" 7403 >/dev/null 2>&1 \
+	|| die "relay unreachable at $RELAY_ADDR from a container's own netns (the exact tunnel failure)"
+ok "relay reachable at $RELAY_ADDR from a container's own netns (not loopback)"
+# The break-glass CLUSTER cert (admin/platform-admin) isn't a workspace member, so the
+# ws-admin policy rule doesn't grant it exec — issue a ws-admin user cert (the identity
+# a console login yields) to actually broker a session.
+mkdir -p "$WORK/generated/wsadmin"; chown -R 65532:65532 "$WORK/generated/wsadmin"
+( cd "$WORK" && docker compose run --rm -v "$WORK/generated/wsadmin:/out" controller \
+	issue-user-cert --config /etc/geneza/controller.yaml --name admin --roles ws-admin --ttl 24h --out-dir /out ) >/dev/null 2>&1
+printf '{ "controller_grpc": "127.0.0.1:7401", "controller_http": "https://127.0.0.1:7402" }\n' > "$WORK/generated/wsadmin/profile.json"
+# broker a real command to the node through the tunnel (relay-brokered p2p/fallback)
+SENT="GENEZA_RELAY_E2E_$$"; OUT=""
+for i in $(seq 1 10); do
+	OUT=$(GENEZA_HOME="$WORK/generated" "$GENEZA" --profile wsadmin exec "$NODEID" -- echo "$SENT" 2>&1)
+	echo "$OUT" | grep -q "$SENT" && break
+	sleep 3
+done
+echo "$OUT" | grep -q "$SENT" || die "geneza exec through the tunnel failed: $OUT"
+ok "geneza exec ran a command on the node through the tunnel"
+
 say "7) installer re-run: recreates the controller + preserves local_users.yml"
 LUF="$WORK/generated/local_users.yml"
 [ -f "$LUF" ] || die "local_users.yml was not written"
@@ -186,7 +215,7 @@ LUF="$WORK/generated/local_users.yml"
 sed -i 's#password_bcrypt: ".*"#password_bcrypt: "$2y$10$OPERATORchangedTHISpasswordHASHvaluexxxxxxxxxxxxxxxxxxx"#' "$LUF"
 EDITED=$(sha256sum "$LUF" | cut -d' ' -f1)
 CID_BEFORE=$( cd "$WORK" && docker compose ps -q controller )
-GENEZA_VULN_FEED="" GENEZA_DIR="$WORK" bash "$ROOT/deploy/compose/install.sh" --role controller --image-tag "$IMAGE_TAG" \
+GENEZA_VULN_FEED="" GENEZA_DIR="$WORK" bash "$ROOT/deploy/compose/install.sh" --role controller+relay --image-tag "$IMAGE_TAG" \
 	--site localhost --public-ip 127.0.0.1 --yes >/dev/null 2>&1 || die "installer re-run failed"
 CID_AFTER=$( cd "$WORK" && docker compose ps -q controller )
 [ -n "$CID_AFTER" ] && [ "$CID_BEFORE" != "$CID_AFTER" ] \
