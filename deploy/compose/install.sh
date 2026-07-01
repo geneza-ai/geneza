@@ -29,6 +29,7 @@ METRICS_URL=""                           # external VictoriaMetrics (HA): omits 
 CONTROLLER_ID=""                            # stable per-controller id (REQUIRED, unique, in HA)
 IMAGE_TAG="${GENEZA_IMAGE_TAG:-latest}"  # image tag for controller/relay
 AGENT_TAG="${GENEZA_AGENT_TAG:-}"        # signed geneza-node release the controller serves (empty = latest)
+VULN_FEED="${GENEZA_VULN_FEED:-osv_bulk}" # CVE feed: osv_bulk (open OSV.dev) | osv_dir | geneza-paid | "" off
 REGISTRY="${GENEZA_REGISTRY:-ghcr.io/geneza-ai}"
 # relay-only:
 RELAY_ID=""                              # relay identity; MUST match issue-relay-cert --name (default: derived from the cert)
@@ -72,7 +73,7 @@ write_env() {
       # which both `. .env` (bash) and docker compose's .env interpolation would
       # otherwise expand/mangle. Single quotes are literal to both.
       for _k in ROLE SITE PUBLIC_IP ACME_EMAIL POSTGRES_DSN METRICS_URL CONTROLLER_ID \
-                IMAGE_TAG AGENT_TAG CONTROLLER_ADDR RELAY_SECRET POSTGRES_PASSWORD ADMIN_BCRYPT; do
+                IMAGE_TAG AGENT_TAG VULN_FEED CONTROLLER_ADDR RELAY_SECRET POSTGRES_PASSWORD ADMIN_BCRYPT; do
         printf "%s='%s'\n" "$_k" "${!_k:-}"
       done
     } > "$ENVFILE"
@@ -294,6 +295,13 @@ install_dir: /var/lib/geneza/install
 agent_release:
   pull: true
   tag: "${AGENT_TAG}"
+
+# CVE affectedness: match the fleet's SBOMs against a vulnerability feed. Default is
+# the OPEN OSV feed (osv_bulk pulls OSV.dev distro + language advisories — Debian,
+# Ubuntu, Alpine, Red Hat, npm, PyPI, … — needs egress), enriched with CISA KEV +
+# FIRST EPSS. First sync runs in the background; verdicts appear within minutes.
+# Disable with GENEZA_VULN_FEED= ; use source: geneza-paid for the commercial feed.
+$( [ -n "$VULN_FEED" ] && printf 'vuln_feed:\n  source: %s\n  kev_url: default\n  epss_url: default' "$VULN_FEED" )
 
 cert_ttl:
   node: 24h
@@ -639,7 +647,17 @@ if [ "$NO_START" = 1 ]; then
   exit 0
 fi
 log "starting the stack"
-( cd "$DIR" && "${DC[@]}" pull -q 2>/dev/null || true; "${DC[@]}" up -d )
+# Force-recreate the Geneza code services (and Caddy) so a re-run ALWAYS adopts a
+# freshly pulled image AND the re-rendered config — `up -d` alone skips a recreate
+# when only a bind-mounted file changed, and is flaky about a :latest digest bump.
+# --no-deps leaves the stateful postgres/victoriametrics running untouched.
+RECREATE=""
+[ "$IS_CONTROLLER" = 1 ] && RECREATE="controller caddy"
+[ "$IS_RELAY" = 1 ] && RECREATE="$RECREATE relay"
+( cd "$DIR" \
+  && { "${DC[@]}" pull -q 2>/dev/null || true; } \
+  && "${DC[@]}" up -d \
+  && { [ -z "$RECREATE" ] || "${DC[@]}" up -d --force-recreate --no-deps $RECREATE; } )
 
 echo
 log "done ($ROLE) — $DIR"

@@ -81,7 +81,7 @@ services:
   caddy: { ports: !override ["${FRONT_HTTP_PORT}:80","${FRONT_HTTPS_PORT}:443"] }
 $( [ "$APPARMOR_UNCONFINED" = 1 ] && printf '  postgres: { security_opt: [apparmor=unconfined] }' )
 YAML
-GENEZA_DIR="$WORK" bash "$ROOT/deploy/compose/install.sh" --role controller --image-tag "$IMAGE_TAG" \
+GENEZA_VULN_FEED="" GENEZA_DIR="$WORK" bash "$ROOT/deploy/compose/install.sh" --role controller --image-tag "$IMAGE_TAG" \
 	--site localhost --public-ip 127.0.0.1 --admin-password testpass123 --yes >/dev/null 2>&1 \
 	|| die "installer failed"
 ( cd "$WORK" && docker compose up -d >/dev/null 2>&1 ) || die "compose up"
@@ -179,14 +179,19 @@ if [ "${ONLINE:-}" != 1 ]; then
 fi
 ok "node is ONLINE — the seeded worker connected to the controller"
 
-say "7) re-running the installer preserves local_users.yml (no password clobber)"
+say "7) installer re-run: recreates the controller + preserves local_users.yml"
 LUF="$WORK/generated/local_users.yml"
 [ -f "$LUF" ] || die "local_users.yml was not written"
 # simulate an operator changing the admin password in the file
 sed -i 's#password_bcrypt: ".*"#password_bcrypt: "$2y$10$OPERATORchangedTHISpasswordHASHvaluexxxxxxxxxxxxxxxxxxx"#' "$LUF"
 EDITED=$(sha256sum "$LUF" | cut -d' ' -f1)
-GENEZA_DIR="$WORK" bash "$ROOT/deploy/compose/install.sh" --role controller --image-tag "$IMAGE_TAG" \
+CID_BEFORE=$( cd "$WORK" && docker compose ps -q controller )
+GENEZA_VULN_FEED="" GENEZA_DIR="$WORK" bash "$ROOT/deploy/compose/install.sh" --role controller --image-tag "$IMAGE_TAG" \
 	--site localhost --public-ip 127.0.0.1 --yes >/dev/null 2>&1 || die "installer re-run failed"
+CID_AFTER=$( cd "$WORK" && docker compose ps -q controller )
+[ -n "$CID_AFTER" ] && [ "$CID_BEFORE" != "$CID_AFTER" ] \
+	|| die "installer re-run did NOT recreate the controller (a plain 'up -d' skips config-only + :latest changes)"
+ok "installer re-run recreated the controller (new image/config actually applied)"
 [ "$(sha256sum "$LUF" | cut -d' ' -f1)" = "$EDITED" ] \
 	|| die "installer re-run CLOBBERED local_users.yml — the bug this change fixes"
 # and prove the re-run DID re-render the main config (it's not just skipping everything)
