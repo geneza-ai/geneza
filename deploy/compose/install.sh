@@ -230,6 +230,21 @@ if [ "$IS_CONTROLLER" = 1 ]; then
   # advertise + relay endpoints: localhost always works on-host; add the public face when given.
   ADV_DNS="[localhost]"; [ -n "$SITE" ] && ADV_DNS="[localhost, $SITE]"
   ADV_IPS="[127.0.0.1]"; [ "$PUBLIC_IP" != "127.0.0.1" ] && ADV_IPS="[127.0.0.1, $PUBLIC_IP]"
+  # The relay's advertised address MUST be routable, never loopback: the controller's
+  # own session-host runs in a container where 127.0.0.1 is ITS loopback, not the relay
+  # — so a tunnel to 127.0.0.1:7403 is refused. A container reaches a routable host IP
+  # by hairpin, so advertise a real IP (fall back to the detected one if PUBLIC_IP is
+  # loopback), and warn hard if a colocated relay has none.
+  RELAY_IP="$PUBLIC_IP"
+  case "$RELAY_IP" in ""|127.*|localhost) RELAY_IP="$(detect_public_ip)" ;; esac
+  case "$RELAY_IP" in ""|127.*) RELAY_IP="" ;; esac
+  if [ "$IS_RELAY" = 1 ] && [ -z "$RELAY_IP" ]; then
+    log "WARNING: no routable IP for the colocated relay. Shell/forward tunnels will fail"
+    log "         (the containerized controller can't reach a 127.0.0.1:7403 relay)."
+    log "         Re-run with:  --public-ip <this host's routable IP>"
+    RELAY_IP="$PUBLIC_IP"
+  fi
+  [ -n "$RELAY_IP" ] || RELAY_IP="$PUBLIC_IP"
   # Caddy needs a HOST NAME to terminate TLS — a port-only ":443" block with
   # `tls internal` cannot issue a cert and fails every handshake. With an FQDN, use
   # it (ACME or internal); without one (lab), serve internal TLS for localhost (+ the
@@ -283,8 +298,8 @@ advertise:
   ips: ${ADV_IPS}
 
 # Where grants tell clients/agents to reach the relay.
-relay_addrs: ["${PUBLIC_IP}:7403"]
-relay_data_addrs: ["${PUBLIC_IP}:7404"]
+relay_addrs: ["${RELAY_IP}:7403"]
+relay_data_addrs: ["${RELAY_IP}:7404"]
 relay_realm: geneza
 relay_shared_secret: ${RELAY_SECRET}
 
