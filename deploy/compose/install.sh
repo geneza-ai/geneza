@@ -183,8 +183,15 @@ fi
 # this run wins; docker compose also auto-loads .env for ${...} interpolation.
 mkdir -p "$DIR" "$DIR/config" "$DIR/data"
 ENVFILE="$DIR/.env"
+# Precedence: a flag passed THIS run > saved .env > default. These answers all default
+# to empty, so a non-empty value here means a flag explicitly set it. Stash them, source
+# .env for everything else, then re-apply — so a re-run can CHANGE role/hostname/IP/…
+# (e.g. add a relay), not merely reproduce the saved topology.
+_ANSWERS="ROLE SITE PUBLIC_IP ACME_EMAIL POSTGRES_DSN METRICS_URL CONTROLLER_ID CONTROLLER_ADDR RELAY_ID RELAY_SECRET_IN"
+for _v in $_ANSWERS; do eval "_flag_$_v=\${$_v}"; done
 # shellcheck source=/dev/null
 [ -f "$ENVFILE" ] && . "$ENVFILE"
+for _v in $_ANSWERS; do eval "if [ -n \"\${_flag_$_v}\" ]; then $_v=\${_flag_$_v}; fi"; done
 : "${RELAY_SECRET:=$(randhex)}"
 : "${POSTGRES_PASSWORD:=$(randpw)}"
 : "${ADMIN_BCRYPT:=}"
