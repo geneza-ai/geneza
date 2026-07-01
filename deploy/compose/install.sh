@@ -641,6 +641,12 @@ EOF
   if [ ! -f "$DIR/data/controller/ca/issuing-ca.key" ]; then
     log "initializing the controller CA + keys"
     ( cd "$DIR" && "${DC[@]}" run --rm controller init --config /etc/geneza/controller.yaml )
+  else
+    # Re-issue the server (controller + relay) TLS leaves from the existing CA so their
+    # SANs track the current advertise config — e.g. a changed --public-ip. The CA and
+    # every issued node/user cert are untouched; the controller reloads on recreate.
+    log "re-issuing server TLS to match the current advertise config"
+    ( cd "$DIR" && "${DC[@]}" run --rm controller reissue-tls --config /etc/geneza/controller.yaml ) || true
   fi
 
   # hand a colocated relay its controller-issued server cert
