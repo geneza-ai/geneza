@@ -178,7 +178,7 @@ export function NodeDetailPage() {
             colored={node.online}
             className="size-5"
           />
-          <h1 className="text-xl font-semibold">{node.name}</h1>
+          <h1 className="font-serif text-2xl font-medium tracking-tight">{node.name}</h1>
           <span className="text-sm text-muted-foreground">
             {node.online ? "Online" : `Offline · ${relativeTime(node.lastSeenUnix)}`}
           </span>

@@ -1,7 +1,7 @@
 import { NavLink, Outlet } from "react-router-dom"
 import { Boxes, LogOut, Moon, Network, ShieldAlert, Sun } from "lucide-react"
 
-import { cn } from "@geneza/ui"
+import { cn, GenezaMark } from "@geneza/ui"
 import { useTheme } from "@/components/theme-provider"
 import { useSession } from "@/components/session-context"
 import { Button } from "@geneza/ui"
@@ -21,12 +21,10 @@ const NAV: NavItem[] = [
 
 function Brand() {
   return (
-    <div className="flex h-14 items-center gap-2 px-5">
-      <div className="flex size-7 items-center justify-center rounded-md bg-primary text-primary-foreground">
-        <Network className="size-4" />
-      </div>
+    <div className="flex h-14 items-center gap-2.5 px-5">
+      <GenezaMark size={24} className="shrink-0" />
       <div className="flex flex-col leading-none">
-        <span className="text-sm font-semibold tracking-tight">Geneza</span>
+        <span className="font-serif text-lg font-medium tracking-tight">Geneza</span>
         <span className="text-[11px] text-muted-foreground">Cluster operator</span>
       </div>
     </div>
@@ -61,7 +59,7 @@ function Sidebar() {
               cn(
                 "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
                 isActive
-                  ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                  ? "bg-brand/10 text-brand"
                   : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground"
               )
             }
@@ -130,7 +128,7 @@ export function AppLayout() {
                 cn(
                   "flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
                   isActive
-                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                    ? "bg-brand/10 text-brand"
                     : "text-muted-foreground hover:bg-sidebar-accent/60"
                 )
               }

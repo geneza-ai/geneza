@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react"
-import { Activity, LogIn, KeyRound } from "lucide-react"
+import { LogIn, KeyRound } from "lucide-react"
 
-import { Button } from "@geneza/ui"
+import { Button, GenezaMark } from "@geneza/ui"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
@@ -93,10 +93,10 @@ export function LoginPage({
     <div className="flex min-h-screen w-full items-center justify-center bg-background px-4">
       <div className="w-full max-w-sm">
         <div className="mb-8 flex flex-col items-center text-center">
-          <div className="mb-4 flex size-11 items-center justify-center rounded-xl bg-primary text-primary-foreground">
-            <Activity className="size-5" />
-          </div>
-          <h1 className="text-xl font-semibold tracking-tight">Sign in to Geneza</h1>
+          <GenezaMark size={44} className="mb-4" />
+          <h1 className="font-serif text-2xl font-medium tracking-tight">
+            Sign in to Geneza
+          </h1>
           <p className="mt-1.5 text-sm text-muted-foreground">
             {config.clusterName} · identity-aware remote access
           </p>

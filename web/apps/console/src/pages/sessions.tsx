@@ -170,7 +170,12 @@ export function SessionsPage() {
               </TableHeader>
               <TableBody>
                 {sessions.map((s) => (
-                  <TableRow key={s.sessionId}>
+                  // The live session is the one thing the eye should catch — a
+                  // 2px forest left-border + faint forest row tint.
+                  <TableRow
+                    key={s.sessionId}
+                    data-state={s.state === "active" ? "selected" : undefined}
+                  >
                     <TableCell>
                       <CopyId value={s.sessionId} label="Session ID copied" />
                     </TableCell>

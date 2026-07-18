@@ -55,7 +55,7 @@ const TableRow = React.forwardRef<HTMLTableRowElement, TableRowProps>(
       ref={ref}
       data-muted={muted ? "" : undefined}
       className={cn(
-        "border-b transition-colors hover:bg-muted/50 data-[state=selected]:bg-primary/10 data-[muted]:text-muted-foreground",
+        "border-b transition-colors hover:bg-muted/50 data-[state=selected]:border-l-2 data-[state=selected]:border-l-brand data-[state=selected]:bg-row-selected data-[muted]:text-muted-foreground",
         className
       )}
       {...props}

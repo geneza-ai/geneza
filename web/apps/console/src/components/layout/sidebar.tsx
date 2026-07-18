@@ -11,7 +11,7 @@ import {
   Video,
 } from "lucide-react"
 
-import { cn } from "@geneza/ui"
+import { cn, GenezaMark } from "@geneza/ui"
 import { useSession } from "@/components/session-context"
 
 interface NavItem {
@@ -87,10 +87,8 @@ function useNavGroups(): NavGroup[] {
 function Brand() {
   return (
     <div className="flex h-14 items-center gap-2 px-3.5">
-      <div className="flex size-7 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground">
-        <Activity className="size-4" />
-      </div>
-      <span className="text-sm font-semibold tracking-tight">Geneza</span>
+      <GenezaMark size={24} className="shrink-0" />
+      <span className="font-serif text-lg font-medium tracking-tight">Geneza</span>
     </div>
   )
 }
@@ -118,7 +116,7 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
                   cn(
                     "flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm font-medium transition-colors",
                     isActive
-                      ? "bg-primary/10 text-primary"
+                      ? "bg-brand/10 text-brand"
                       : "text-muted-foreground hover:bg-muted hover:text-foreground"
                   )
                 }

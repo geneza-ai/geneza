@@ -10,6 +10,8 @@
 
 export { cn } from "./lib/cn"
 
+export { GenezaMark, GenezaLogo } from "./components/geneza-mark"
+
 export { Button, buttonVariants, type ButtonProps } from "./components/ui/button"
 export {
   Card,

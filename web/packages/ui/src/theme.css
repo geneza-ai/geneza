@@ -7,77 +7,85 @@
 :root {
   --radius: 0.5rem;
 
-  /* Brand accent — Tailwind's blue palette. The single source of truth for every
-     "active / selected / primary" affordance; --primary and --ring resolve to
-     it so buttons, nav highlight, selected rows and focus rings stay in sync. */
-  --brand: var(--color-blue-600);
-  --brand-foreground: var(--color-white);
-  --brand-hover: var(--color-blue-700);
+  /* Forest — the brand signal. The single hue that marks the one live / verified
+     / selected thing per view. --ring resolves to it (focus + the live-row
+     accent); --primary deliberately does NOT — primary actions are ink so the
+     forest accent stays rare and meaningful. Exposed as bg-brand / text-brand. */
+  --brand: #3f6b43; /* forest 500 */
+  --brand-foreground: #f6f3ec; /* cream on forest */
+  --brand-hover: #335739; /* forest 600 */
 
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.141 0.005 285.823);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.141 0.005 285.823);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.141 0.005 285.823);
-  --primary: var(--brand);
-  --primary-foreground: var(--brand-foreground);
-  --secondary: oklch(0.967 0.001 286.375);
-  --secondary-foreground: oklch(0.21 0.006 285.885);
-  --muted: oklch(0.967 0.001 286.375);
-  --muted-foreground: oklch(0.552 0.016 285.938);
-  --accent: oklch(0.967 0.001 286.375);
-  --accent-foreground: oklch(0.21 0.006 285.885);
-  --destructive: oklch(0.577 0.245 27.325);
-  --destructive-foreground: oklch(0.985 0 0);
-  --border: oklch(0.92 0.004 286.32);
-  --input: oklch(0.92 0.004 286.32);
-  --ring: var(--brand);
+  /* Warm neutrals (light) — canvas / paper / line / ink. */
+  --background: #f6f3ec; /* canvas */
+  --foreground: #211f1a; /* ink */
+  --card: #fcfbf8; /* paper */
+  --card-foreground: #211f1a;
+  --popover: #fcfbf8;
+  --popover-foreground: #211f1a;
+  --primary: #211f1a; /* ink — primary actions are ink, never forest */
+  --primary-foreground: #f6f3ec;
+  --secondary: #efebe0;
+  --secondary-foreground: #211f1a;
+  --muted: #efebe0;
+  --muted-foreground: #6e6a5b; /* ink-muted */
+  --accent: #efebe0; /* shadcn hover fill — a quiet warm neutral, not forest */
+  --accent-foreground: #211f1a;
+  --destructive: #b23a2f;
+  --destructive-foreground: #f6f3ec;
+  --border: #e6e1d6; /* line */
+  --input: #e6e1d6;
+  --ring: var(--brand); /* forest focus / live-row accent */
 
-  --success: oklch(0.627 0.17 149.214);
-  --warning: oklch(0.681 0.162 75.834);
+  --success: #4c8553; /* allow / verified */
+  --warning: #b5852e; /* pending / updating */
 
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.141 0.005 285.823);
-  --sidebar-border: oklch(0.92 0.004 286.32);
-  --sidebar-accent: oklch(0.967 0.001 286.375);
-  --sidebar-accent-foreground: oklch(0.21 0.006 285.885);
+  /* The one live / selected fleet row's tint (forest 50). Pairs with a 2px
+     border-l-brand — the border guides the eye, the tint just confirms. */
+  --row-selected: #eef3ee;
+
+  --sidebar: #f6f3ec;
+  --sidebar-foreground: #211f1a;
+  --sidebar-border: #e6e1d6;
+  --sidebar-accent: #efebe0; /* neutral nav hover */
+  --sidebar-accent-foreground: #211f1a;
 }
 
 .dark {
-  /* Lighter brand blue for contrast on dark surfaces. */
-  --brand: var(--color-blue-500);
-  --brand-foreground: var(--color-white);
-  --brand-hover: var(--color-blue-400);
+  /* Forest lifts one step in the warm night so it holds contrast on #14130E. */
+  --brand: #5c8c64; /* forest 400 */
+  --brand-foreground: #14130e;
+  --brand-hover: #84ab8b; /* forest 300 — hovers lift lighter on dark */
 
-  --background: oklch(0.141 0.005 285.823);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.18 0.006 285.885);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.18 0.006 285.885);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: var(--brand);
-  --primary-foreground: var(--brand-foreground);
-  --secondary: oklch(0.274 0.006 286.033);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.274 0.006 286.033);
-  --muted-foreground: oklch(0.705 0.015 286.067);
-  --accent: oklch(0.274 0.006 286.033);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --destructive-foreground: oklch(0.985 0 0);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
+  --background: #14130e; /* night */
+  --foreground: #ece8de;
+  --card: #1c1a14; /* night-card */
+  --card-foreground: #ece8de;
+  --popover: #1c1a14;
+  --popover-foreground: #ece8de;
+  --primary: #ece8de; /* ink inverts to the light neutral on the warm night */
+  --primary-foreground: #14130e;
+  --secondary: #24211a;
+  --secondary-foreground: #ece8de;
+  --muted: #24211a;
+  --muted-foreground: #938c7b;
+  --accent: #24211a;
+  --accent-foreground: #ece8de;
+  --destructive: #e0695c;
+  --destructive-foreground: #14130e;
+  --border: #322e25; /* night-line */
+  --input: #322e25;
   --ring: var(--brand);
 
-  --success: oklch(0.696 0.17 149.214);
-  --warning: oklch(0.769 0.162 75.834);
+  --success: #6fb377;
+  --warning: #d4a648;
 
-  --sidebar: oklch(0.165 0.006 285.823);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-accent: oklch(0.274 0.006 286.033);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --row-selected: #1a241b;
+
+  --sidebar: #16140f; /* night-elev */
+  --sidebar-foreground: #ece8de;
+  --sidebar-border: #322e25;
+  --sidebar-accent: #24211a;
+  --sidebar-accent-foreground: #ece8de;
 }
 
 @theme inline {
@@ -105,6 +113,7 @@
   --color-ring: var(--ring);
   --color-success: var(--success);
   --color-warning: var(--warning);
+  --color-row-selected: var(--row-selected);
 
   --color-sidebar: var(--sidebar);
   --color-sidebar-foreground: var(--sidebar-foreground);
@@ -120,8 +129,13 @@
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
 
-  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
-    "Liberation Mono", monospace;
+  /* Three type registers — "argument, interface, proof". Serif headlines and
+     the wordmark; sans for the interface; mono for machine text (identities,
+     hashes, policy, status, geneza:// URIs). */
+  --font-serif: "Source Serif 4", Georgia, serif;
+  --font-sans: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo,
+    Consolas, "Liberation Mono", monospace;
 
   /* Slow opacity throb for "live / polling" affordances (e.g. the realtime
      indicator on auto-refreshing tables). Generates `animate-live-pulse`. */
@@ -138,7 +152,7 @@
   }
 }
 
-/* The online status dot's soft brand/success halo — a 3px tinted ring that no
+/* The online status dot's soft success halo — a 3px tinted ring that no
    Tailwind utility expresses cleanly. Pairs with `bg-success`. */
 @utility status-glow {
   box-shadow: 0 0 0 3px color-mix(in oklch, var(--success) 18%, transparent);
@@ -151,9 +165,27 @@
   body {
     background-color: var(--background);
     color: var(--foreground);
+    font-family: var(--font-sans);
     font-feature-settings: "rlig" 1, "calt" 1;
     -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
   }
+  /* Machine text — identities, hashes, policy, status, code. */
+  code,
+  kbd,
+  pre,
+  samp {
+    font-family: var(--font-mono);
+  }
+}
+
+::selection {
+  background: #bbd0bd;
+  color: #1a2e1d;
+}
+.dark ::selection {
+  background: #2a472f;
+  color: #ece8de;
 }
 
 ::-webkit-scrollbar {

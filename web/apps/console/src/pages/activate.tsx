@@ -68,7 +68,7 @@ export function ActivatePage() {
     <div className="mx-auto flex max-w-md flex-col gap-6 py-10">
       <Card>
         <CardHeader>
-          <div className="mb-1 flex size-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
+          <div className="mb-1 flex size-9 items-center justify-center rounded-lg bg-brand/10 text-brand">
             <MonitorSmartphone className="size-5" />
           </div>
           <CardTitle>Approve a CLI sign-in</CardTitle>
