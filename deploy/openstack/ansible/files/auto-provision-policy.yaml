@@ -1,0 +1,21 @@
+# Policy loaded by a DYNAMICALLY provisioned workspace (a new OpenStack project
+# arriving via vendordata, or a first human login for an unbound project).
+#
+# Deliberately has NO bindings: members of an auto-provisioned workspace get
+# their role from store membership — the cloud's role_map, or an explicit grant —
+# not from this file. A binding here would hand every new tenant workspace the
+# same operators.
+roles:
+  ws-admin:
+    allow:
+      - actions: [shell, exec, sftp, forward, attach]
+        node_labels: {}
+  ws-member:
+    allow:
+      - actions: [shell, exec, sftp]
+        node_labels: {}
+  ws-viewer:
+    allow:
+      - actions: [exec]
+        node_labels: {}
+        read_only: true

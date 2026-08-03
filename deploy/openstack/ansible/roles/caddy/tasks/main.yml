@@ -1,0 +1,19 @@
+---
+- name: Install Caddy
+  ansible.builtin.apt:
+    name: caddy
+    state: present
+    update_cache: true
+
+- name: Render the Caddyfile
+  ansible.builtin.template:
+    src: Caddyfile.j2
+    dest: /etc/caddy/Caddyfile
+    mode: "0644"
+  notify: reload caddy
+
+- name: Enable Caddy
+  ansible.builtin.systemd:
+    name: caddy
+    enabled: true
+    state: started

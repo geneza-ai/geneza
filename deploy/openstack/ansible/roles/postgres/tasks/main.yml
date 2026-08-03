@@ -1,0 +1,51 @@
+---
+# Single-instance Postgres for a lab or a small deployment. It is a SINGLE POINT
+# OF FAILURE: controllers and relays are stateless and survive anything, but the
+# store does not. For production use a managed/replicated Postgres and set
+# external_postgres_dsn in Terraform, which skips this role entirely.
+- name: Install PostgreSQL
+  ansible.builtin.apt:
+    name: [postgresql, python3-psycopg2]
+    state: present
+    update_cache: true
+  register: apt_pg
+  until: apt_pg is succeeded
+  retries: 10
+  delay: 15
+
+# Ubuntu's package name pins the major version into the config path, so read it
+# back rather than hardcoding "16" — it changes with the base image.
+- name: Discover the PostgreSQL config directory
+  ansible.builtin.shell: |
+    set -o pipefail
+    ls -d /etc/postgresql/*/main | sort -V | tail -1
+  args:
+    executable: /bin/bash
+  register: pg_conf_dir
+  changed_when: false
+
+- name: Listen on the private address only
+  ansible.builtin.lineinfile:
+    path: "{{ pg_conf_dir.stdout }}/postgresql.conf"
+    regexp: '^#?listen_addresses'
+    line: "listen_addresses = 'localhost,{{ private_ip }}'"
+  notify: restart postgres
+
+- name: Allow the controller subnet over TLS
+  ansible.builtin.lineinfile:
+    path: "{{ pg_conf_dir.stdout }}/pg_hba.conf"
+    line: "hostssl {{ geneza_postgres_db }} {{ geneza_postgres_user }} {{ private_cidr }} scram-sha-256"
+  notify: restart postgres
+
+- name: Create the role and database
+  become_user: postgres
+  community.postgresql.postgresql_user:
+    name: "{{ geneza_postgres_user }}"
+    password: "{{ geneza_postgres_password }}"
+    role_attr_flags: LOGIN
+
+- name: Create the database
+  become_user: postgres
+  community.postgresql.postgresql_db:
+    name: "{{ geneza_postgres_db }}"
+    owner: "{{ geneza_postgres_user }}"

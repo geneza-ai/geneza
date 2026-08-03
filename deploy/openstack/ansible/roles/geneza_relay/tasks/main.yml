@@ -1,0 +1,111 @@
+---
+- name: Create relay directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ geneza_uid }}"
+    group: "{{ geneza_uid }}"
+    mode: "0750"
+  loop:
+    - "{{ geneza_conf_dir }}"
+    - /var/lib/geneza/relay/tls
+
+# Docker creates a bind-mount root-owned, but the container runs as the
+# distroless nonroot uid and so could not write the cert into it.
+- name: Ensure the cert staging directory exists on the primary controller
+  delegate_to: "{{ groups['controllers'][0] }}"
+  ansible.builtin.file:
+    path: /tmp/relaycerts
+    state: directory
+    owner: "{{ geneza_uid }}"
+    group: "{{ geneza_uid }}"
+    mode: "0700"
+
+# The relay's mTLS identity is issued BY the controller's CA, named for this
+# relay, with its floating IP as an IP SAN — the registrar binds the heartbeat's
+# relay_id to the cert's Name, so the two must agree exactly. Agents reach the
+# relay at that IP (relay_addrs is public_ip:7403), which is why it is a SAN.
+- name: Issue this relay's certificate on the primary controller
+  delegate_to: "{{ groups['controllers'][0] }}"
+  ansible.builtin.command:
+    cmd: >-
+      docker run --rm
+      --user {{ geneza_uid }}:{{ geneza_uid }}
+      -v {{ geneza_data_dir }}:/var/lib/geneza/controller
+      -v {{ geneza_conf_dir }}:/etc/geneza
+      -v /tmp/relaycerts:/out
+      {{ geneza_controller_image }}
+      issue-relay-cert
+      --config /etc/geneza/controller.yaml
+      --name {{ relay_id }}
+      --ip {{ public_ip }}
+      --ttl {{ geneza_relay_cert_ttl }}
+      --out-dir /out
+  args:
+    creates: "/tmp/relaycerts/{{ relay_id }}.crt"
+
+- name: Collect the relay certificate from the controller
+  delegate_to: "{{ groups['controllers'][0] }}"
+  ansible.builtin.slurp:
+    src: "/tmp/relaycerts/{{ item }}"
+  register: relay_bundle
+  loop:
+    - "{{ relay_id }}.crt"
+    - "{{ relay_id }}.key"
+    - ca.pem
+
+- name: Install the relay certificate bundle
+  ansible.builtin.copy:
+    content: "{{ item.content | b64decode }}"
+    dest: >-
+      /var/lib/geneza/relay/tls/{{
+        'relay.crt' if item.item.endswith('.crt')
+        else ('relay.key' if item.item.endswith('.key') else 'ca.pem')
+      }}
+    owner: "{{ geneza_uid }}"
+    group: "{{ geneza_uid }}"
+    mode: "{{ '0600' if item.item.endswith('.key') else '0644' }}"
+  loop: "{{ relay_bundle.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  no_log: true
+  notify: restart relay
+
+- name: Render the relay configuration
+  ansible.builtin.template:
+    src: relay.yaml.j2
+    dest: "{{ geneza_conf_dir }}/relay.yaml"
+    owner: "{{ geneza_uid }}"
+    group: "{{ geneza_uid }}"
+    mode: "0640"
+  notify: restart relay
+
+- name: Install the relay systemd unit
+  ansible.builtin.template:
+    src: geneza-relay.service.j2
+    dest: /etc/systemd/system/geneza-relay.service
+    mode: "0644"
+  notify:
+    - reload systemd
+    - restart relay
+
+- name: Enable and start the relay
+  ansible.builtin.systemd:
+    name: geneza-relay
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Verify the rendezvous port is reachable on the FLOATING IP
+  # Deliberately dialled from the Ansible host over the public path: this is the
+  # one check that catches a security group that forgot the rule, and (with the
+  # UDP check below) the classic "TCP works, p2p mysteriously does not" mistake.
+  ansible.builtin.wait_for:
+    host: "{{ public_ip }}"
+    port: 7403
+    timeout: 60
+  delegate_to: localhost
+  # The play runs with become: true, and delegation inherits it — so without
+  # this the check tries to sudo on the OPERATOR'S machine and dies with
+  # "sudo: a password is required". Opening a TCP socket needs no privilege.
+  become: false

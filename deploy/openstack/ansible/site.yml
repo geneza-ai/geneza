@@ -1,0 +1,117 @@
+---
+# Order matters and is not cosmetic:
+#   1. database first — controllers refuse to start without their store;
+#   2. the PRIMARY controller alone, so the CA is generated exactly once;
+#   3. the remaining controllers, receiving that same trust anchor;
+#   4. relays, whose certs the primary controller signs.
+
+# Fail on missing secrets HERE rather than three plays later, half way through
+# provisioning, with an "undefined variable" naming a template line.
+- name: Preflight
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Required secrets are defined
+      ansible.builtin.assert:
+        that:
+          - geneza_postgres_password is defined and geneza_postgres_password | length > 0
+          - geneza_relay_shared_secret is defined and geneza_relay_shared_secret | length > 0
+          - geneza_postgres_password != 'CHANGE-ME'
+          - geneza_relay_shared_secret != 'CHANGE-ME'
+        fail_msg: >-
+          Missing secrets. Copy ansible/secrets.yml.example to
+          ansible/secrets.yml, fill it in (openssl rand -hex 32), and pass it
+          with -e @secrets.yml — or set the variables another way.
+
+    - name: The workspace policy exists
+      ansible.builtin.stat:
+        path: "{{ geneza_policy_file }}"
+      register: pol
+      failed_when: not pol.stat.exists
+
+- name: Base packages and hardening
+  hosts: geneza
+  become: true
+  roles:
+    - common
+
+- name: Database
+  hosts: database
+  become: true
+  roles:
+    - postgres
+
+- name: Controllers
+  hosts: controllers
+  become: true
+  # One host at a time. The first in the group generates the CA and the rest
+  # receive that same anchor — geneza_ca decides which it is, so there is no
+  # fragile host-expression here. Rolling also means the control plane keeps
+  # answering throughout, and the anti-affinity group guarantees these really are
+  # separate failure domains rather than three VMs on one hypervisor.
+  serial: 1
+  # Written as explicit imports rather than a `roles:` list because the ORDER
+  # inside the controller role matters: the config and the unit have to exist
+  # before the CA can be initialised (init reads controller.yaml), and the
+  # service can only be started after that (serve refuses to run without an
+  # initialised data_dir). A single role that did all three would start a
+  # controller that crashloops and then time out waiting for its port.
+  tasks:
+    - name: Controller config, policy and unit
+      ansible.builtin.import_role:
+        name: geneza_controller
+
+    - name: CA, trust anchor and server certificate
+      ansible.builtin.import_role:
+        name: geneza_ca
+
+    - name: Start the controller now that the CA exists
+      ansible.builtin.import_role:
+        name: geneza_controller
+        tasks_from: start
+
+    - name: Public TLS front
+      ansible.builtin.import_role:
+        name: caddy
+
+    - name: Certificate renewal
+      ansible.builtin.import_role:
+        name: geneza_certs
+
+- name: Relays
+  hosts: relays
+  become: true
+  roles:
+    - geneza_relay
+    - geneza_certs
+
+- name: Post-deploy verification
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Console answers on the public name
+      ansible.builtin.uri:
+        url: "https://{{ hostvars[groups['controllers'][0]]['site_domain'] }}/api/v1/config"
+        status_code: 200
+      register: cfg
+      retries: 10
+      delay: 6
+      until: cfg is succeeded
+
+    # Each controller must be reachable at its OWN advertised name, or
+    # cross-controller redirects fail for exactly the nodes homed on it — an
+    # intermittent failure that is miserable to diagnose later.
+    - name: Every controller answers at its own advertised name
+      ansible.builtin.uri:
+        url: "https://{{ hostvars[item]['advertise_name'] }}/api/v1/config"
+        status_code: 200
+      loop: "{{ groups['controllers'] }}"
+
+    - name: Relay rendezvous ports are open on their floating IPs
+      ansible.builtin.wait_for:
+        host: "{{ hostvars[item]['public_ip'] }}"
+        port: 7403
+        timeout: 30
+      loop: "{{ groups['relays'] }}"

@@ -1,0 +1,100 @@
+# {{ ansible_managed }}
+cluster_name: {{ geneza_cluster_name }}
+
+# Globally unique per replica: it is the affinity-owner value, the per-controller
+# bus subject and the audit label. Two controllers sharing an id corrupt node
+# ownership.
+controller_id: {{ controller_id }}
+
+data_dir: /var/lib/geneza/controller
+
+grpc_listen: ":7401"
+http_listen: ":7402"
+
+# The relay registrar gets its OWN mTLS port so the security group can admit only
+# the relay floating IPs to it, while :7401 stays open to agents and clients.
+# Same listener would mean "open the control channel to everyone or to no one".
+cluster_control_listen: ":7405"
+
+# ADVERTISE THIS REPLICA'S OWN NAME — never a shared load-balancer name.
+# controllerEndpoint() publishes this verbatim into the signed cluster map, and
+# it is exactly what a ControllerRedirect hands a peer. If every replica
+# advertised the balancer, a redirect would route back through it, possibly onto
+# the controller that just issued it, and the client refuses a second redirect.
+# The site name is included too so a client arriving via the balancer still
+# verifies the cert.
+advertise:
+  dns_names:
+    - {{ advertise_name }}
+    - {{ site_domain }}
+  ips:
+    - {{ public_ip }}
+
+store: postgres
+store_dsn: "{{ geneza_postgres_dsn }}"
+
+metrics_url: "{{ geneza_metrics_url }}"
+
+# Relay fleet. Peers are told to find relays at these addresses, so they are the
+# relays' FLOATING IPs, not their private ones.
+relay_addrs:
+{% for r in geneza_relays %}
+  - "{{ r.public_ip }}:7403"
+{% endfor %}
+relay_data_addrs:
+{% for r in geneza_relays %}
+  - "{{ r.public_ip }}:7404"
+{% endfor %}
+
+# Shared secret that mints TURN credentials. Must match every relay's
+# shared_secret; rotating it is a synchronised flag-day across the fleet.
+relay_shared_secret: "{{ geneza_relay_shared_secret }}"
+
+console:
+  listen: ":8443"
+  static_dir: /var/lib/geneza/console-web
+  # Absolute https origin. The controller REFUSES TO START with a launch-enabled
+  # cloud unless this is set and https — the hosted-UI launch URL is built from
+  # it and the launch cookie is Secure.
+  external_url: "https://{{ site_domain }}"
+  auth:
+    handoff_code_ttl: 30s
+
+policy_file: /etc/geneza/policy.yaml
+
+# A workspace created on the fly — a new OpenStack project arriving via
+# vendordata, or a first human login for an unbound project — loads THIS policy
+# instead. It grants by role name with no bindings, because those members get
+# their role from store membership rather than from a policy file.
+auto_provision_policy_file: /etc/geneza/auto-provision-policy.yaml
+
+{% if geneza_local_admin is defined and geneza_local_admin %}
+# Bootstrap operator. Without at least one of local_users / oidc / clouds there
+# is no way to sign in to the console at all — the deployment comes up healthy
+# and unusable. Generate the hash with:
+#   printf 'yourpassword' | docker run -i --rm {{ geneza_controller_image }} hash-password
+# (it reads the password from STDIN, not a flag).
+local_users:
+  - username: {{ geneza_local_admin.username }}
+    password_bcrypt: "{{ geneza_local_admin.password_bcrypt }}"
+    groups: [admins]
+{% endif %}
+
+# Stage-1 binaries the curl|bash installer serves at /install.sh and
+# /v1/install/bin/<name>. The image bakes an agent+bootstrap pair for both Linux
+# arches at this path; without it /install.sh 404s and the vendordata cloud-init
+# below hands booting VMs a URL that does not answer.
+install_dir: /var/lib/geneza/install
+
+cert_ttl:
+  user: 12h
+  node: 24h
+
+{% if geneza_clouds %}
+# OpenStack integration. Only meaningful against a cloud you OPERATE: vendordata
+# enrolment and trusted-dashboard SSO both require changes to nova.conf and
+# Keystone. Against a public cloud you are a tenant of, keystone token validation
+# still works, but the zero-touch paths do not.
+clouds:
+{{ geneza_clouds | to_nice_yaml(indent=2) | indent(2, true) }}
+{% endif %}

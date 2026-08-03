@@ -1,0 +1,70 @@
+---
+# CA ROOT ROTATION — NOT IMPLEMENTED.
+#
+# This playbook does not rotate anything. It refuses to run and prints what
+# would be required. It exists so the procedure is written down where an
+# operator will look for it, and so nobody mistakes the absence of a playbook
+# for the absence of a problem.
+#
+# WHY IT IS EMPTY
+#
+# Rotating the root needs an overlap window: publish the new root, have the
+# fleet trust old and new together, switch issuance, then retire the old.
+# ARCHITECTURE §4 is explicit that a hard cutover is "the classic way to lock
+# yourself out of your own fleet" — agents dial OUT, so an agent that has not
+# learned the new root before the switch can no longer verify a controller and
+# there is no inbound path left to repair it by hand.
+#
+# The controller CLI has no support for any of that today. There is no
+# `init --add-root`, nothing emits a combined old+new bundle, and nodes do not
+# report which root they hold. An earlier version of this file invoked exactly
+# those non-existent things and would have failed on its first task.
+#
+# WHAT ROTATION WOULD NEED (roughly, in the product, not here)
+#
+#   1. A way to generate a second root and emit a bundle containing both.
+#   2. Distribution of that bundle as the fleet's trust set, and a way to SEE
+#      convergence — a per-node "which roots do you trust" report. Without it
+#      there is no safe moment to proceed to step 3.
+#   3. Re-issuing the issuing CA under the new root and restarting controllers.
+#   4. A retire step that drops the old root once nothing presents it.
+#
+# Steps 2 and 4 are the load-bearing ones. A rotation tool without convergence
+# visibility is more dangerous than no tool, because it makes the irreversible
+# step easy.
+#
+# WHAT YOU CAN DO TODAY
+#
+# - Keep the root offline. site.yml retrieves it to
+#   {{ '{{ geneza_local_ca_dir }}' }}/offline-root/ and removes it from the
+#   controller. That is the control that actually matters: an offline root does
+#   not need emergency rotation because compromising a controller does not
+#   expose it.
+# - Everything BELOW the root already rotates on its own. Leaf certs are
+#   short-TTL and expiry is revocation; controller server certs renew on the
+#   geneza-cert-renew timer; relay certs re-sign themselves over the registrar
+#   heartbeat. None of that needs this playbook.
+# - If the root is believed compromised, treat it as a rebuild: stand up a new
+#   cluster and re-enrol. That is painful, which is the argument for keeping the
+#   root offline in the first place.
+
+- name: CA root rotation is not implemented
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Explain and stop
+      ansible.builtin.fail:
+        msg: |
+          CA root rotation is NOT implemented and this playbook does nothing.
+
+          The controller CLI has no --add-root, no combined-bundle output, and
+          no per-node trust-set reporting, so there is no way to run the
+          publish -> converge -> switch -> retire sequence safely. Read the
+          comments at the top of this file before doing anything by hand.
+
+          If you are here because a cert expired, you probably want one of:
+            - controller server certs : geneza-cert-renew.timer (already installed)
+            - relay certs             : automatic, over the registrar heartbeat
+            - user/node leaf certs    : short-TTL, re-minted at login/enrolment
+          None of those involve the root.

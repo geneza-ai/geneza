@@ -1,0 +1,21 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Geneza controller
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Restart=always
+RestartSec=5
+ExecStartPre=-/usr/bin/docker rm -f geneza-controller
+ExecStart=/usr/bin/docker run --rm --name geneza-controller \
+  --network host \
+  --user {{ geneza_uid }}:{{ geneza_uid }} \
+  -v {{ geneza_conf_dir }}:/etc/geneza:ro \
+  -v {{ geneza_data_dir }}:/var/lib/geneza/controller \
+  {{ geneza_controller_image }} \
+  serve --config /etc/geneza/controller.yaml
+ExecStop=/usr/bin/docker stop geneza-controller
+
+[Install]
+WantedBy=multi-user.target

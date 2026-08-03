@@ -1,0 +1,199 @@
+---
+# The CA and the grant key are generated ONCE, on the first controller, and
+# copied to the others. A flat-HA controller set is ONE trust anchor, not one
+# intermediate per replica: if each controller ran `init` you would get N
+# mutually-distrusting clusters that look healthy until the first cross-
+# controller redirect fails to verify.
+#
+# The filenames below are exactly what `ca.Init` writes — see internal/ca/ca.go.
+# A controller runs on issuing-ca.key + issuing-ca.crt + ca-roots.pem alone; the
+# ROOT key goes to a separate offline-root/ directory that Load() never reads,
+# precisely so it can be taken off the host.
+#
+# Everything here is idempotent on the CA already existing, so a re-run never
+# rotates the root by accident.
+
+- name: Initialise the CA, grant key and TLS on the primary controller
+  ansible.builtin.command:
+    cmd: >-
+      docker run --rm
+      --user {{ geneza_uid }}:{{ geneza_uid }}
+      -v {{ geneza_data_dir }}:/var/lib/geneza/controller
+      -v {{ geneza_conf_dir }}:/etc/geneza
+      {{ geneza_controller_image }}
+      init --config /etc/geneza/controller.yaml
+  args:
+    # InitDataDir refuses to touch an initialised dir and guards on exactly this
+    # file, so guarding on the same one keeps Ansible's idempotence honest.
+    creates: "{{ geneza_data_dir }}/ca/issuing-ca.key"
+  when: inventory_hostname == groups['controllers'][0]
+  notify: restart controller
+
+# Staged on the operator's machine so the secondaries can be seeded from it. This
+# is the shared RUNTIME material — not the root key, which is handled below.
+- name: Fetch the shared trust material from the primary
+  ansible.builtin.fetch:
+    src: "{{ geneza_data_dir }}/{{ item }}"
+    dest: "{{ geneza_local_ca_dir }}/{{ item }}"
+    flat: true
+  loop:
+    - ca/ca-roots.pem
+    - ca/root-ca.crt
+    - ca/issuing-ca.crt
+    - ca/issuing-ca.key
+    - grant.key
+    - grant.keyid
+  when: inventory_hostname == groups['controllers'][0]
+  no_log: true
+
+# --- Root key evacuation ---------------------------------------------------
+# The ROOT key does not belong on a running controller. ARCHITECTURE §2 puts it
+# with the offline signing keys — "whoever holds them owns the fleet". Filesystem
+# compromise of an internet-facing controller would otherwise become fleet-wide
+# identity takeover, since the root can mint any issuing CA.
+#
+# ORDER MATTERS: retrieve before deleting. Deleting an un-retrieved root key is
+# unrecoverable — CA rotation becomes impossible for the life of the fleet, and
+# nothing tells you until the day you try.
+# One condition, defined once: this host is the CA owner and evacuation is on.
+- name: Decide whether this host evacuates the root key
+  ansible.builtin.set_fact:
+    evacuating: "{{ inventory_hostname == groups['controllers'][0] and (geneza_evacuate_root_key | bool) }}"
+
+- name: Look for the offline root key on the primary
+  ansible.builtin.stat:
+    path: "{{ geneza_data_dir }}/ca/offline-root/root-ca.key"
+  register: remote_root
+  when: evacuating
+
+# Absent on every run after the first — that is the success case, not an error.
+- name: Retrieve the offline root key from the primary
+  ansible.builtin.fetch:
+    src: "{{ geneza_data_dir }}/ca/offline-root/{{ item }}"
+    dest: "{{ geneza_local_ca_dir }}/offline-root/{{ item }}"
+    flat: true
+  loop:
+    - root-ca.key
+    - root-ca.crt
+  when: evacuating and remote_root.stat.exists
+  no_log: true
+
+- name: Confirm the root key is on this machine
+  delegate_to: localhost
+  become: false
+  ansible.builtin.stat:
+    path: "{{ geneza_local_ca_dir }}/offline-root/root-ca.key"
+  register: local_root
+  when: evacuating
+
+# Gated on the LOCAL copy existing, not on the fetch having run: deleting an
+# un-retrieved root key is unrecoverable and nothing would tell you until the
+# day you needed it.
+- name: Remove the root key directory from the running controller
+  ansible.builtin.file:
+    path: "{{ geneza_data_dir }}/ca/offline-root"
+    state: absent
+  when: evacuating and local_root.stat.exists
+
+- name: Warn if the root key is unaccounted for
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: no root key at {{ geneza_local_ca_dir }}/offline-root/root-ca.key
+      and none on {{ inventory_hostname }} either. If this CA was initialised by
+      an earlier run whose staged copy has since been moved, that is expected —
+      make sure you know where it went. If not, this fleet has no recoverable
+      root and cannot ever rotate its CA.
+  when: evacuating and not local_root.stat.exists
+
+# `fetch` writes with the operator's umask — 0644 in practice, i.e. the fleet's
+# trust anchor and the issuing key readable by every account on this machine.
+- name: Restrict the staged private keys on the operator machine
+  delegate_to: localhost
+  become: false
+  ansible.builtin.file:
+    path: "{{ geneza_local_ca_dir }}/{{ item }}"
+    mode: "0600"
+  loop:
+    - ca/issuing-ca.key
+    - grant.key
+    - offline-root/root-ca.key
+  failed_when: false
+  when: evacuating
+
+- name: Where the root key now lives
+  ansible.builtin.debug:
+    msg: >-
+      ROOT CA PRIVATE KEY is at {{ geneza_local_ca_dir }}/offline-root/root-ca.key
+      and is NOT on {{ inventory_hostname }}. That path is the fleet's trust
+      anchor — move it to an HSM, a KMS or an air-gapped store. It is needed only
+      to rotate the CA; the controllers run on issuing-ca.key alone.
+  when: evacuating and local_root.stat.exists
+
+# --- Seed the secondaries --------------------------------------------------
+
+# `init` lays out data_dir/{ca,tls,artifacts,recordings} — but init only ever
+# runs on the PRIMARY. A secondary is seeded by copy instead, so nothing creates
+# these, and `reissue-tls` then fails writing its cert into a tls/ that does not
+# exist ("open .../tls/controller.crt: no such file or directory"). Mirror the
+# same layout here.
+- name: Create the data directories on secondary controllers
+  ansible.builtin.file:
+    path: "{{ geneza_data_dir }}/{{ item }}"
+    state: directory
+    owner: "{{ geneza_uid }}"
+    group: "{{ geneza_uid }}"
+    mode: "0700"
+  loop: [ca, tls, artifacts, recordings]
+  when: inventory_hostname != groups['controllers'][0]
+
+# ca-roots.pem + issuing-ca.crt + issuing-ca.key are what ca.Load reads; grant.key
+# signs the cluster config and session grants. grant.keyid is optional (the
+# controller derives it from the key) but must MATCH when present — startup fails
+# loudly on a mismatch — so the two are copied together.
+- name: Copy the shared trust anchor to secondary controllers
+  ansible.builtin.copy:
+    src: "{{ geneza_local_ca_dir }}/{{ item.src }}"
+    dest: "{{ geneza_data_dir }}/{{ item.src }}"
+    owner: "{{ geneza_uid }}"
+    group: "{{ geneza_uid }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { src: "ca/ca-roots.pem", mode: "0644" }
+    - { src: "ca/root-ca.crt", mode: "0644" }
+    - { src: "ca/issuing-ca.crt", mode: "0644" }
+    - { src: "ca/issuing-ca.key", mode: "0600" }
+    - { src: "grant.key", mode: "0600" }
+    - { src: "grant.keyid", mode: "0644" }
+  when: inventory_hostname != groups['controllers'][0]
+  no_log: true
+  notify: restart controller
+
+# Each controller's server cert must carry its OWN advertised name, because a
+# redirect target is dialled by that name and TLS pins ServerName to it. reissue-tls
+# regenerates from the advertise config against the existing CA — it does not touch
+# the root.
+# Ask the existing certificate whether it already covers this name, rather than
+# reissuing unconditionally. `changed_when: rc == 0` would mark this changed on
+# EVERY run and fire the restart handler with it — turning an idempotent re-run
+# into a control-plane restart for no reason. A missing or unreadable cert also
+# fails the check, which is the right answer: issue one.
+- name: Check whether the controller certificate already covers its advertised name
+  ansible.builtin.command:
+    cmd: >-
+      openssl x509 -in {{ geneza_data_dir }}/tls/controller.crt
+      -noout -checkhost {{ advertise_name }}
+  register: cert_covers
+  changed_when: false
+  failed_when: false
+
+- name: Issue this controller's TLS server cert for its own advertised name
+  ansible.builtin.command:
+    cmd: >-
+      docker run --rm
+      --user {{ geneza_uid }}:{{ geneza_uid }}
+      -v {{ geneza_data_dir }}:/var/lib/geneza/controller
+      -v {{ geneza_conf_dir }}:/etc/geneza
+      {{ geneza_controller_image }}
+      reissue-tls --config /etc/geneza/controller.yaml
+  when: cert_covers.rc != 0
+  notify: restart controller

@@ -1,0 +1,59 @@
+---
+# Certificate lifecycle. Geneza has four distinct kinds and they rotate on very
+# different clocks; conflating them is how people end up locked out of their own
+# fleet.
+#
+#   1. Public web TLS (console, launch URLs)  — Caddy + Let's Encrypt, automatic.
+#   2. Controller/relay SERVER certs          — from the CA; renewed here.
+#   3. User/node LEAF certs                   — short TTL, minted per login/enrol.
+#      "Expiry is revocation": nothing to rotate, nothing to revoke.
+#   4. The CA ROOT itself                     — overlap-window rotation, MANUAL.
+#      Never automate a hard cutover: publish the new bundle, let the fleet trust
+#      old and new together, then retire the old. See rotate-ca.yml.
+#
+# Only (2) is put on a timer.
+
+- name: Install the server-cert renewal script
+  ansible.builtin.template:
+    src: geneza-cert-renew.sh.j2
+    dest: /usr/local/bin/geneza-cert-renew
+    mode: "0755"
+
+- name: Install the renewal service unit
+  ansible.builtin.template:
+    src: geneza-cert-renew.service.j2
+    dest: /etc/systemd/system/geneza-cert-renew.service
+    mode: "0644"
+  notify: reload systemd
+
+- name: Install the renewal timer
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/geneza-cert-renew.timer
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=Renew Geneza server certificates before expiry
+
+      [Timer]
+      # Daily, with jitter so a fleet does not stampede the CA (or restart in
+      # lockstep) at the same second.
+      OnCalendar=daily
+      RandomizedDelaySec=4h
+      Persistent=true
+
+      [Install]
+      WantedBy=timers.target
+  notify: reload systemd
+
+- name: Enable the renewal timer
+  ansible.builtin.systemd:
+    name: geneza-cert-renew.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Install the expiry check used by monitoring
+  ansible.builtin.template:
+    src: geneza-cert-expiry.sh.j2
+    dest: /usr/local/bin/geneza-cert-expiry
+    mode: "0755"

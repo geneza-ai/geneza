@@ -1,0 +1,59 @@
+# Copy to terraform.tfvars and fill in. Credentials come from the environment
+# (clouds.yaml or OS_* vars) — never from this file.
+
+region            = "GRA11"
+name_prefix       = "geneza"
+public_network_id = "00000000-0000-0000-0000-000000000000" # OVH: Ext-Net
+
+site_domain = "geneza.example.com"
+acme_email  = "ops@example.com"
+
+# Boot-from-volume settings apply to every instance.
+volume_type            = "high-speed-gen2"
+controller_flavor      = "b3-8"
+controller_volume_size = 40
+relay_flavor           = "b3-4"
+relay_volume_size      = 20
+
+# 3 controllers with hard anti-affinity: tolerates losing one hypervisor while
+# keeping a quorum of the fleet answering. 2 is the minimum for HA.
+controller_count     = 3
+anti_affinity_policy = "anti-affinity"
+
+home_relay_count = 2
+
+ssh_public_key = "ssh-ed25519 AAAA... ops@example.com"
+
+# Operators running the geneza CLI and SSH. Keep tight — this is NOT the
+# tenant-facing surface.
+admin_cidrs = ["203.0.113.10/32"]
+
+# The console is the tenant-facing surface; the hosted-UI launch lands here.
+console_cidrs = ["0.0.0.0/0"]
+
+# Agents dial out from wherever your fleet lives.
+agent_cidrs = ["0.0.0.0/0"]
+
+# STRONGLY PREFERRED: a managed, replicated Postgres. It is the one component
+# whose HA you must provide yourself — controllers and relays are stateless.
+# Leave empty to have Terraform build a single-instance database (lab only).
+# external_postgres_dsn = "postgres://geneza:PW@db.internal:5432/geneza?sslmode=verify-full"
+
+# Relays elsewhere. Keys must be one of the provider aliases declared in
+# versions.tf. Each region's public_network_id and volume_type are per-cloud.
+relay_region_b = "SBG5"
+relay_regions = {
+  relay_b = {
+    count             = 2
+    flavor            = "b3-4"
+    public_network_id = "11111111-1111-1111-1111-111111111111"
+    volume_type       = "high-speed-gen2"
+    private_cidr      = "10.43.0.0/24"
+    region_id         = "sbg"
+  }
+}
+
+# A relay in a DIFFERENT cloud (its own Keystone):
+# foreign_relay_cloud  = "other-cloud"
+# foreign_relay_region = "REG1"
+# ssh_keypair_name     = "preexisting-key-in-that-cloud"

@@ -1,0 +1,25 @@
+# Default workspace policy.
+#
+# `roles` is a MAP of role name -> allow rules; an empty `node_labels` matches
+# every node in the workspace. Bindings attach a role to users or groups.
+roles:
+  ws-admin:
+    allow:
+      - actions: [shell, exec, sftp, forward, attach]
+        node_labels: {}
+  ws-member:
+    allow:
+      - actions: [shell, exec, sftp]
+        node_labels: {}
+  ws-viewer:
+    allow:
+      - actions: [exec]
+        node_labels: {}
+        read_only: true
+
+# The bootstrap operator. geneza_local_admin puts this user in the `admins`
+# group; without a binding a local user authenticates but is authorised for
+# nothing, which looks like a broken login.
+bindings:
+  - role: ws-admin
+    groups: [admins]

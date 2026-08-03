@@ -1,0 +1,31 @@
+# {{ ansible_managed }}
+#
+# Caddy terminates public TLS and fronts the console. It takes and RENEWS
+# Let's Encrypt certificates automatically — that is the whole of the public-web
+# certificate story, and it is deliberately separate from the Geneza CA, which
+# signs the mTLS identities inside the fleet. The two never mix: a public cert
+# authenticates the console to browsers, the Geneza CA authenticates peers.
+{
+  email {{ acme_email }}
+}
+
+# Each controller answers on BOTH its own name and the site name, because the
+# cluster map advertises the former (peers dial it directly) while browsers and
+# the tenant portal arrive on the latter.
+{{ site_domain }}, {{ advertise_name }} {
+  encode zstd gzip
+
+  # The console API and SPA. The controller listens on plain HTTP here and is
+  # bound to localhost — Caddy is the only way in from outside.
+  reverse_proxy 127.0.0.1:8443 {
+    # The hosted-UI web shell is a WebSocket; without upgrade passthrough the
+    # shell page shows "connection error" and nothing in the logs says why.
+    header_up Host {host}
+    header_up X-Real-IP {remote_host}
+  }
+
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    -Server
+  }
+}

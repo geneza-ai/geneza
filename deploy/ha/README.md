@@ -22,9 +22,16 @@ cells, global deny-path), see [`docs/ha-architecture-spec.md`](../../docs/ha-arc
 ```
 
 - **Controllers are stateless and leaderless.** Every replica serves every request
-  over one shared store; there is no election. Run two or more behind a TCP load
-  balancer (or round-robin DNS) on `:7401`/`:7402`. A controller that owns a given
-  node redirects peers to it — so the LB needs no session affinity.
+  over one shared store; there is no election. A controller that owns a given node
+  redirects peers to it, so an LB in front needs no session affinity.
+- **Each replica must be individually reachable on `:7401`, and must advertise its
+  OWN address** — not a shared LB address. `controllerEndpoint()` publishes
+  `advertise.*` into the signed cluster map, and that is verbatim what a
+  `ControllerRedirect` hands a peer. If every replica advertises the LB, a
+  redirect sends the peer back through the LB, which may land on the same replica
+  that just redirected it — and a client refuses to chase a second redirect. The
+  signed map is the global view; peers re-home across it themselves. An LB is
+  optional and buys only a stable bootstrap address (and the console on `:443`).
 - **One shared Postgres** holds all signed records under SERIALIZABLE
   invariants. Use a managed/replicated Postgres (or a Postgres-wire HA cluster).
   This is the single component whose own HA you must provide.
@@ -71,7 +78,7 @@ hand for production hardening.
 | `store_dsn` | external DSN | use `sslmode=verify-full` to a managed Postgres |
 | `controller_id` | unique per replica | affinity-owner value, per-controller bus subject, audit label — **must** be globally unique |
 | `metrics_url` | shared VictoriaMetrics | every replica points at the same one |
-| `advertise.dns_names` / `.ips` | the public LB name/IP | stamped into server certs so peers verify the front |
+| `advertise.dns_names` / `.ips` | **this replica's own** name/IP (plus the LB name if clients hit it) | published into the signed cluster map as this controller's dialable endpoint, and stamped into its server cert |
 | `relay_addrs` / `relay_data_addrs` | reachable relay addresses | where grants tell peers to find relays |
 | `cluster_control_listen` | e.g. `:7405` | optional: move the controller↔relay registrar onto its own mTLS port so you can firewall it to the relay/management subnet |
 | `router` / `region` | future | parsed today; multi-region routing and cells are not wired yet — leave default |

@@ -1,0 +1,8 @@
+# Generated from terraform outputs on every deploy.
+inventory/tf.json
+# The fleet trust anchor, staged here between generating it on the primary
+# controller and copying it to the others. Never commit it.
+.ca/
+*.retry
+secrets.yml
+secrets.yml.*

@@ -1,0 +1,63 @@
+---
+- name: Create controller directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ geneza_uid }}"
+    group: "{{ geneza_uid }}"
+    mode: "0750"
+  loop:
+    - "{{ geneza_conf_dir }}"
+    - "{{ geneza_data_dir }}"
+
+# Controllers dial each other by ADVERTISED NAME so TLS verifies, but resolve
+# that name to the PRIVATE address. Hairpinning out to a sibling's floating IP
+# and back into the same OpenStack project is unreliable — the codebase already
+# hit this with the relay (see console_shell.go: "the grant's public relay
+# address would NAT-hairpin back here, flakily"). Same name, private path.
+- name: Resolve controller peers to their private addresses
+  ansible.builtin.blockinfile:
+    path: /etc/hosts
+    marker: "# {mark} ANSIBLE geneza controller peers"
+    block: |
+      {% for name, ip in peer_hosts.items() %}
+      {% if name != advertise_name %}
+      {{ ip }} {{ name }}
+      {% endif %}
+      {% endfor %}
+
+- name: Install the workspace policy
+  ansible.builtin.copy:
+    src: "{{ geneza_policy_file }}"
+    dest: "{{ geneza_conf_dir }}/policy.yaml"
+    owner: "{{ geneza_uid }}"
+    group: "{{ geneza_uid }}"
+    mode: "0640"
+  notify: restart controller
+
+- name: Install the auto-provision policy
+  ansible.builtin.copy:
+    src: "{{ geneza_auto_provision_policy_file }}"
+    dest: "{{ geneza_conf_dir }}/auto-provision-policy.yaml"
+    owner: "{{ geneza_uid }}"
+    group: "{{ geneza_uid }}"
+    mode: "0640"
+  notify: restart controller
+
+- name: Render the controller configuration
+  ansible.builtin.template:
+    src: controller.yaml.j2
+    dest: "{{ geneza_conf_dir }}/controller.yaml"
+    owner: "{{ geneza_uid }}"
+    group: "{{ geneza_uid }}"
+    mode: "0640"
+  notify: restart controller
+
+- name: Install the controller systemd unit
+  ansible.builtin.template:
+    src: geneza-controller.service.j2
+    dest: /etc/systemd/system/geneza-controller.service
+    mode: "0644"
+  notify:
+    - reload systemd
+    - restart controller
