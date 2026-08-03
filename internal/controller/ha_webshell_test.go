@@ -3,7 +3,12 @@ package controller
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"net"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -12,6 +17,7 @@ import (
 	"google.golang.org/grpc/credentials"
 
 	"geneza.io/internal/ca"
+	"geneza.io/internal/enrollcode"
 	genezav1 "geneza.io/internal/pb/geneza/v1"
 	"geneza.io/internal/types"
 )
@@ -315,5 +321,66 @@ func TestNodeSummariesJudgeLivenessClusterWide(t *testing.T) {
 	}
 	if online() {
 		t.Fatalf("a stale presence row must age back out to offline")
+	}
+}
+
+// The console's token mint must hand back something install.sh will ACCEPT.
+// It returned only the raw gz- token, which install.sh rejects with "unknown
+// argument" — the encoded gzk_ code was reachable only through the CLI, so a
+// console-only operator had no way to discover the right shape from the error.
+func TestMintTokenReturnsAUsableEnrollCode(t *testing.T) {
+	srv, api, _ := buildLaunchServer(t, EmbedConfig{})
+	// A test binary embeds no release root, and skipping on that would make this
+	// test silently vacuous — the pin is the whole point. Give it one.
+	rootPub := filepath.Join(t.TempDir(), "root.pub")
+	if err := os.WriteFile(rootPub, []byte(
+		"-----BEGIN PUBLIC KEY-----\n"+
+			"MCowBQYDK2VwAyEALaKgDFdpt/6Ka0BZkCY7qCa6TKUPNhS7CSEMUpQnXtw=\n"+
+			"-----END PUBLIC KEY-----\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srv.cfg.RootPubkeyFile = rootPub
+	if srv.rootFingerprint() == "" {
+		t.Fatalf("precondition: the server must now serve a root fingerprint")
+	}
+	tok := mintConsoleSession(t, srv, defaultWorkspace, "admin", roleWSAdmin)
+
+	r := httptest.NewRequest("POST", "/api/v1/tokens", strings.NewReader(`{"ttlSeconds":3600,"maxUses":1}`))
+	r.Header.Set("Authorization", "Bearer "+tok)
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	api.handler().ServeHTTP(w, r)
+	if w.Code != 200 {
+		t.Fatalf("mint: %d %s", w.Code, w.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, _ := body["token"].(string)
+	if raw == "" {
+		t.Fatalf("no token in response: %v", body)
+	}
+	code, _ := body["enrollCode"].(string)
+	if !strings.HasPrefix(code, "gzk_") {
+		t.Fatalf("enrollCode must be the encoded form install.sh takes, got %q", code)
+	}
+	cmd, _ := body["installCommand"].(string)
+	if !strings.Contains(cmd, "install.sh") || !strings.Contains(cmd, code) {
+		t.Fatalf("installCommand must be runnable and carry the code, got %q", cmd)
+	}
+
+	// It must decode back to THIS token plus the pinned root, or a node would
+	// enrol against a root nobody verified.
+	f, ok := enrollcode.Decode(code)
+	if !ok {
+		t.Fatalf("enrollCode does not decode: %q", code)
+	}
+	if f.Token != raw {
+		t.Fatalf("code carries token %q, want %q", f.Token, raw)
+	}
+	if f.RootFP != srv.rootFingerprint() {
+		t.Fatalf("code carries root fp %q, want %q", f.RootFP, srv.rootFingerprint())
 	}
 }

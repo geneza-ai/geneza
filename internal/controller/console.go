@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -14,6 +16,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"geneza.io/internal/ca"
+	"geneza.io/internal/enrollcode"
 	"geneza.io/internal/policy"
 	"geneza.io/internal/types"
 )
@@ -640,9 +643,10 @@ func (c *consoleAPI) handleAudit(w http.ResponseWriter, r *http.Request, u *cons
 
 func (c *consoleAPI) handleMintToken(w http.ResponseWriter, r *http.Request, u *consoleUser) {
 	var req struct {
-		TTLSeconds int64             `json:"ttlSeconds"`
-		Labels     map[string]string `json:"labels"`
-		MaxUses    int32             `json:"maxUses"`
+		TTLSeconds  int64             `json:"ttlSeconds"`
+		Labels      map[string]string `json:"labels"`
+		MaxUses     int32             `json:"maxUses"`
+		AutoApprove bool              `json:"autoApprove"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	ttl := time.Duration(req.TTLSeconds) * time.Second
@@ -658,15 +662,40 @@ func (c *consoleAPI) handleMintToken(w http.ResponseWriter, r *http.Request, u *
 		return
 	}
 	expires := time.Now().Add(ttl).Unix()
-	if err := c.s.store.PutToken(token, &TokenRecord{WorkspaceID: u.Workspace, Labels: req.Labels, ExpiresUnix: expires, MaxUses: req.MaxUses}); err != nil {
+	if err := c.s.store.PutToken(token, &TokenRecord{
+		WorkspaceID: u.Workspace, Labels: req.Labels, ExpiresUnix: expires,
+		MaxUses: req.MaxUses, AutoApprove: req.AutoApprove,
+	}); err != nil {
 		writeErr(w, http.StatusInternalServerError, "store token")
 		return
 	}
 	_ = c.s.audit.AppendWS(u.Workspace, "token_create", "console:"+u.Name, "", "", map[string]string{
-		"ttl_seconds": strconv.FormatInt(int64(ttl/time.Second), 10),
-		"max_uses":    strconv.FormatInt(int64(req.MaxUses), 10),
+		"ttl_seconds":  strconv.FormatInt(int64(ttl/time.Second), 10),
+		"max_uses":     strconv.FormatInt(int64(req.MaxUses), 10),
+		"auto_approve": boolStr(req.AutoApprove),
 	})
-	writeJSON(w, map[string]any{"token": token, "expiresUnix": expires})
+
+	out := map[string]any{"token": token, "expiresUnix": expires}
+	// The raw token is NOT what install.sh takes. Hand back the encoded
+	// enrollment code and the finished one-liner as well, or a console user
+	// pastes the token, gets "unknown argument", and has no way to discover the
+	// right shape — the CLI's `geneza node enroll` was the only thing that
+	// produced it. The code binds the token to the pinned root fingerprint and
+	// the runtime endpoints, which is what makes curl|sh verifiable rather than
+	// blind.
+	if fp := c.s.rootFingerprint(); fp != "" {
+		base := c.s.consoleExternalURL()
+		code := enrollcode.Encode(enrollcode.Fields{
+			Token:   token,
+			RootFP:  fp,
+			HTTP:    base,
+			Runtime: c.s.controllerRuntimeBase(),
+			GRPC:    c.s.controllerGRPCEndpoint(),
+		})
+		out["enrollCode"] = code
+		out["installCommand"] = fmt.Sprintf("curl -fsSL %s/install.sh | sudo sh -s -- %s", base, code)
+	}
+	writeJSON(w, out)
 }
 
 // handleRevokeSession lets an admin kick a live session from the console.
@@ -848,4 +877,45 @@ func (s *Server) consoleServer() (*http.Server, error) {
 		Handler:           s.console.handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}, nil
+}
+
+// controllerRuntimeBase and controllerGRPCEndpoint are the addresses an ENROLLING
+// agent uses at runtime, as opposed to the public front it fetches the installer
+// over. They differ on purpose: the fetch rides the ACME proxy so a bare `curl`
+// trusts it, while the agent afterwards talks to this controller's own listeners
+// and verifies them against the pinned Geneza CA roots — a different authority.
+// Both prefer the first advertised DNS name, which is what the certificate
+// covers; an IP-only advertise falls back to the first IP.
+func (s *Server) advertisedHost() string {
+	if len(s.cfg.Advertise.DNSNames) > 0 {
+		return s.cfg.Advertise.DNSNames[0]
+	}
+	if len(s.cfg.Advertise.IPs) > 0 {
+		return s.cfg.Advertise.IPs[0]
+	}
+	return ""
+}
+
+func (s *Server) controllerRuntimeBase() string {
+	host := s.advertisedHost()
+	if host == "" {
+		return ""
+	}
+	_, port, err := net.SplitHostPort(s.cfg.HTTPListen)
+	if err != nil || port == "" {
+		port = "7402"
+	}
+	return "https://" + net.JoinHostPort(host, port)
+}
+
+func (s *Server) controllerGRPCEndpoint() string {
+	host := s.advertisedHost()
+	if host == "" {
+		return ""
+	}
+	_, port, err := net.SplitHostPort(s.cfg.GRPCListen)
+	if err != nil || port == "" {
+		port = "7401"
+	}
+	return net.JoinHostPort(host, port)
 }
