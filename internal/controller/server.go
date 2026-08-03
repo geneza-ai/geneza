@@ -1107,6 +1107,19 @@ func (s *Server) nodeSummaries(ws string) ([]*genezav1.NodeSummary, error) {
 			qmap[q.NodeID] = q.Reason
 		}
 	}
+	// Liveness must be judged CLUSTER-WIDE, not from this controller's own
+	// registry. An agent holds its control stream to exactly one controller, so a
+	// local-only check reports every agent homed elsewhere as offline — and with
+	// several controllers behind one name, the console flips between "online" and
+	// "offline" depending on which replica answered. agentLivenessMap merges the
+	// shared presence rows with the local registry, which stays authoritative for
+	// agents homed here.
+	ids := make([]string, 0, len(nodes))
+	for _, n := range nodes {
+		ids = append(ids, n.ID)
+	}
+	live := s.agentLivenessMap(ids)
+
 	out := make([]*genezav1.NodeSummary, 0, len(nodes))
 	for _, n := range nodes {
 		sum := &genezav1.NodeSummary{
@@ -1123,10 +1136,18 @@ func (s *Server) nodeSummaries(ws string) ([]*genezav1.NodeSummary, error) {
 			OverlayIp:        n.OverlayIP,
 			QuarantineReason: qmap[n.ID],
 		}
-		if info, ok := s.registry.Info(n.ID); ok {
+		// Shared rows carry only a heartbeat, so judge freshness here; a
+		// locally-homed agent's entry is stamped continuously and passes trivially.
+		if info, ok := live[n.ID]; ok && time.Since(info.lastSeen) < canaryHeartbeatFresh {
 			sum.Online = true
-			sum.LastSeenUnix = info.LastSeen.Unix()
-			sum.Version = info.Version
+			sum.LastSeenUnix = info.lastSeen.Unix()
+			if info.version != "" {
+				sum.Version = info.version
+			}
+		}
+		// Session counts are only knowable where the agent is actually homed —
+		// they live in that controller's registry, not in the shared row.
+		if info, ok := s.registry.Info(n.ID); ok {
 			sum.ActiveSessions = info.Active
 			sum.DetachedSessions = info.Detached
 		}

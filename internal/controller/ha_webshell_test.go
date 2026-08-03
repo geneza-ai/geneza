@@ -256,3 +256,64 @@ func testConsoleUser() *consoleUser {
 		Workspace: defaultWorkspace, Roles: []string{roleWSAdmin},
 	}
 }
+
+// The console node list must judge liveness CLUSTER-WIDE, not from the local
+// registry. An agent holds its control stream to exactly one controller, so a
+// local-only check reported every agent homed on a sibling as offline: with
+// several controllers behind one name the SAME node flipped between online and
+// offline depending on which replica answered the request.
+//
+// The web-shell pre-flight shared that check, so it rejected shells with "node
+// is offline" before brokerWebSession could follow the ControllerRedirect —
+// silently defeating the redirect for (N-1)/N of requests.
+func TestNodeSummariesJudgeLivenessClusterWide(t *testing.T) {
+	srv, api, fake := buildLaunchServer(t, EmbedConfig{})
+	fake.session = &fakeSession{caller: keystoneCaller("alice", "proj-a")}
+	_, _ = mintLaunch(t, api.handler(), `{"token":"gAAAA-alice","instance_id":"i-1"}`)
+	ws := launchWorkspace(t, srv, "proj-a")
+	seedLaunchNode(t, srv, ws, "n-1", "i-1", "proj-a", nil)
+
+	online := func() bool {
+		t.Helper()
+		sums, err := srv.nodeSummaries(ws)
+		if err != nil {
+			t.Fatalf("nodeSummaries: %v", err)
+		}
+		for _, s := range sums {
+			if s.GetNodeId() == "n-1" {
+				return s.GetOnline()
+			}
+		}
+		t.Fatalf("node n-1 missing from summaries")
+		return false
+	}
+
+	if srv.registry.Online("n-1") {
+		t.Fatalf("precondition: node must not be locally homed")
+	}
+	if online() {
+		t.Fatalf("no presence row anywhere => must read offline")
+	}
+
+	// A peer controller stamps the shared row on every heartbeat.
+	if err := srv.store.PutAgentPresence(&AgentPresenceRecord{
+		NodeID: "n-1", Healthy: true, LastSeenUnix: time.Now().Unix(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !online() {
+		t.Fatalf("peer-homed agent with a fresh heartbeat must read ONLINE " +
+			"(this is the regression: the console showed it offline)")
+	}
+
+	// Freshness still governs — a stale row is not liveness.
+	if err := srv.store.PutAgentPresence(&AgentPresenceRecord{
+		NodeID: "n-1", Healthy: true,
+		LastSeenUnix: time.Now().Add(-2 * canaryHeartbeatFresh).Unix(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if online() {
+		t.Fatalf("a stale presence row must age back out to offline")
+	}
+}

@@ -52,7 +52,10 @@ func (u *workspaceAPIService) ListServices(ctx context.Context, req *genezav1.Li
 	}
 	var out []*genezav1.ServiceInfo
 	for _, n := range nodes {
-		online := u.s.registry.Online(n.ID)
+		// Cluster-wide: an agent homed on a sibling controller is still online,
+		// and a local-only check makes `geneza ls` disagree with itself depending
+		// on which replica served the call.
+		online := u.s.nodeOnlineAnywhere(n.ID)
 		for _, svc := range u.s.nodeServices(n) {
 			out = append(out, &genezav1.ServiceInfo{
 				Name: svc.Name, Kind: svc.Kind, Addr: svc.Addr,

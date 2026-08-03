@@ -118,7 +118,12 @@ func (c *consoleAPI) handleShell(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "node not found")
 		return
 	}
-	if !c.s.registry.Online(node.ID) {
+	// Cluster-wide, NOT this controller's registry. An agent homed on a sibling
+	// is perfectly reachable — brokerWebSession follows the ControllerRedirect to
+	// get there. A local-only check would reject the shell here with "node is
+	// offline" before that redirect ever ran, which silently defeats it and, with
+	// N controllers behind one name, breaks (N-1)/N of web shells.
+	if !c.s.nodeOnlineAnywhere(node.ID) {
 		writeErr(w, http.StatusConflict, "node is offline")
 		return
 	}
