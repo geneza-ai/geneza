@@ -10,45 +10,37 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { useTheme } from "@/components/theme-provider"
 import { useSession } from "@/components/session-context"
-import { Badge } from "@/components/ui/badge"
 
-function initials(name: string): string {
-  const clean = name.split("@")[0]
-  const parts = clean.split(/[.\-_ ]+/).filter(Boolean)
-  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase()
-  return clean.slice(0, 2).toUpperCase()
+function initial(name: string): string {
+  return (name.trim()[0] ?? "?").toUpperCase()
 }
 
+// The user row pinned to the sidebar foot: forest avatar, identity, and the
+// role in machine text. The dropdown carries the rest (roles, theme, sign out).
 export function UserMenu() {
   const { me, signOut } = useSession()
   const { theme, setTheme } = useTheme()
+  const role = me.admin ? "admin" : (me.roles[0] ?? me.workspace)
 
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button className="flex max-w-[16rem] items-center gap-2 rounded-md py-1 pl-1 pr-1.5 text-left transition-colors hover:bg-muted sm:pr-2">
-          <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-medium text-primary">
-            {initials(me.user)}
+        <button className="flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-sidebar-accent">
+          <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-brand text-xs font-semibold text-brand-foreground">
+            {initial(me.user)}
           </div>
-          <div className="hidden min-w-0 sm:block">
-            <div className="flex items-center gap-1.5">
-              <p className="truncate text-sm font-medium leading-tight">
-                {me.user}
-              </p>
-              {me.admin && (
-                <Badge variant="muted" className="px-1 py-0 text-2xs">
-                  admin
-                </Badge>
-              )}
-            </div>
-            <p className="truncate text-xs leading-tight text-muted-foreground">
-              {me.workspace}
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-[12.5px] font-medium leading-tight">
+              {me.user}
+            </p>
+            <p className="truncate font-mono text-2xs leading-tight text-faint">
+              {role}
             </p>
           </div>
-          <ChevronsUpDown className="hidden size-4 shrink-0 text-muted-foreground sm:block" />
+          <ChevronsUpDown className="size-3.5 shrink-0 text-faint" />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" side="bottom" className="w-56">
+      <DropdownMenuContent align="start" side="top" className="w-56">
         <DropdownMenuLabel className="font-normal">
           <p className="text-sm font-medium">{me.user}</p>
           <p className="mt-0.5 truncate text-xs text-muted-foreground">

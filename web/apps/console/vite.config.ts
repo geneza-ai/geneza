@@ -14,7 +14,8 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      "/api": "http://localhost:8443",
+      // ws: true — the web shell rides a WebSocket on /api/v1/nodes/*/shell
+      "/api": { target: "http://localhost:8443", ws: true },
     },
   },
 })

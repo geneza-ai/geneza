@@ -4,9 +4,7 @@ import { ChevronDown, ChevronRight, Search, ShieldX } from "lucide-react"
 
 import { api } from "@/api"
 import { usePolling } from "@/hooks/use-polling"
-import { Card } from "@geneza/ui"
-import { Input } from "@/components/ui/input"
-import { Skeleton } from "@geneza/ui"
+import { Card, Skeleton, cn } from "@geneza/ui"
 import {
   Table,
   TableBody,
@@ -15,13 +13,22 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { SeverityBadge, StatusBadge } from "@/components/vuln-badges"
+import { SeverityDot, StatusBadge } from "@/components/vuln-badges"
+import { severityKey } from "@/lib/severity"
 import { EmptyState, ErrorState } from "@/components/states"
-import { PageToolbar } from "@/components/page-toolbar"
 import { Pagination } from "@/components/data-pagination"
 import type { WorkspaceCVE, WorkspaceCVEsResponse } from "@/types"
 
 const PAGE_SIZE = 50
+
+type SevFilter = "all" | "critical" | "high" | "medium"
+
+const SEV_FILTERS: { key: SevFilter; label: string }[] = [
+  { key: "all", label: "All" },
+  { key: "critical", label: "Critical" },
+  { key: "high", label: "High" },
+  { key: "medium", label: "Medium" },
+]
 
 // VulnerabilitiesPage is the fleet rollup: every CVE affecting any node in the
 // workspace, with severity, the representative status, and the count of distinct
@@ -33,6 +40,7 @@ export function VulnerabilitiesPage() {
   const cve = params.get("cve") ?? ""
 
   const [term, setTerm] = useState(cve)
+  const [sev, setSev] = useState<SevFilter>("all")
   const [page, setPage] = useState(1)
   const [expanded, setExpanded] = useState<string | null>(null)
 
@@ -47,7 +55,14 @@ export function VulnerabilitiesPage() {
       [cve, page]
     )
 
-  const rows = useMemo(() => data?.cves ?? [], [data])
+  const rows = useMemo(() => {
+    const all = data?.cves ?? []
+    if (sev === "all") return all
+    return all.filter((r) => {
+      const s = r.severity.toLowerCase()
+      return sev === "medium" ? s === "medium" || s === "moderate" : s === sev
+    })
+  }, [data, sev])
   const total = data?.total ?? 0
 
   function applyFilter(next: string) {
@@ -58,29 +73,43 @@ export function VulnerabilitiesPage() {
   }
 
   return (
-    <div className="space-y-4">
-      <PageToolbar description="Every CVE affecting a node across this workspace, with severity, status and the number of affected nodes.">
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-center gap-3">
         <form
-          className="flex items-center gap-2"
+          className="flex min-w-60 flex-1 items-center gap-2.5 rounded-[9px] border bg-card px-3.5 py-[9px]"
           onSubmit={(e) => {
             e.preventDefault()
             applyFilter(term)
           }}
         >
-          <div className="relative">
-            <Search className="absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={term}
-              onChange={(e) => setTerm(e.target.value)}
-              placeholder="Filter by CVE…"
-              className="w-64 pl-8 font-mono"
-            />
-          </div>
+          <Search className="size-[15px] shrink-0 text-faint" />
+          <input
+            value={term}
+            onChange={(e) => setTerm(e.target.value)}
+            placeholder="Search by CVE id…"
+            className="w-full border-none bg-transparent font-mono text-[12.5px] text-foreground outline-none placeholder:text-faint"
+          />
         </form>
-      </PageToolbar>
+        <div className="flex flex-wrap gap-[7px]">
+          {SEV_FILTERS.map((f) => (
+            <button
+              key={f.key}
+              onClick={() => setSev(f.key)}
+              className={cn(
+                "rounded-[7px] border px-3 py-[7px] font-mono text-[11.5px] transition-colors",
+                sev === f.key
+                  ? "border-brand-line bg-brand-tint text-foreground"
+                  : "border-border text-muted-foreground hover:text-foreground"
+              )}
+            >
+              {f.label}
+            </button>
+          ))}
+        </div>
+      </div>
 
       <Card className="overflow-hidden p-0">
-        {error ? (
+        {error && !data ? (
           <ErrorState message={error} onRetry={refresh} />
         ) : initialLoading ? (
           <div className="space-y-2 p-4">
@@ -98,17 +127,21 @@ export function VulnerabilitiesPage() {
                 : "No node in this workspace is currently matched against a CVE."
             }
           />
+        ) : rows.length === 0 ? (
+          <div className="p-10 text-center font-mono text-[13px] text-faint">
+            No vulnerabilities match your filters.
+          </div>
         ) : (
           <>
             <Table>
               <TableHeader>
-                <TableRow>
-                  <TableHead className="w-8" />
+                <TableRow className="hover:bg-transparent">
+                  <TableHead className="w-8 pl-5" />
                   <TableHead>CVE</TableHead>
                   <TableHead>Severity</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead className="text-right">Nodes</TableHead>
                   <TableHead>Fixed in</TableHead>
+                  <TableHead>Affected</TableHead>
+                  <TableHead className="pr-5">State</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -151,44 +184,59 @@ function CVERollupRow({
   open: boolean
   onToggle: () => void
 }) {
+  const key = severityKey(row.severity)
   return (
     <>
       <TableRow className="cursor-pointer" onClick={onToggle}>
-        <TableCell className="text-muted-foreground">
+        <TableCell className="py-3.5 pl-5 text-faint">
           {open ? (
             <ChevronDown className="size-4" />
           ) : (
             <ChevronRight className="size-4" />
           )}
         </TableCell>
-        <TableCell className="font-mono text-xs font-medium">{row.cve}</TableCell>
-        <TableCell>
-          <SeverityBadge severity={row.severity} />
+        <TableCell className="py-3.5">
+          <span className="flex items-center gap-2.5">
+            <SeverityDot severity={row.severity} />
+            <span className="font-mono text-xs font-medium">{row.cve}</span>
+          </span>
         </TableCell>
-        <TableCell>
-          <StatusBadge status={row.status} />
-        </TableCell>
-        <TableCell className="text-right tabular-nums">{row.nodeCount}</TableCell>
-        <TableCell className="font-mono text-xs">
-          {row.fixedVersion || (
-            <span className="font-sans text-muted-foreground">—</span>
+        <TableCell
+          className={cn(
+            "py-3.5 font-mono text-[11.5px] lowercase",
+            key === "sev-crit" && "text-sev-crit",
+            key === "sev-high" && "text-sev-high",
+            key === "sev-med" && "text-sev-med",
+            key === "sev-low" && "text-sev-low",
+            !key && "text-muted-foreground"
           )}
+        >
+          {row.severity || "—"}
+        </TableCell>
+        <TableCell className="py-3.5 font-mono text-xs text-muted-foreground">
+          {row.fixedVersion || <span className="text-faint">—</span>}
+        </TableCell>
+        <TableCell className="py-3.5 font-mono text-[11.5px] text-brand">
+          {row.nodeCount} node{row.nodeCount === 1 ? "" : "s"}
+        </TableCell>
+        <TableCell className="py-3.5 pr-5">
+          <StatusBadge status={row.status} />
         </TableCell>
       </TableRow>
       {open && (
         <TableRow className="bg-muted/30 hover:bg-muted/30">
-          <TableCell />
+          <TableCell className="pl-5" />
           <TableCell colSpan={5} className="py-3">
             <div className="flex flex-wrap gap-1.5">
               {row.nodes.length === 0 ? (
-                <span className="text-sm text-muted-foreground">
+                <span className="font-mono text-[13px] text-faint">
                   No nodes listed.
                 </span>
               ) : (
                 row.nodes.map((n) => (
                   <span
                     key={n}
-                    className="rounded bg-background px-2 py-0.5 font-mono text-xs text-muted-foreground"
+                    className="rounded-full border bg-elev px-2.5 py-1 font-mono text-[11.5px] text-muted-foreground"
                   >
                     {n}
                   </span>

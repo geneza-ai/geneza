@@ -1,172 +1,300 @@
-import {
-  CheckCircle2,
-  GitBranch,
-  Server,
-  ShieldAlert,
-  TerminalSquare,
-} from "lucide-react"
+import { Link, useNavigate } from "react-router-dom"
 
 import { api } from "@/api"
 import { usePolling } from "@/hooks/use-polling"
-import { Card, CardContent, CardHeader, CardTitle } from "@geneza/ui"
-import { Skeleton } from "@geneza/ui"
-import { Badge } from "@/components/ui/badge"
+import { Button, Card, Skeleton, cn } from "@geneza/ui"
+import { AuditTag } from "@/components/audit-type-badge"
+import { CardLabel } from "@/components/card-label"
+import { NodeCvePills } from "@/components/fleet-cves"
+import { useFleetCves, type SevCount } from "@/hooks/use-fleet-cves"
 import { ErrorState } from "@/components/states"
-import { PageToolbar } from "@/components/page-toolbar"
-import { AuditTypeIcon } from "@/components/audit-type-badge"
+import { StatusDot } from "@/components/status-dot"
 import { relativeTime } from "@/lib/format"
-import type { AuditRecord, Overview } from "@/types"
-import { cn } from "@geneza/ui"
+import type {
+  AuditRecord,
+  NodesResponse,
+  Overview,
+  SessionsResponse,
+} from "@/types"
 
 function StatCard({
   label,
   value,
   sub,
-  icon: Icon,
-  tone,
+  accent,
+  to,
 }: {
   label: string
   value: React.ReactNode
-  sub?: React.ReactNode
-  icon: React.ElementType
-  tone?: "success" | "warning"
+  sub: React.ReactNode
+  accent?: boolean
+  to?: string
 }) {
+  const navigate = useNavigate()
   return (
-    <Card>
-      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-        <CardTitle className="text-sm font-medium text-muted-foreground">
-          {label}
-        </CardTitle>
-        <Icon
-          className={cn(
-            "size-4 text-muted-foreground",
-            tone === "success" && "text-success",
-            tone === "warning" && "text-warning"
-          )}
-        />
-      </CardHeader>
-      <CardContent>
-        <div className="text-2xl font-semibold tabular-nums">{value}</div>
-        {sub && (
-          <p className="mt-1 text-xs text-muted-foreground">{sub}</p>
+    <Card
+      onClick={to ? () => navigate(to) : undefined}
+      className={cn("p-5", to && "cursor-pointer", accent && "border-brand-line")}
+    >
+      <CardLabel className="mb-3.5">{label}</CardLabel>
+      <div
+        className={cn(
+          "font-serif text-[38px] font-medium leading-none tabular-nums",
+          accent && "text-brand"
         )}
-      </CardContent>
+      >
+        {value}
+      </div>
+      <div className="mt-2.5 font-mono text-[11px] text-muted-foreground">{sub}</div>
     </Card>
   )
 }
 
 export function DashboardPage() {
   const overview = usePolling<Overview>((s) => api.getOverview(s), 10000)
-  const recent = usePolling(
-    (s) => api.getAudit({ limit: 10 }, s),
-    15000
+  const nodes = usePolling<NodesResponse>((s) => api.getNodes(undefined, s), 10000)
+  const cves = useFleetCves()
+  const live = usePolling<SessionsResponse>(
+    (s) => api.getSessions({ state: "active", limit: 1 }, s),
+    10000
   )
+  const recent = usePolling((s) => api.getAudit({ limit: 8 }, s), 15000)
 
   const o = overview.data
+  const { counts, perNode, atRisk } = cves
+  const openCves = cves.loaded ? cves.open.length : null
+  const fleet = (nodes.data?.nodes ?? []).slice(0, 6)
+  const liveSession = live.data?.sessions[0]
+
+  if (overview.error && !o) {
+    return (
+      <Card>
+        <ErrorState message={overview.error} onRetry={overview.refresh} />
+      </Card>
+    )
+  }
 
   return (
-    <div className="space-y-6">
-      <PageToolbar
-        description="Fleet health at a glance."
-        onRefresh={() => {
-          overview.refresh()
-          recent.refresh()
-        }}
-        refreshing={overview.loading}
-      />
+    <div className="space-y-4">
+      {/* Stat cards */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        {!o ? (
+          Array.from({ length: 4 }).map((_, i) => (
+            <Card key={i} className="p-5">
+              <Skeleton className="mb-4 h-3 w-24" />
+              <Skeleton className="h-9 w-16" />
+              <Skeleton className="mt-3 h-3 w-32" />
+            </Card>
+          ))
+        ) : (
+          <>
+            <StatCard
+              label="Nodes"
+              to="/nodes"
+              value={o.nodes.total}
+              sub={`${o.nodes.online} online · ${o.nodes.total - o.nodes.online} offline`}
+            />
+            <StatCard
+              label="Open CVEs"
+              to="/vulnerabilities"
+              value={openCves ?? "—"}
+              sub={
+                <>
+                  <span className="text-sev-crit">{counts.crit} critical</span>
+                  {" · "}
+                  <span className="text-sev-high">{counts.high} high</span>
+                </>
+              }
+            />
+            <StatCard
+              label="Nodes at risk"
+              to="/vulnerabilities"
+              value={cves.loaded ? atRisk : "—"}
+              sub="critical or high exposure"
+            />
+            <StatCard
+              label="Active sessions"
+              to="/sessions"
+              accent
+              value={o.sessions.active}
+              sub={`${o.sessions.detached} detached · ${o.sessions.total} total`}
+            />
+          </>
+        )}
+      </div>
 
-      {overview.error && !o ? (
-        <Card>
-          <ErrorState message={overview.error} onRetry={overview.refresh} />
-        </Card>
-      ) : (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
-          {!o ? (
-            Array.from({ length: 5 }).map((_, i) => (
-              <Card key={i}>
-                <CardHeader className="pb-2">
-                  <Skeleton className="h-4 w-24" />
-                </CardHeader>
-                <CardContent>
-                  <Skeleton className="h-7 w-16" />
-                </CardContent>
-              </Card>
-            ))
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.5fr_1fr]">
+        {/* Fleet */}
+        <Card className="self-start overflow-hidden p-0">
+          <div className="flex items-center justify-between border-b px-5 py-4">
+            <span className="font-serif text-[17px] font-medium">Fleet</span>
+            <Link
+              to="/nodes"
+              className="font-mono text-[11px] text-brand hover:underline"
+            >
+              view all →
+            </Link>
+          </div>
+          {nodes.error && !nodes.data ? (
+            <ErrorState message={nodes.error} onRetry={nodes.refresh} />
+          ) : nodes.initialLoading ? (
+            <div className="space-y-3 p-5">
+              {Array.from({ length: 4 }).map((_, i) => (
+                <Skeleton key={i} className="h-8 w-full" />
+              ))}
+            </div>
+          ) : fleet.length === 0 ? (
+            <p className="px-5 py-10 text-center font-mono text-[13px] text-faint">
+              No nodes enrolled yet.
+            </p>
           ) : (
-            <>
-              <StatCard
-                label="Nodes online"
-                icon={Server}
-                value={
-                  <span>
-                    {o.nodes.online}{" "}
-                    <span className="text-muted-foreground">
-                      / {o.nodes.total}
-                    </span>
+            fleet.map((n) => (
+              <Link
+                key={n.nodeId}
+                to={`/nodes/${n.nodeId}`}
+                className="grid cursor-pointer grid-cols-[1.5fr_0.8fr_1.3fr] items-center gap-3 border-b border-line2 px-5 py-3 transition-colors last:border-b-0 hover:bg-muted/40"
+              >
+                <div className="flex min-w-0 items-center gap-2.5">
+                  <StatusDot online={n.online} />
+                  <span className="truncate font-mono text-[12.5px]">
+                    {n.name || n.nodeId}
                   </span>
-                }
-                sub={`${o.nodes.total} registered`}
-              />
-              <StatCard
-                label="Active sessions"
-                icon={TerminalSquare}
-                value={o.sessions.active}
-                sub={`${o.sessions.total} total`}
-              />
-              <StatCard
-                label="Detached"
-                icon={TerminalSquare}
-                value={o.sessions.detached}
-                sub="resumable"
-                tone={o.sessions.detached > 0 ? "warning" : undefined}
-              />
-              <StatCard
-                label="Fleet version"
-                icon={GitBranch}
-                value={
-                  <span className="font-mono text-lg">{o.versions.stable}</span>
-                }
-                sub={
-                  o.versions.canary ? (
-                    <span>
-                      canary{" "}
-                      <span className="font-mono">{o.versions.canary}</span>
-                    </span>
-                  ) : (
-                    "no canary"
-                  )
-                }
-              />
-              <StatCard
-                label="Audit chain"
-                icon={o.audit.chainOk ? CheckCircle2 : ShieldAlert}
-                tone={o.audit.chainOk ? "success" : "warning"}
-                value={
-                  <span className="text-lg">
-                    {o.audit.chainOk ? "Verified" : "Broken"}
+                </div>
+                <span className="font-mono text-[11px] text-muted-foreground">
+                  {n.online ? "online" : "offline"}
+                </span>
+                <div className="flex justify-end sm:justify-start">
+                  <NodeCvePills
+                    counts={perNode.get(n.nodeId) ?? perNode.get(n.name)}
+                  />
+                </div>
+              </Link>
+            ))
+          )}
+        </Card>
+
+        {/* Right column */}
+        <div className="flex flex-col gap-4">
+          {liveSession && (
+            <Card className="border-brand-line p-5">
+              <div className="mb-3.5 flex items-center gap-2 font-mono">
+                <span className="size-[7px] rounded-full bg-brand animate-live-pulse" />
+                <span className="text-[11px] text-brand">
+                  active session · {liveSession.action}
+                </span>
+              </div>
+              <div className="font-mono text-xs leading-[1.7] text-muted-foreground">
+                geneza://user/{liveSession.user}
+                <br />
+                <span className="text-faint">
+                  {"  "}→ node/{liveSession.nodeName || liveSession.nodeId}
+                </span>
+              </div>
+              <div className="my-3.5 h-px bg-border" />
+              <div className="flex flex-col gap-2 font-mono text-xs">
+                <div className="flex justify-between">
+                  <span className="text-faint">state</span>
+                  <span className="text-muted-foreground">{liveSession.state}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-faint">started</span>
+                  <span className="text-muted-foreground">
+                    {relativeTime(liveSession.startedUnix)}
                   </span>
-                }
-                sub={`${o.audit.count.toLocaleString()} records`}
-              />
-            </>
+                </div>
+              </div>
+              <Button asChild className="mt-4 w-full">
+                <Link to="/sessions">View sessions</Link>
+              </Button>
+            </Card>
+          )}
+
+          <Card className="p-5">
+            <CardLabel className="mb-4">Open vulnerabilities</CardLabel>
+            {!cves.loaded ? (
+              <div className="space-y-3">
+                {Array.from({ length: 3 }).map((_, i) => (
+                  <Skeleton key={i} className="h-6 w-full" />
+                ))}
+              </div>
+            ) : (
+              <SeverityBars counts={counts} />
+            )}
+          </Card>
+
+          {o && (
+            <Card className="p-5">
+              <CardLabel className="mb-4">Control plane</CardLabel>
+              <div className="flex flex-col gap-2.5 font-mono text-xs">
+                <div className="flex justify-between">
+                  <span className="text-faint">stable</span>
+                  <span className="text-muted-foreground">
+                    {o.versions.stable || "—"}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-faint">canary</span>
+                  <span className="text-muted-foreground">
+                    {o.versions.canary || "none"}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-faint">audit chain</span>
+                  <span className={o.audit.chainOk ? "text-success" : "text-destructive"}>
+                    {o.audit.chainOk ? "✓ verified" : "✗ broken"}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-faint">records</span>
+                  <span className="text-muted-foreground">
+                    {o.audit.count.toLocaleString()}
+                  </span>
+                </div>
+              </div>
+            </Card>
           )}
         </div>
-      )}
+      </div>
 
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between space-y-0">
-          <CardTitle className="text-sm">Recent activity</CardTitle>
-          <Badge variant="muted">last 10 events</Badge>
-        </CardHeader>
-        <CardContent>
-          <RecentActivity
-            records={recent.data?.records}
-            loading={recent.initialLoading}
-            error={recent.error}
-            onRetry={recent.refresh}
-          />
-        </CardContent>
+      {/* Recent activity */}
+      <Card className="overflow-hidden p-0">
+        <div className="border-b px-5 py-4">
+          <span className="font-serif text-[17px] font-medium">Recent activity</span>
+        </div>
+        <RecentActivity
+          records={recent.data?.records}
+          loading={recent.initialLoading}
+          error={recent.error}
+          onRetry={recent.refresh}
+        />
       </Card>
+    </div>
+  )
+}
+
+function SeverityBars({ counts }: { counts: SevCount }) {
+  const max = Math.max(counts.crit, counts.high, counts.med, 1)
+  const rows = [
+    { label: "Critical", count: counts.crit, cls: "bg-sev-crit" },
+    { label: "High", count: counts.high, cls: "bg-sev-high" },
+    { label: "Medium", count: counts.med, cls: "bg-sev-med" },
+  ]
+  return (
+    <div>
+      {rows.map((r) => (
+        <div key={r.label} className="mb-3.5 last:mb-0">
+          <div className="mb-1.5 flex justify-between">
+            <span className="text-[12.5px] text-muted-foreground">{r.label}</span>
+            <span className="font-mono text-xs">{r.count}</span>
+          </div>
+          <div className="h-1.5 overflow-hidden rounded bg-line2">
+            <div
+              className={cn("h-full rounded", r.cls)}
+              style={{ width: `${Math.round((r.count / max) * 100)}%` }}
+            />
+          </div>
+        </div>
+      ))}
     </div>
   )
 }
@@ -184,15 +312,9 @@ function RecentActivity({
 }) {
   if (loading) {
     return (
-      <div className="space-y-3">
+      <div className="space-y-3 p-5">
         {Array.from({ length: 5 }).map((_, i) => (
-          <div key={i} className="flex items-center gap-3">
-            <Skeleton className="size-7 rounded-full" />
-            <div className="flex-1 space-y-1.5">
-              <Skeleton className="h-3.5 w-48" />
-              <Skeleton className="h-3 w-24" />
-            </div>
-          </div>
+          <Skeleton key={i} className="h-6 w-full" />
         ))}
       </div>
     )
@@ -202,38 +324,26 @@ function RecentActivity({
 
   if (!records || records.length === 0) {
     return (
-      <p className="py-6 text-center text-sm text-muted-foreground">
+      <p className="px-5 py-10 text-center font-mono text-[13px] text-faint">
         No recent activity.
       </p>
     )
   }
 
   return (
-    <ol className="space-y-1">
+    <ol>
       {records.map((rec) => (
         <li
           key={rec.seq}
-          className="flex items-start gap-3 rounded-md px-1 py-2 transition-colors hover:bg-muted/40"
+          className="flex items-center gap-3.5 border-b border-line2 px-5 py-3 last:border-b-0"
         >
-          <div className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
-            <AuditTypeIcon type={rec.type} className="size-3.5" />
-          </div>
-          <div className="min-w-0 flex-1">
-            <p className="text-sm">
-              <span className="font-mono text-xs text-foreground">
-                {rec.type}
-              </span>
-              {rec.actor && (
-                <span className="text-muted-foreground"> · {rec.actor}</span>
-              )}
-              {rec.node && (
-                <span className="text-muted-foreground"> · {rec.node}</span>
-              )}
-            </p>
-            <p className="text-xs text-muted-foreground">
-              {relativeTime(rec.ts)}
-            </p>
-          </div>
+          <AuditTag type={rec.type} />
+          <span className="min-w-0 truncate text-[13px] text-muted-foreground">
+            {[rec.actor, rec.node, rec.session].filter(Boolean).join(" · ") || "—"}
+          </span>
+          <span className="ml-auto shrink-0 font-mono text-[11px] text-faint">
+            {relativeTime(rec.ts)}
+          </span>
         </li>
       ))}
     </ol>

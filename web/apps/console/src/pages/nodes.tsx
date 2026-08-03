@@ -1,15 +1,12 @@
-import { useMemo, useState } from "react"
-import { useNavigate } from "react-router-dom"
-import { Search, Server, ShieldAlert, ShieldCheck } from "lucide-react"
+import { useEffect, useMemo, useRef, useState } from "react"
+import { useLocation, useNavigate } from "react-router-dom"
+import { Search, Server } from "lucide-react"
 import { toast } from "sonner"
 
 import { api } from "@/api"
 import { usePolling } from "@/hooks/use-polling"
 import { useSession } from "@/components/session-context"
-import { Card } from "@geneza/ui"
-import { Button } from "@geneza/ui"
-import { Input } from "@/components/ui/input"
-import { Skeleton } from "@geneza/ui"
+import { Button, Card, Skeleton, cn } from "@geneza/ui"
 import {
   Table,
   TableBody,
@@ -19,26 +16,71 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { EmptyState, ErrorState } from "@/components/states"
-import { PageToolbar } from "@/components/page-toolbar"
+import { NodeCvePills } from "@/components/fleet-cves"
+import { riskEdgeClass, useFleetCves } from "@/hooks/use-fleet-cves"
 import { StatusDot } from "@/components/status-dot"
 import { OsIcon } from "@/components/os-icon"
 import { distroFromLabels } from "@/lib/os"
-import { CopyId } from "@/components/copy-id"
-import { LabelTags } from "@/components/label-tags"
 import { ReapproveDialog } from "@/components/reapprove-dialog"
-import { relativeTime } from "@/lib/format"
+import { relativeTime, truncateMiddle } from "@/lib/format"
 import type { NodeInfo, NodesResponse } from "@/types"
 
 // Nodes is a live view: a tight poll keeps status, session counts and
 // last-seen current without a manual refresh.
 const POLL_MS = 5000
 
+type StatusFilter = "all" | "online" | "offline" | "pending" | "atrisk"
+
+const FILTERS: { key: StatusFilter; label: string }[] = [
+  { key: "all", label: "All" },
+  { key: "online", label: "Online" },
+  { key: "offline", label: "Offline" },
+  { key: "pending", label: "Pending" },
+  { key: "atrisk", label: "At risk" },
+]
+
+function FilterChip({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean
+  onClick: () => void
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "rounded-[7px] border px-3 py-[7px] font-mono text-[11.5px] transition-colors",
+        active
+          ? "border-brand-line bg-brand-tint text-foreground"
+          : "border-border text-muted-foreground hover:text-foreground"
+      )}
+    >
+      {children}
+    </button>
+  )
+}
+
 export function NodesPage() {
   const { me } = useSession()
   const navigate = useNavigate()
-  const { data, error, initialLoading, loading, refresh } =
+  const location = useLocation()
+  const { data, error, initialLoading, refresh } =
     usePolling<NodesResponse>((s) => api.getNodes(undefined, s), POLL_MS)
+  const fleetCves = useFleetCves()
   const [query, setQuery] = useState("")
+  const [status, setStatus] = useState<StatusFilter>("all")
+
+  // The header's search affordance (and ⌘K) land here asking for focus.
+  const searchRef = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    if ((location.state as { focusSearch?: boolean } | null)?.focusSearch) {
+      searchRef.current?.focus()
+      window.history.replaceState({}, "")
+    }
+  }, [location.state])
 
   const [busy, setBusy] = useState<string | null>(null)
   const [reapprove, setReapprove] = useState<NodeInfo | null>(null)
@@ -64,44 +106,66 @@ export function NodesPage() {
   }
 
   const nodes = useMemo(() => data?.nodes ?? [], [data])
+  const nodeCounts = (n: NodeInfo) =>
+    fleetCves.perNode.get(n.nodeId) ?? fleetCves.perNode.get(n.name)
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
-    if (!q) return nodes
-    return nodes.filter((n) => {
-      if (n.name.toLowerCase().includes(q)) return true
-      if (n.nodeId.toLowerCase().includes(q)) return true
-      return Object.entries(n.labels).some(
-        ([k, v]) =>
-          k.toLowerCase().includes(q) || v.toLowerCase().includes(q)
-      )
-    })
-  }, [nodes, query])
+    let out = nodes
+    if (q) {
+      out = out.filter((n) => {
+        if (n.name.toLowerCase().includes(q)) return true
+        if (n.nodeId.toLowerCase().includes(q)) return true
+        if (n.os.toLowerCase().includes(q)) return true
+        if ((n.overlayIp ?? "").toLowerCase().includes(q)) return true
+        return Object.entries(n.labels).some(
+          ([k, v]) => k.toLowerCase().includes(q) || v.toLowerCase().includes(q)
+        )
+      })
+    }
+    switch (status) {
+      case "online":
+        return out.filter((n) => n.online)
+      case "offline":
+        return out.filter((n) => !n.online)
+      case "pending":
+        return out.filter((n) => !n.approved)
+      case "atrisk":
+        return out.filter((n) => {
+          const c = nodeCounts(n)
+          return !!c && (c.crit > 0 || c.high > 0)
+        })
+      default:
+        return out
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nodes, query, status, fleetCves.perNode])
 
   return (
-    <div className="space-y-4">
-      <PageToolbar
-        description={
-          data
-            ? `${nodes.filter((n) => n.online).length} of ${nodes.length} nodes online`
-            : "Agent nodes enrolled in this cluster."
-        }
-        onRefresh={refresh}
-        refreshing={loading}
-      >
-        <span className="hidden items-center gap-1.5 text-xs text-muted-foreground sm:inline-flex">
-          <StatusDot online pulse className="size-1.5" />
-          Live
-        </span>
-        <div className="relative">
-          <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
+    <div className="space-y-5">
+      {/* Toolbar: fleet search + status chips */}
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="flex min-w-60 flex-1 items-center gap-2.5 rounded-[9px] border bg-card px-3.5 py-[9px]">
+          <Search className="size-[15px] shrink-0 text-faint" />
+          <input
+            ref={searchRef}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search name or label…"
-            className="w-56 pl-8"
+            placeholder="Search by name, OS, IP, or label…"
+            className="w-full border-none bg-transparent font-mono text-[12.5px] text-foreground outline-none placeholder:text-faint"
           />
         </div>
-      </PageToolbar>
+        <div className="flex flex-wrap gap-[7px]">
+          {FILTERS.map((f) => (
+            <FilterChip
+              key={f.key}
+              active={status === f.key}
+              onClick={() => setStatus(f.key)}
+            >
+              {f.label}
+            </FilterChip>
+          ))}
+        </div>
+      </div>
 
       <Card className="overflow-hidden p-0">
         {error && !data ? (
@@ -115,108 +179,125 @@ export function NodesPage() {
             message="Mint a join token under Access Tokens and enroll an agent to see it here."
           />
         ) : filtered.length === 0 ? (
-          <EmptyState
-            title="No matches"
-            message={`Nothing matches “${query}”.`}
-          />
+          <div className="p-10 text-center font-mono text-[13px] text-faint">
+            No nodes match your filters.
+          </div>
         ) : (
           <Table>
             <TableHeader>
-              <TableRow>
-                <TableHead className="w-6 pr-0" />
-                <TableHead>Name</TableHead>
+              <TableRow className="hover:bg-transparent">
+                <TableHead className="pl-5">Node</TableHead>
                 <TableHead>Status</TableHead>
-                <TableHead>Admission</TableHead>
-                <TableHead>Version</TableHead>
-                <TableHead>OS / Arch</TableHead>
-                <TableHead>Labels</TableHead>
-                <TableHead className="text-center">Sessions</TableHead>
-                <TableHead>Node ID</TableHead>
+                <TableHead>OS · agent</TableHead>
+                <TableHead>Vulnerabilities</TableHead>
+                <TableHead>Last seen</TableHead>
+                <TableHead className="pr-5" />
               </TableRow>
             </TableHeader>
             <TableBody>
               {filtered.map((node) => {
                 const distro = node.distro || distroFromLabels(node.labels)
+                const counts = nodeCounts(node)
                 return (
                   <TableRow
                     key={node.nodeId}
                     muted={!node.online}
-                    className="cursor-pointer"
+                    className={cn(
+                      "cursor-pointer border-line2 border-l-2",
+                      riskEdgeClass(counts)
+                    )}
                     onClick={() => navigate(`/nodes/${node.nodeId}`)}
                   >
-                    {/* Leading status rail: a dot for online nodes, blank for
-                        offline — the greyed row already carries "offline". */}
-                    <TableCell className="pr-0">
-                      {node.online && <StatusDot online />}
+                    <TableCell className="py-3.5 pl-5">
+                      <div className="flex items-center gap-2.5">
+                        <OsIcon os={node.os} distro={distro} colored={node.online} />
+                        <div className="min-w-0">
+                          <div className="truncate font-mono text-[13px] text-foreground">
+                            {node.name}
+                          </div>
+                          <div className="mt-0.5 truncate font-mono text-2xs text-faint">
+                            {node.overlayIp || truncateMiddle(node.nodeId)}
+                          </div>
+                        </div>
+                      </div>
                     </TableCell>
-                    <TableCell className="font-medium">
-                      <span className="flex items-center gap-2">
-                        <OsIcon
-                          os={node.os}
-                          distro={distro}
-                          colored={node.online}
-                        />
-                        {node.name}
-                      </span>
-                    </TableCell>
-                    <TableCell className="text-sm">
-                      {node.online ? (
-                        "Online"
-                      ) : (
-                        <span className="text-muted-foreground">
-                          Offline · {relativeTime(node.lastSeenUnix)}
+                    <TableCell className="py-3.5">
+                      <div className="flex items-center gap-2">
+                        <StatusDot online={node.online} />
+                        <span className="text-[12.5px] text-muted-foreground">
+                          {node.online ? "online" : "offline"}
                         </span>
-                      )}
-                    </TableCell>
-                    <TableCell onClick={(e) => e.stopPropagation()}>
-                      {node.approved ? (
-                        <span className="inline-flex items-center gap-1 text-xs text-success">
-                          <ShieldCheck className="size-3.5" /> Approved
-                        </span>
-                      ) : (
-                        <div className="flex items-center gap-2">
-                          <span className="inline-flex items-center gap-1 rounded bg-warning/15 px-1.5 py-0.5 text-xs font-medium text-warning">
-                            <ShieldAlert className="size-3.5" /> Pending
+                        {!node.approved && (
+                          <span
+                            className="inline-flex items-center gap-1.5"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <span className="rounded-[5px] border border-warning/35 px-1.5 py-0.5 font-mono text-[11px] text-warning">
+                              pending
+                            </span>
+                            {me.admin && (
+                              <Button
+                                variant="chip"
+                                size="chip"
+                                disabled={busy === node.nodeId}
+                                onClick={() => approve(node)}
+                              >
+                                approve
+                              </Button>
+                            )}
                           </span>
-                          {me.admin && (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="h-6 px-2 text-xs"
-                              disabled={busy === node.nodeId}
-                              onClick={() => approve(node)}
-                            >
-                              Approve
-                            </Button>
-                          )}
+                        )}
+                      </div>
+                      {node.activeSessions > 0 && (
+                        <div className="mt-0.5 font-mono text-2xs text-faint">
+                          {node.activeSessions} active session
+                          {node.activeSessions > 1 ? "s" : ""}
                         </div>
                       )}
                     </TableCell>
-                    <TableCell className="font-mono text-xs">
-                      {node.version || "—"}
+                    <TableCell className="py-3.5">
+                      <div className="text-[12.5px] text-muted-foreground">
+                        {node.osPretty || node.os}
+                        <span className="text-faint"> / {node.arch}</span>
+                      </div>
+                      <div className="mt-0.5 font-mono text-2xs text-faint">
+                        {node.version ? `agent ${node.version}` : "—"}
+                      </div>
                     </TableCell>
-                    <TableCell className="text-sm text-muted-foreground">
-                      {node.os}
-                      <span className="text-muted-foreground/60"> / </span>
-                      {node.arch}
-                    </TableCell>
-                    <TableCell className="max-w-56">
-                      <LabelTags labels={node.labels} max={3} />
-                    </TableCell>
-                    <TableCell className="text-center tabular-nums">
-                      <span title="active">{node.activeSessions}</span>
-                      {node.detachedSessions > 0 && (
-                        <span
-                          className="text-muted-foreground"
-                          title="detached"
-                        >
-                          {" "}
-                          / {node.detachedSessions}
-                        </span>
+                    <TableCell className="py-3.5">
+                      {fleetCves.loaded ? (
+                        <NodeCvePills counts={counts} />
+                      ) : (
+                        <span className="font-mono text-2xs text-faint">…</span>
                       )}
                     </TableCell>
-                    <TableCell onClick={(e) => e.stopPropagation()}>
-                      <CopyId value={node.nodeId} label="Node ID copied" />
+                    <TableCell className="py-3.5 font-mono text-[11.5px] text-muted-foreground">
+                      {relativeTime(node.lastSeenUnix)}
+                    </TableCell>
+                    <TableCell
+                      className="py-3.5 pr-5"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <div className="flex justify-end gap-1.5">
+                        {node.online && (
+                          <Button
+                            variant="chip"
+                            size="chip"
+                            onClick={() =>
+                              navigate(`/nodes/${node.nodeId}?tab=shell`)
+                            }
+                          >
+                            shell
+                          </Button>
+                        )}
+                        <Button
+                          variant="chip"
+                          size="chip"
+                          onClick={() => navigate(`/nodes/${node.nodeId}`)}
+                        >
+                          open
+                        </Button>
+                      </div>
                     </TableCell>
                   </TableRow>
                 )
@@ -227,7 +308,7 @@ export function NodesPage() {
       </Card>
 
       {filtered.length > 0 && query && (
-        <p className="text-xs text-muted-foreground">
+        <p className="font-mono text-xs text-faint">
           Showing {filtered.length} of {nodes.length}
         </p>
       )}
@@ -246,9 +327,9 @@ export function NodesPage() {
 
 function TableSkeleton() {
   return (
-    <div className="divide-y">
+    <div className="divide-y divide-line2">
       {Array.from({ length: 6 }).map((_, i) => (
-        <div key={i} className="flex items-center gap-4 px-3 py-2.5">
+        <div key={i} className="flex items-center gap-4 px-5 py-4">
           <Skeleton className="size-2 rounded-full" />
           <Skeleton className="h-4 w-32" />
           <Skeleton className="h-4 w-16" />

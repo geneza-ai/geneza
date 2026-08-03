@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react"
 import { create as createPlayer, type Player } from "asciinema-player"
 import "asciinema-player/dist/bundle/asciinema-player.css"
-import { KeyRound, ShieldCheck, ShieldX, Upload } from "lucide-react"
+import { Download, KeyRound, ShieldCheck, ShieldX, Upload } from "lucide-react"
 
 import { api, ApiError } from "@/api"
 import { Badge } from "@/components/ui/badge"
@@ -18,9 +18,11 @@ import { Skeleton } from "@geneza/ui"
 import {
   DecryptError,
   decryptCast,
+  formatBytes,
   plaintextCast,
   verifyIntegrity,
 } from "@/lib/recording"
+import { absoluteTime, formatDuration, truncateMiddle } from "@/lib/format"
 import type { RecordingBlob, RecordingInfo } from "@/types"
 
 type Phase = "loading" | "needsKey" | "playing" | "error"
@@ -81,7 +83,7 @@ export function RecordingPlayer({
         setPhase("error")
       })
     return () => ctl.abort()
-  }, [recording.sessionId])
+  }, [recording.sessionId, recording.auditKeyId])
 
   async function onFile(file: File) {
     setKeyText((await file.text()).trim())
@@ -108,26 +110,26 @@ export function RecordingPlayer({
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-w-4xl">
+      <DialogContent className="max-w-5xl">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            Session recording
+          <DialogTitle className="flex items-center gap-2 font-serif text-lg font-medium tracking-tight">
+            Recording {recording.sessionId}
             {integrityOk && (
               <Badge variant="success" className="gap-1">
                 <ShieldCheck className="size-3" />
-                Integrity verified
+                integrity verified
               </Badge>
             )}
             {phase === "error" && !integrityOk && blob && (
               <Badge variant="destructive" className="gap-1">
                 <ShieldX className="size-3" />
-                Integrity failed
+                integrity failed
               </Badge>
             )}
           </DialogTitle>
-          <DialogDescription>
-            <span className="font-mono text-xs">{recording.sessionId}</span> ·{" "}
-            {recording.principal || "—"} · {recording.action || "shell"}
+          <DialogDescription className="font-mono text-xs text-faint">
+            {recording.principal || "—"} → {recording.nodeId} ·{" "}
+            {recording.action || "shell"}
           </DialogDescription>
         </DialogHeader>
 
@@ -200,9 +202,83 @@ export function RecordingPlayer({
           </div>
         )}
 
-        {phase === "playing" && castText && <CastView cast={castText} />}
+        {phase === "playing" && castText && (
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.6fr_1fr]">
+            {/* Terminal chrome — the cast plays inside the design's warm-black
+                window regardless of the console theme. */}
+            <div className="overflow-hidden rounded-[14px] border bg-[#14130E]">
+              <div className="flex items-center gap-2 border-b border-[#2A271F] px-4 py-3">
+                <span className="size-2.5 rounded-full bg-[#322E25]" />
+                <span className="size-2.5 rounded-full bg-[#322E25]" />
+                <span className="size-2.5 rounded-full bg-[#322E25]" />
+                <span className="ml-2.5 truncate font-mono text-[11px] text-[#7E7868]">
+                  {recording.principal || "auditor"}@{recording.nodeId} — geneza
+                  replay
+                </span>
+              </div>
+              <CastView cast={castText} />
+            </div>
+
+            {/* Recording facts, in machine text. */}
+            <div className="flex flex-col gap-4">
+              <div className="rounded-[14px] border bg-card p-5">
+                <div className="mb-4 font-mono text-2xs uppercase tracking-[0.1em] text-faint">
+                  Recording {truncateMiddle(recording.sessionId, 10, 4)}
+                </div>
+                <div className="flex flex-col gap-2.5 font-mono text-xs">
+                  <MetaRow label="user" value={recording.principal || "—"} />
+                  <MetaRow label="node" value={recording.nodeId} />
+                  <MetaRow label="type" value={recording.action || "shell"} />
+                  <MetaRow
+                    label="started"
+                    value={absoluteTime(recording.startedUnix)}
+                  />
+                  <MetaRow
+                    label="duration"
+                    value={formatDuration(recording.startedUnix, recording.endedUnix)}
+                  />
+                  <MetaRow label="size" value={formatBytes(recording.sizeBytes)} />
+                  <MetaRow
+                    label="sha256"
+                    value={truncateMiddle(blob?.sha256 ?? "", 10, 6) || "—"}
+                  />
+                </div>
+                <div className="my-4 h-px bg-border" />
+                <div className="flex items-center gap-2 font-mono text-[11.5px] text-success">
+                  ✓ node-attested · tamper-evident
+                </div>
+              </div>
+              <Button variant="outline" className="w-full" onClick={exportCast}>
+                <Download className="size-4" />
+                Export transcript
+              </Button>
+            </div>
+          </div>
+        )}
       </DialogContent>
     </Dialog>
+  )
+
+  // Saves the decrypted asciicast to disk — the auditor's local transcript copy.
+  function exportCast() {
+    if (!castText) return
+    const url = URL.createObjectURL(
+      new Blob([castText], { type: "application/x-asciicast" })
+    )
+    const a = document.createElement("a")
+    a.href = url
+    a.download = `${recording.sessionId}.cast`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+}
+
+function MetaRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex justify-between gap-3">
+      <span className="shrink-0 text-faint">{label}</span>
+      <span className="truncate text-muted-foreground">{value}</span>
+    </div>
   )
 }
 
@@ -226,5 +302,5 @@ function CastView({ cast }: { cast: string }) {
     }
     return () => player?.dispose()
   }, [cast])
-  return <div ref={ref} className="overflow-hidden rounded-md border" />
+  return <div ref={ref} className="overflow-hidden [&_.ap-player]:rounded-none" />
 }

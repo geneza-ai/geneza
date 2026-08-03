@@ -65,6 +65,18 @@ export function MetricChart({
     format ?? ((v: number) => `${Math.round(v * 100) / 100}${unit ?? ""}`)
   const hasData = rows.length > 0 && keys.length > 0
 
+  // Gradient ids ride url(#…) fragments — titles like "CPU utilization" or
+  // "Disk used (/)" must be stripped to valid id characters or the fill
+  // silently falls back to black.
+  const gradId = (k: string) =>
+    `fill-${title}-${k}`.replace(/[^a-zA-Z0-9_-]/g, "-")
+
+  // Series are colored straight from the palette, not via the container's
+  // injected --color-<key> vars: keys like "disk /" or "rx en0" are not valid
+  // custom-property names, so those declarations would be silently dropped.
+  const colorOf = (k: string) =>
+    PALETTE[Math.max(0, keys.indexOf(k)) % PALETTE.length]
+
   // Build a shadcn ChartConfig (label + color per series). The container injects
   // --color-<key> CSS vars so series colors are theme-driven, not hardcoded.
   const config = useMemo<ChartConfig>(() => {
@@ -113,22 +125,22 @@ export function MetricChart({
                 <defs>
                   {keys.map((k) => (
                     <linearGradient
-                      id={`fill-${title}-${k}`}
+                      id={gradId(k)}
                       key={k}
                       x1="0"
                       y1="0"
                       x2="0"
                       y2="1"
                     >
+                      {/* stop-color must ride the style attribute: var() does
+                          not resolve in SVG presentation attributes. */}
                       <stop
                         offset="0%"
-                        stopColor={`var(--color-${k})`}
-                        stopOpacity={0.35}
+                        style={{ stopColor: colorOf(k), stopOpacity: 0.35 }}
                       />
                       <stop
                         offset="100%"
-                        stopColor={`var(--color-${k})`}
-                        stopOpacity={0.02}
+                        style={{ stopColor: colorOf(k), stopOpacity: 0.02 }}
                       />
                     </linearGradient>
                   ))}
@@ -159,9 +171,9 @@ export function MetricChart({
                     key={k}
                     type="monotone"
                     dataKey={k}
-                    stroke={`var(--color-${k})`}
+                    stroke={colorOf(k)}
                     strokeWidth={1.5}
-                    fill={`url(#fill-${title}-${k})`}
+                    fill={`url(#${gradId(k)})`}
                     isAnimationActive={false}
                     connectNulls
                     dot={false}
@@ -199,7 +211,7 @@ export function MetricChart({
                     key={k}
                     type="monotone"
                     dataKey={k}
-                    stroke={`var(--color-${k})`}
+                    stroke={colorOf(k)}
                     strokeWidth={1.5}
                     isAnimationActive={false}
                     connectNulls

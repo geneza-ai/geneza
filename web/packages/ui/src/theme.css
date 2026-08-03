@@ -15,38 +15,59 @@
   --brand-foreground: #f6f3ec; /* cream on forest */
   --brand-hover: #335739; /* forest 600 */
 
-  /* Warm neutrals (light) — canvas / paper / line / ink. */
-  --background: #f6f3ec; /* canvas */
+  /* Warm neutrals (light) — canvas / paper / line / ink, per the Console
+     design (Geneza Console.dc.html). */
+  --background: #f3f3f0; /* canvas */
   --foreground: #211f1a; /* ink */
-  --card: #fcfbf8; /* paper */
+  --card: #fcfcfb; /* paper */
   --card-foreground: #211f1a;
-  --popover: #fcfbf8;
+  --popover: #fcfcfb;
   --popover-foreground: #211f1a;
   --primary: #211f1a; /* ink — primary actions are ink, never forest */
   --primary-foreground: #f6f3ec;
-  --secondary: #efebe0;
+  --secondary: #eeeeea;
   --secondary-foreground: #211f1a;
-  --muted: #efebe0;
-  --muted-foreground: #6e6a5b; /* ink-muted */
-  --accent: #efebe0; /* shadcn hover fill — a quiet warm neutral, not forest */
+  --muted: #eeeeea;
+  --muted-foreground: #54503f; /* ink-muted — secondary text */
+  --faint: #98917f; /* tertiary text: micro labels, timestamps, placeholders */
+  --accent: #eeeeea; /* shadcn hover fill — a quiet warm neutral, not forest */
   --accent-foreground: #211f1a;
   --destructive: #b23a2f;
   --destructive-foreground: #f6f3ec;
-  --border: #e6e1d6; /* line */
-  --input: #e6e1d6;
+  --border: #e2e1db; /* line — card borders, table header rules */
+  --line2: #eae9e3; /* inner row separators, one step quieter than --border */
+  --input: #e2e1db;
   --ring: var(--brand); /* forest focus / live-row accent */
+  --elev: #eeeeea; /* sunken surfaces: sidebar, ghost buttons, icon tiles */
 
   --success: #4c8553; /* allow / verified */
   --warning: #b5852e; /* pending / updating */
+  --offline: #8e8775; /* the offline status dot — quieter than destructive */
 
-  /* The one live / selected fleet row's tint (forest 50). Pairs with a 2px
-     border-l-brand — the border guides the eye, the tint just confirms. */
-  --row-selected: #eef3ee;
+  /* Severity scale for vulnerability UI (dots, badges, exposure numerals). */
+  --sev-crit: #b23a2f;
+  --sev-high: #c46a2e;
+  --sev-med: #a9822c;
+  --sev-low: #6e8a54;
 
-  --sidebar: #f6f3ec;
+  /* Forest wash + line for the selected/live affordances: active nav item,
+     filter chips, the live-session card border, tinted table rows. */
+  --brand-tint: #ecf1ec;
+  --brand-line: #c2d3c4;
+  --row-selected: var(--brand-tint);
+
+  /* Chart series — forest first, then warm earth tones from the same family. */
+  --chart-1: #3f6b43;
+  --chart-2: #c46a2e;
+  --chart-3: #a9822c;
+  --chart-4: #6e8a54;
+  --chart-5: #b23a2f;
+  --chart-6: #54503f;
+
+  --sidebar: var(--elev);
   --sidebar-foreground: #211f1a;
-  --sidebar-border: #e6e1d6;
-  --sidebar-accent: #efebe0; /* neutral nav hover */
+  --sidebar-border: #e2e1db;
+  --sidebar-accent: #e7e7e2; /* neutral nav hover */
   --sidebar-accent-foreground: #211f1a;
 }
 
@@ -67,21 +88,39 @@
   --secondary: #24211a;
   --secondary-foreground: #ece8de;
   --muted: #24211a;
-  --muted-foreground: #938c7b;
+  --muted-foreground: #b7b1a2;
+  --faint: #7e7868;
   --accent: #24211a;
   --accent-foreground: #ece8de;
   --destructive: #e0695c;
   --destructive-foreground: #14130e;
   --border: #322e25; /* night-line */
+  --line2: #2a271f;
   --input: #322e25;
   --ring: var(--brand);
+  --elev: #16140f; /* night-elev */
 
   --success: #6fb377;
   --warning: #d4a648;
+  --offline: #7e7868;
 
-  --row-selected: #1a241b;
+  --sev-crit: #e0695c;
+  --sev-high: #e08a4e;
+  --sev-med: #d4a648;
+  --sev-low: #93b27e;
 
-  --sidebar: #16140f; /* night-elev */
+  --brand-tint: #1a241b;
+  --brand-line: #3a5a40;
+  --row-selected: var(--brand-tint);
+
+  --chart-1: #5c8c64;
+  --chart-2: #e08a4e;
+  --chart-3: #d4a648;
+  --chart-4: #93b27e;
+  --chart-5: #e0695c;
+  --chart-6: #b7b1a2;
+
+  --sidebar: var(--elev);
   --sidebar-foreground: #ece8de;
   --sidebar-border: #322e25;
   --sidebar-accent: #24211a;
@@ -109,10 +148,20 @@
   --color-destructive: var(--destructive);
   --color-destructive-foreground: var(--destructive-foreground);
   --color-border: var(--border);
+  --color-line2: var(--line2);
   --color-input: var(--input);
   --color-ring: var(--ring);
+  --color-elev: var(--elev);
+  --color-faint: var(--faint);
   --color-success: var(--success);
   --color-warning: var(--warning);
+  --color-offline: var(--offline);
+  --color-sev-crit: var(--sev-crit);
+  --color-sev-high: var(--sev-high);
+  --color-sev-med: var(--sev-med);
+  --color-sev-low: var(--sev-low);
+  --color-brand-tint: var(--brand-tint);
+  --color-brand-line: var(--brand-line);
   --color-row-selected: var(--row-selected);
 
   --color-sidebar: var(--sidebar);
