@@ -5,6 +5,18 @@
     state: present
     update_cache: true
 
+# Caddy runs as its own user and cannot read the controller's 0700 data dir,
+# but it must verify the controller's cert to proxy the enrolment paths. The
+# root bundle is public material (served at /v1/ca-roots), so a world-readable
+# copy costs nothing.
+- name: Publish the Geneza CA roots where Caddy can read them
+  ansible.builtin.copy:
+    src: "{{ geneza_data_dir }}/ca/ca-roots.pem"
+    dest: "{{ caddy_ca_roots_path }}"
+    remote_src: true
+    mode: "0644"
+  notify: reload caddy
+
 - name: Render the Caddyfile
   ansible.builtin.template:
     src: Caddyfile.j2

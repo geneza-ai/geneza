@@ -1,6 +1,6 @@
 # {{ ansible_managed }}
 #
-# Caddy terminates public TLS and fronts the console. It takes and RENEWS
+# Caddy terminates public TLS and fronts the control plane. It takes and RENEWS
 # Let's Encrypt certificates automatically — that is the whole of the public-web
 # certificate story, and it is deliberately separate from the Geneza CA, which
 # signs the mTLS identities inside the fleet. The two never mix: a public cert
@@ -15,8 +15,31 @@
 {{ site_domain }}, {{ advertise_name }} {
   encode zstd gzip
 
-  # The console API and SPA. The controller listens on plain HTTP here and is
-  # bound to localhost — Caddy is the only way in from outside.
+  # --- Controller HTTPS listener (:7402) ---------------------------------
+  # Enrolment and the installer live on the CONTROLLER, not the console. They
+  # MUST be routed here explicitly: the console answers any unknown path with
+  # the SPA, so without this split `curl .../install.sh | sh` pipes HTML into a
+  # shell and dies on "Syntax error: newline unexpected" — and a status-code
+  # check still reads 200, which makes it look healthy.
+  #
+  # Fronting them here also means a booting node, and Nova's vendordata
+  # callback, only ever need to trust Let's Encrypt.
+  @controller path /install.sh /healthz /v1/* /openstack/vendordata/*
+  reverse_proxy @controller https://127.0.0.1:7402 {
+    # Verified, not skipped: the controller's cert is issued by the Geneza CA,
+    # so check it against the root bundle under its advertised name. The bundle
+    # is public material — the controller serves it at /v1/ca-roots.
+    transport http {
+      tls_trusted_ca_certs {{ caddy_ca_roots_path }}
+      tls_server_name {{ advertise_name }}
+    }
+    header_up Host {host}
+    header_up X-Real-IP {remote_host}
+  }
+
+  # --- Console SPA + browser API (:8443) ---------------------------------
+  # Keep last: /api/v1/, /launch and /embed/ are console routes, and the SPA is
+  # the catch-all for client-side routing.
   reverse_proxy 127.0.0.1:8443 {
     # The hosted-UI web shell is a WebSocket; without upgrade passthrough the
     # shell page shows "connection error" and nothing in the logs says why.
