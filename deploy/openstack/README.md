@@ -192,6 +192,12 @@ when a `v*` tag is pushed, so it lags `main` silently — a deploy from this rep
 once ran a month-old build with nobody the wiser. A mutable tag also means two
 controllers provisioned a week apart can end up on different builds.
 
+**The image tag has no leading `v`.** The release workflow tags images with
+`type=semver,pattern={{version}}`, which strips it — git tag `v0.0.9` publishes
+image tag `0.0.9`. Pinning `v0.0.9` fails at pull time with a
+`manifest unknown`, which reads like a missing release rather than a tag-format
+mismatch.
+
 To move the fleet: bump `geneza_image_tag` and re-run `./deploy.sh`. Controllers
 roll one at a time (`serial: 1`), and a restart drops no live session — sessions
 are end-to-end between client and agent over the relay, so the controller is out
