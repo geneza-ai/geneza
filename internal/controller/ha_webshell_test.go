@@ -384,3 +384,42 @@ func TestMintTokenReturnsAUsableEnrollCode(t *testing.T) {
 		t.Fatalf("code carries root fp %q, want %q", f.RootFP, srv.rootFingerprint())
 	}
 }
+
+// The web-shell proxy may only rewrite the relay target to loopback when the
+// relay is actually on this host. It used to do so unconditionally, which is
+// fine on a single box and fatal everywhere else: with a separate relay layer
+// (deploy/openstack, or any multi-region fleet) every web shell died on
+//
+//	tunnel: relay connect 127.0.0.1:7403: connect: connection refused
+//
+// which reads as "the relay is down" rather than "the controller dialled its own
+// loopback instead of the relay".
+func TestLocalRelayOverrideOnlyWhenColocated(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		relay    string
+		dnsNames []string
+		ips      []string
+		want     string
+	}{
+		{"separate host by ip", "57.130.73.101:7403", []string{"gw1.example.com"}, []string{"57.130.64.9"}, ""},
+		{"separate host by name", "relay1.example.com:7403", []string{"gw1.example.com"}, nil, ""},
+		{"colocated by advertised name", "gw1.example.com:7403", []string{"gw1.example.com"}, nil, "127.0.0.1:7403"},
+		{"colocated by advertised ip", "57.130.64.9:7403", nil, []string{"57.130.64.9"}, "127.0.0.1:7403"},
+		{"already loopback", "127.0.0.1:7403", []string{"gw1.example.com"}, nil, "127.0.0.1:7403"},
+		{"localhost", "localhost:7403", []string{"gw1.example.com"}, nil, "127.0.0.1:7403"},
+		{"no relay configured", "", nil, nil, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{Advertise: Advertise{DNSNames: tc.dnsNames, IPs: tc.ips}}
+			if tc.relay != "" {
+				cfg.RelayAddrs = []string{tc.relay}
+			}
+			got := (&Server{cfg: cfg}).localRelayAddr()
+			if got != tc.want {
+				t.Fatalf("relay=%q advertise=%v/%v: got %q, want %q",
+					tc.relay, tc.dnsNames, tc.ips, got, tc.want)
+			}
+		})
+	}
+}

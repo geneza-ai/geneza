@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"net"
 	"sort"
+	"strings"
 	"time"
 
 	genezav1 "geneza.io/internal/pb/geneza/v1"
@@ -37,18 +38,57 @@ func effectiveNodeModules(rec *NodeModulesRecord) []NodeModule {
 	return out
 }
 
-// localRelayAddr is where the in-process web-shell proxy dials the relay: the
-// relay listens on this VM, so use loopback with the relay's port (taken from
-// the public relay_addrs the controller hands out) and avoid a NAT hairpin.
+// localRelayAddr optionally overrides where the in-process web-shell proxy dials
+// the relay. It returns loopback ONLY when the relay is on this same host, and
+// "" (no override — use the grant's real relay address) otherwise.
 func (s *Server) localRelayAddr() string {
 	if len(s.cfg.RelayAddrs) == 0 {
-		return "127.0.0.1:7403"
+		return ""
 	}
-	_, port, err := net.SplitHostPort(s.cfg.RelayAddrs[0])
+	host, port, err := net.SplitHostPort(s.cfg.RelayAddrs[0])
 	if err != nil || port == "" {
-		return "127.0.0.1:7403"
+		return ""
+	}
+	// ONLY when the relay really is on this box. This override exists to dodge a
+	// NAT hairpin in the single-host deployment, where controller and relay share
+	// a machine and dialling the public name would leave and re-enter the host.
+	//
+	// Returning loopback unconditionally breaks every multi-host topology — the
+	// relay layer is a separate instance in deploy/openstack and in anything
+	// multi-region — with "relay connect 127.0.0.1:7403: connection refused",
+	// which reads like the relay is down rather than like the controller dialled
+	// the wrong machine. Empty means "no override": use the address the grant
+	// carries, which is the relay's real one.
+	if !s.relayColocated(host) {
+		return ""
 	}
 	return net.JoinHostPort("127.0.0.1", port)
+}
+
+// relayColocated reports whether the configured relay is this controller's own
+// host: either it is already loopback, or it is advertised under a name/address
+// this controller also answers to.
+func (s *Server) relayColocated(host string) bool {
+	if host == "" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return true
+	}
+	for _, n := range s.cfg.Advertise.DNSNames {
+		if strings.EqualFold(n, host) {
+			return true
+		}
+	}
+	for _, n := range s.cfg.Advertise.IPs {
+		if n == host {
+			return true
+		}
+	}
+	return false
 }
 
 // moduleConfigProto builds the wire ModuleConfig from a stored record, applying
