@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+# Days of validity left, for monitoring. Prints a single integer; -1 if absent.
+set -euo pipefail
+{% if 'controllers' in group_names %}
+CERT={{ geneza_data_dir }}/tls/controller.crt
+{% else %}
+CERT=/var/lib/geneza/relay/tls/relay.crt
+{% endif %}
+[ -r "$CERT" ] || { echo -1; exit 0; }
+end=$(openssl x509 -in "$CERT" -noout -enddate | cut -d= -f2-)
+echo $(( ( $(date -d "$end" +%s) - $(date +%s) ) / 86400 ))

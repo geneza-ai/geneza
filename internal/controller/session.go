@@ -83,15 +83,54 @@ func (s *bboltStore) RedeemWSTicket(ticket string, now int64) (sessionTokenHash,
 
 var errInvalidTicket = errors.New("invalid or expired ticket")
 
-// session kinds discriminate the two disjoint browser-session namespaces stored in
+// session kinds discriminate the disjoint browser-session namespaces stored in
 // the one auth-session bucket: a tenant console session (the default, empty/legacy
-// value) and a cluster-operator console session. Each console resolves ONLY its own
-// kind, so a tenant session can never authenticate the cluster console, nor a cluster
-// session the tenant console.
+// value), a cluster-operator console session, and a hosted-UI launch session. Each
+// console resolves ONLY its own kind, so a tenant session can never authenticate the
+// cluster console, nor a cluster session the tenant console. A launch session is a
+// tenant session narrowed by a SessionScope: it authenticates the same console but
+// is admitted ONLY on the routes that explicitly opt in (authScoped).
 const (
 	sessionKindTenant  = "tenant"
 	sessionKindCluster = "cluster"
+	sessionKindLaunch  = "launch"
 )
+
+// SessionScope pins a hosted-UI launch session to exactly what the launch
+// authorized: one node, one set of actions. It is written at mint time from the
+// server-resolved launch and never from anything the browser sends, so the
+// scope cannot be widened by editing a URL. Nil scope = an ordinary full
+// console session.
+//
+// The containment rule is intersection, never union: effective authority is
+// policy(user's roles) ∩ scope. A scope can only ever make a session LESS
+// capable than the same human logging into the console directly.
+type SessionScope struct {
+	NodeID   string   `json:"node_id"`             // the single node this session may address
+	NodeName string   `json:"node_name,omitempty"` // display only
+	Actions  []string `json:"actions"`             // e.g. ["shell"]; empty = nothing
+	Cloud    string   `json:"cloud,omitempty"`     // svc-uid the launch was authenticated against
+	Instance string   `json:"instance,omitempty"`  // the cloud instance id the portal named (audit)
+	Embed    bool     `json:"embed,omitempty"`     // launched to be framed (§7 frame-ancestors applies)
+}
+
+// allowsNode reports whether a scoped session may address this node. An
+// unscoped session (nil receiver) may address any node in its workspace.
+func (sc *SessionScope) allowsNode(nodeID string) bool {
+	if sc == nil {
+		return true
+	}
+	return sc.NodeID != "" && sc.NodeID == nodeID
+}
+
+// allowsAction reports whether a scoped session may broker this action. An
+// unscoped session (nil receiver) is bounded by policy alone.
+func (sc *SessionScope) allowsAction(action string) bool {
+	if sc == nil {
+		return true
+	}
+	return contains(sc.Actions, action)
+}
 
 // AuthSession is one logged-in browser session.
 type AuthSession struct {
@@ -106,13 +145,20 @@ type AuthSession struct {
 	Groups      []string `json:"groups,omitempty"`        // IdP/keystone groups (audit + re-resolution)
 	Admin       bool     `json:"admin"`                   // isWorkspaceAdmin(Roles)
 	KSTokenHash string   `json:"ks_token_hash,omitempty"` // keystone token sha256 — for a future revocation reaper
+	// Scope narrows a launch session to one node + action set. Non-nil implies
+	// Kind == sessionKindLaunch and Admin == false, both forced at mint.
+	Scope *SessionScope `json:"scope,omitempty"`
 
-	CreatedUnix  int64  `json:"created_unix"`
-	ExpiresUnix  int64  `json:"expires_unix"`           // min(now+ConsoleSessionTTL, UpstreamExp)
-	UpstreamExp  int64  `json:"upstream_exp,omitempty"` // keystone expires_at / oidc exp / 0 local
-	LastSeenUnix int64  `json:"last_seen_unix"`         // sliding-idle bookkeeping (reserved)
-	UserAgent    string `json:"user_agent,omitempty"`   // soft fingerprint (reserved)
-	Revoked      bool   `json:"revoked,omitempty"`
+	CreatedUnix int64 `json:"created_unix"`
+	ExpiresUnix int64 `json:"expires_unix"` // min(now+ConsoleSessionTTL, UpstreamExp)
+	// MaxExpiresUnix is the ABSOLUTE ceiling for a renewable (launch) session.
+	// Renewal slides ExpiresUnix forward but can never pass this, so an
+	// indefinitely-held shell still ends. Zero = not renewable.
+	MaxExpiresUnix int64  `json:"max_expires_unix,omitempty"`
+	UpstreamExp    int64  `json:"upstream_exp,omitempty"` // keystone expires_at / oidc exp / 0 local
+	LastSeenUnix   int64  `json:"last_seen_unix"`         // sliding-idle bookkeeping (reserved)
+	UserAgent      string `json:"user_agent,omitempty"`   // soft fingerprint (reserved)
+	Revoked        bool   `json:"revoked,omitempty"`
 	// Continuous presence for a presence-required browser session;
 	// the SPA beacon (POST /api/v1/session/heartbeat) stamps these and the web-shell
 	// watchdog drops the session when they go stale. Zero values = presence-off.
@@ -290,19 +336,34 @@ type sessionInput struct {
 	UpstreamExp int64 // upstream credential expiry (keystone expires_at / oidc exp); 0 = none
 	KSTokenHash string
 	UserAgent   string
+	// Scope, when set, mints a NARROWED launch session instead of a full console
+	// one (§6 of docs/hosted-ui-launch-spec.md). MaxTTL caps this session below
+	// the console default; 0 means use the default. AbsoluteTTL is the ceiling
+	// renewal may never slide past; 0 means the session is not renewable.
+	Scope       *SessionScope
+	MaxTTL      time.Duration
+	AbsoluteTTL time.Duration
 }
 
 // mintAuthSession seals a sessionInput into a stored AuthSession and returns the
 // RAW token (the only place it ever exists outside the browser). The session TTL
 // is capped by the upstream credential's expiry: a session can never
 // outlive the keystone/oidc token that authorized it.
+//
+// A scoped input mints a launch session: the kind flips, the TTL is capped
+// further, and Admin is forced false — a one-click hosted-UI launch is never a
+// console admin, even when the human behind it is a ws-admin.
 func (s *Server) mintAuthSession(in sessionInput) (string, *AuthSession, error) {
 	token, err := randToken(32) // 256-bit
 	if err != nil {
 		return "", nil, err
 	}
 	now := time.Now()
-	exp := now.Add(s.cfg.consoleSessionTTL())
+	ttl := s.cfg.consoleSessionTTL()
+	if in.MaxTTL > 0 && in.MaxTTL < ttl {
+		ttl = in.MaxTTL
+	}
+	exp := now.Add(ttl)
 	if in.UpstreamExp > 0 && in.UpstreamExp < exp.Unix() {
 		exp = time.Unix(in.UpstreamExp, 0)
 	}
@@ -325,10 +386,60 @@ func (s *Server) mintAuthSession(in sessionInput) (string, *AuthSession, error) 
 		UserAgent:    in.UserAgent,
 	}
 	rec.Kind = sessionKindTenant
+	if in.Scope != nil {
+		rec.Kind = sessionKindLaunch
+		rec.Scope = in.Scope
+		rec.Admin = false // structural: a scope only ever narrows
+		if in.AbsoluteTTL > 0 {
+			max := now.Add(in.AbsoluteTTL).Unix()
+			if in.UpstreamExp > 0 && in.UpstreamExp < max {
+				max = in.UpstreamExp
+			}
+			rec.MaxExpiresUnix = max
+		}
+	}
 	if err := s.store.PutAuthSession(rec); err != nil {
 		return "", nil, err
 	}
 	return token, rec, nil
+}
+
+// renewSession slides a renewable session's expiry forward by its idle window,
+// bounded by the absolute ceiling stamped at mint (which already folds in the
+// upstream credential's expiry). It is NOT a blind extension: revocation,
+// expiry, and suspension are all re-checked first, so a renew can never
+// resurrect a session that policy has already turned off.
+//
+// window is the idle allowance — each renewal buys that much more time from
+// now, so an attended shell stays alive and an abandoned one still dies.
+func (s *Server) renewSession(tokenHash string, window time.Duration) (*AuthSession, error) {
+	rec, err := s.store.GetAuthSession(tokenHash)
+	if err != nil {
+		return nil, errors.New("invalid session")
+	}
+	if rec.MaxExpiresUnix == 0 {
+		return nil, errors.New("session is not renewable")
+	}
+	now := time.Now()
+	if rec.Revoked || (rec.ExpiresUnix > 0 && now.Unix() >= rec.ExpiresUnix) {
+		return nil, errors.New("session is no longer valid")
+	}
+	if s.store.IsSuspended(rec.Workspace, rec.Provider, rec.Subject) {
+		return nil, errors.New("authorization suspended")
+	}
+	next := now.Add(window).Unix()
+	if next > rec.MaxExpiresUnix {
+		next = rec.MaxExpiresUnix
+	}
+	if next <= rec.ExpiresUnix {
+		return rec, nil // already at the ceiling; nothing to extend
+	}
+	rec.ExpiresUnix = next
+	rec.LastSeenUnix = now.Unix()
+	if err := s.store.PutAuthSession(rec); err != nil {
+		return nil, err
+	}
+	return rec, nil
 }
 
 // clusterSessionInput is the verified, group-gated identity of a cluster-console

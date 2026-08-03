@@ -12,7 +12,9 @@ import {
 } from "lucide-react"
 
 import { cn, GenezaMark } from "@geneza/ui"
+import { useFleetCves } from "@/hooks/use-fleet-cves"
 import { useSession } from "@/components/session-context"
+import { UserMenu } from "@/components/layout/user-menu"
 
 interface NavItem {
   to: string
@@ -26,6 +28,8 @@ interface NavItem {
   // Shown only when the workspace actually records sessions (recordingEnabled),
   // so a recording-disabled workspace doesn't surface an empty Recordings page.
   requiresRecording?: boolean
+  // Marks the entry that carries the open-CVE count pill.
+  cveCount?: boolean
 }
 
 interface NavGroup {
@@ -54,7 +58,7 @@ const GROUPS: NavGroup[] = [
     label: "Security",
     items: [
       { to: "/recordings", label: "Recordings", icon: Video, auditorOnly: true, requiresRecording: true },
-      { to: "/vulnerabilities", label: "Vulnerabilities", icon: ShieldX },
+      { to: "/vulnerabilities", label: "Vulnerabilities", icon: ShieldX, cveCount: true },
       { to: "/policy", label: "Policy", icon: Shield },
       { to: "/audit", label: "Audit log", icon: ScrollText },
     ],
@@ -83,10 +87,16 @@ function useNavGroups(): NavGroup[] {
   })).filter((g) => g.items.length > 0)
 }
 
+// A slow background count of open CVEs for the nav pill — the same rollup the
+// dashboard and nodes list derive from, so the numbers agree across views.
+function useCveCount(): number {
+  return useFleetCves(60000).open.length
+}
+
 // The Geneza wordmark shown at the top of the sidebar / mobile drawer.
 function Brand() {
   return (
-    <div className="flex h-14 items-center gap-2 px-3.5">
+    <div className="flex h-14 items-center gap-2.5 px-3.5">
       <GenezaMark size={24} className="shrink-0" />
       <span className="font-serif text-lg font-medium tracking-tight">Geneza</span>
     </div>
@@ -97,15 +107,16 @@ function Brand() {
 // drawer. onNavigate fires after a link is tapped so the drawer can close itself.
 function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   const groups = useNavGroups()
+  const cveCount = useCveCount()
 
   return (
-    <nav className="flex-1 space-y-0.5 overflow-y-auto px-2 py-2">
+    <nav className="flex-1 space-y-0.5 overflow-y-auto px-2.5 py-1">
       {groups.map((group) => (
         <div key={group.label}>
-          <p className="px-2.5 pb-1 pt-3 text-2xs font-semibold uppercase tracking-wider text-muted-foreground/70">
+          <p className="px-2.5 pb-1 pt-3 text-2xs font-semibold uppercase tracking-wider text-faint">
             {group.label}
           </p>
-          <div className="space-y-0.5">
+          <div className="space-y-[3px]">
             {group.items.map((item) => (
               <NavLink
                 key={item.to}
@@ -114,15 +125,20 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
                 onClick={onNavigate}
                 className={({ isActive }) =>
                   cn(
-                    "flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm font-medium transition-colors",
+                    "flex items-center gap-2.5 rounded-lg border border-transparent px-2.5 py-2 text-[13.5px] font-medium transition-colors",
                     isActive
-                      ? "bg-brand/10 text-brand"
-                      : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                      ? "border-brand-line bg-brand-tint font-semibold text-foreground"
+                      : "text-muted-foreground hover:bg-sidebar-accent hover:text-foreground"
                   )
                 }
               >
                 <item.icon className="size-4 shrink-0" />
                 <span className="truncate">{item.label}</span>
+                {item.cveCount && cveCount > 0 && (
+                  <span className="ml-auto rounded-full bg-sev-crit/15 px-1.5 py-px font-mono text-2xs text-sev-crit">
+                    {cveCount}
+                  </span>
+                )}
               </NavLink>
             ))}
           </div>
@@ -132,13 +148,44 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   )
 }
 
-// Shared inner column (brand + grouped nav) reused for both the persistent
-// sidebar and the mobile drawer.
+function hostOf(externalUrl: string): string {
+  if (!externalUrl) return ""
+  try {
+    return new URL(externalUrl).host
+  } catch {
+    return externalUrl
+  }
+}
+
+// The cluster identity card pinned above the user row, mirroring the header's
+// old cluster chip: which controller this console is talking to.
+function ClusterCard() {
+  const { config } = useSession()
+  const host = hostOf(config.externalUrl)
+  return (
+    <div className="rounded-[10px] border bg-card p-3">
+      <div className="flex items-center gap-2 font-mono text-[10.5px] text-muted-foreground">
+        <span className="size-[7px] shrink-0 rounded-full bg-success" />
+        <span className="truncate">cluster · {config.clusterName}</span>
+      </div>
+      {host && (
+        <div className="mt-1.5 truncate font-mono text-2xs text-faint">{host}</div>
+      )}
+    </div>
+  )
+}
+
+// Shared inner column (brand + grouped nav + cluster/user footer) reused for
+// both the persistent sidebar and the mobile drawer.
 function SidebarBody({ onNavigate }: { onNavigate?: () => void }) {
   return (
     <>
       <Brand />
       <SidebarNav onNavigate={onNavigate} />
+      <div className="flex flex-col gap-2.5 px-3 pb-3.5 pt-2">
+        <ClusterCard />
+        <UserMenu />
+      </div>
     </>
   )
 }

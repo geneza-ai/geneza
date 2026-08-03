@@ -1,0 +1,58 @@
+---
+# A freshly booted Ubuntu instance is still running cloud-init's own apt work
+# (unattended-upgrades, apt-daily) for the first minute or two, and it holds the
+# dpkg/apt lock. Racing it fails the very first task of the very first play with
+# "Could not get lock /var/lib/apt/lists/lock", which reads like a broken image
+# rather than a race. Wait it out instead.
+- name: Wait for cloud-init to finish
+  ansible.builtin.command: cloud-init status --wait
+  changed_when: false
+  failed_when: false
+  timeout: 300
+
+# An IPv4-only tenant network still gets AAAA records back from the cloud
+# resolver — `getent hosts` on these instances returns the mirror's IPv6 address
+# first while the instance has no IPv6 address or route at all. Every such
+# connection has to fail before glibc falls back. Cheap to avoid; apt is the
+# only thing here that resolves a dual-stack name (ghcr.io answers A-only).
+#
+# Not a cure-all: an apt hang can equally mean the floating IP's subnet has no
+# working egress, which looks identical from inside the instance. Check the
+# mirror by IP from the host before blaming DNS.
+- name: Detect whether this instance has global IPv6
+  ansible.builtin.set_fact:
+    has_global_ipv6: "{{ (ansible_all_ipv6_addresses | default([]) | reject('match', '^fe80:') | list) | length > 0 }}"
+
+- name: Force apt onto IPv4 when the instance has none
+  when: not has_global_ipv6
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/99-force-ipv4
+    content: |
+      Acquire::ForceIPv4 "true";
+    mode: "0644"
+
+- name: Install base packages
+  ansible.builtin.apt:
+    name: [docker.io, openssl, ca-certificates, chrony]
+    state: present
+    update_cache: true
+  register: apt_base
+  until: apt_base is succeeded
+  retries: 10
+  delay: 15
+
+- name: Enable docker and time sync
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop: [docker, chrony]
+
+# Certificate validity is judged against the wall clock on both ends. A drifting
+# clock produces "certificate not yet valid" failures that look like a CA
+# problem, so time sync is a hard dependency, not a nicety.
+- name: Verify the clock is synchronised
+  ansible.builtin.command: chronyc tracking
+  register: chrony
+  changed_when: false
+  failed_when: false

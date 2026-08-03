@@ -19,8 +19,8 @@ export function LabelTags({
       {shown.map(([k, v]) => (
         <Badge
           key={k}
-          variant="muted"
-          className="max-w-[160px] truncate font-mono text-2xs"
+          variant="secondary"
+          className="max-w-[160px] truncate bg-elev font-normal text-muted-foreground"
           title={`${k}=${v}`}
         >
           {k}

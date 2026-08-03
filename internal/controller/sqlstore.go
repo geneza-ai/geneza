@@ -2265,8 +2265,76 @@ func (s *sqlStore) RedeemHandoff(code, cookie string, now int64) (sessionInput, 
 		if now >= rec.ExpiresUnix {
 			return fmt.Errorf("handoff code expired")
 		}
-		if rec.CookieHash != hashToken(cookie) {
+		// A hosted-UI launch ticket is never redeemable here — discriminate on the
+		// SCOPE, not the cookie (a bound launch ticket has one too). See the bbolt
+		// implementation for why a cookie test would be an escalation.
+		if rec.Session.Scope != nil {
+			return fmt.Errorf("not a handoff code")
+		}
+		if rec.CookieHash == "" || rec.CookieHash != hashToken(cookie) {
 			return fmt.Errorf("handoff cookie mismatch")
+		}
+		out = rec.Session
+		return nil
+	})
+	return out, err
+}
+
+// RedeemLaunch consumes a hosted-UI launch ticket once, enforcing whatever
+// second secret the RECORD carries (see the bbolt implementation for the rules).
+// The code burns on any redeem attempt and only one concurrent redeem wins the row.
+func (s *sqlStore) RedeemLaunch(code, cookie string, now int64) (sessionInput, error) {
+	return s.consumeLaunch(code, now, func(rec *HandoffRecord) error {
+		if rec.CookieHash != "" {
+			if rec.CookieHash != hashToken(cookie) {
+				return fmt.Errorf("launch cookie mismatch")
+			}
+			return nil
+		}
+		if !rec.Session.Scope.Embed {
+			return fmt.Errorf("this launch ticket must be bound before it is redeemed")
+		}
+		return nil
+	})
+}
+
+// RedeemLaunchBind consumes an UNBOUND top-level launch ticket (stage one).
+func (s *sqlStore) RedeemLaunchBind(code string, now int64) (sessionInput, error) {
+	return s.consumeLaunch(code, now, func(rec *HandoffRecord) error {
+		if rec.CookieHash != "" || rec.Session.Scope.Embed {
+			return fmt.Errorf("this launch ticket is not awaiting a bind")
+		}
+		return nil
+	})
+}
+
+// consumeLaunch is the shared single-use delete-and-validate for both launch
+// stages: it burns the row, applies the common launch checks, then defers the
+// stage-specific second-secret rule to check.
+func (s *sqlStore) consumeLaunch(code string, now int64, check func(*HandoffRecord) error) (sessionInput, error) {
+	ch := hashToken(code)
+	var out sessionInput
+	err := s.inSerializable(s.ctx(), func(tx *sql.Tx) error {
+		out = sessionInput{}
+		raw, gerr := s.dialect.deleteReturningDoc(s.ctx(), tx, "handoff_codes", "code_hash", ch)
+		if errors.Is(gerr, sql.ErrNoRows) {
+			return fmt.Errorf("invalid or used launch code")
+		}
+		if gerr != nil {
+			return gerr
+		}
+		var rec HandoffRecord
+		if uerr := json.Unmarshal(raw, &rec); uerr != nil {
+			return uerr
+		}
+		if now >= rec.ExpiresUnix {
+			return fmt.Errorf("launch code expired")
+		}
+		if rec.Session.Scope == nil {
+			return fmt.Errorf("not a launch code")
+		}
+		if cerr := check(&rec); cerr != nil {
+			return cerr
 		}
 		out = rec.Session
 		return nil

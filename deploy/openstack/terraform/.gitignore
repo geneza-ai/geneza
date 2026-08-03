@@ -1,0 +1,12 @@
+# Provider binaries and local state. The lock file IS committed (pins provider
+# versions across operators); everything else here is machine-local.
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.*
+!*.tfvars.example
+# A saved plan embeds variable values, including any marked sensitive.
+tfplan
+*.tfplan
+crash.log

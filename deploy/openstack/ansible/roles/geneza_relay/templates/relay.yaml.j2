@@ -1,0 +1,41 @@
+# {{ ansible_managed }}
+relay_id: {{ relay_id }}
+
+listen: ":7403"
+data_listen: ":7404"
+
+# THE ADDRESS THAT MUST BE THE FLOATING IP.
+#
+# The TURN server hands this to clients as the address to send media to
+# (RelayAddressGeneratorStatic in internal/relay/turnserver.go). The socket binds
+# 0.0.0.0, but behind a 1:1-NAT floating IP the instance only ever SEES its
+# private address — so if this were the private one, TURN would advertise an
+# unroutable target and UDP sessions would fail with no error anywhere. Terraform
+# hands us the floating IP; use it.
+public_ip: "{{ public_ip }}"
+
+# A relay validates only TURN credentials minted for its own region, so this must
+# match the controller's relay_secrets entry for the region.
+region: "{{ region_id }}"
+
+realm: "{{ geneza_turn_realm }}"
+shared_secret: "{{ geneza_relay_shared_secret }}"
+
+# Registrar: where this relay heartbeats and learns the rest of the controller
+# set. The first entry is only a bootstrap — once registered, the relay follows
+# the signed cluster map and fails over on its own. Port 7405 is the controllers'
+# dedicated cluster-control listener, and their security group admits only this
+# relay's floating IP to it.
+registrar_addr: "{{ registrar_addrs[0] }}"
+
+tls: true
+cert_file: /var/lib/geneza/relay/tls/relay.crt
+key_file: /var/lib/geneza/relay/tls/relay.key
+controller_ca_file: /var/lib/geneza/relay/tls/ca.pem
+
+# Let agents home their control stream through this relay, so a node needs
+# exactly one outbound TCP connection and no route to a controller at all.
+control_mux: true
+max_control_mux: {{ geneza_relay_max_control_mux }}
+
+health_file: /var/lib/geneza/relay/health

@@ -1,0 +1,18 @@
+---
+# Started only AFTER geneza_ca has run: `serve` refuses to come up without an
+# initialised data_dir ("load CA (did you run `geneza-controller init`?)"), so
+# starting it in the main task file would crashloop the unit and then time out
+# waiting for a port that cannot open. site.yml imports this explicitly after
+# the CA role for that reason.
+- name: Enable and start the controller
+  ansible.builtin.systemd:
+    name: geneza-controller
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Wait for the controller HTTPS port
+  ansible.builtin.wait_for:
+    host: "{{ private_ip }}"
+    port: 7402
+    timeout: 120

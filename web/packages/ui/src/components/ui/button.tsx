@@ -10,15 +10,17 @@ const buttonVariants = cva(
     variants: {
       variant: {
         default:
-          "bg-primary text-primary-foreground shadow-sm hover:bg-primary/90",
+          "bg-primary text-primary-foreground hover:bg-primary/90",
         destructive:
-          "bg-destructive text-destructive-foreground shadow-sm hover:bg-destructive/90",
+          "bg-destructive text-destructive-foreground hover:bg-destructive/90",
         outline:
-          "border border-input bg-background shadow-sm hover:bg-accent hover:text-accent-foreground",
+          "border border-input bg-transparent hover:bg-accent hover:text-accent-foreground",
         secondary:
-          "bg-secondary text-secondary-foreground shadow-sm hover:bg-secondary/80",
+          "bg-secondary text-secondary-foreground hover:bg-secondary/80",
         ghost: "hover:bg-accent hover:text-accent-foreground",
         link: "text-primary underline-offset-4 hover:underline",
+        // The Console design's ghost row action: machine text on a sunken chip.
+        chip: "border bg-elev font-mono text-2xs text-muted-foreground hover:bg-accent hover:text-foreground",
       },
       size: {
         default: "h-9 px-4 py-2",
@@ -26,6 +28,7 @@ const buttonVariants = cva(
         lg: "h-10 rounded-md px-6",
         icon: "h-9 w-9",
         "icon-sm": "h-7 w-7",
+        chip: "h-[26px] rounded-md px-2.5",
       },
     },
     defaultVariants: {

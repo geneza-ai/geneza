@@ -34,6 +34,18 @@ export function absoluteTime(unixSeconds?: number): string {
   })
 }
 
+/** Compact duration between two unix-second stamps, e.g. "11m 04s". */
+export function formatDuration(startUnix: number, endUnix: number): string {
+  if (!startUnix || !endUnix || endUnix <= startUnix) return "—"
+  const total = Math.round(endUnix - startUnix)
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const s = total % 60
+  if (h > 0) return `${h}h ${String(m).padStart(2, "0")}m`
+  if (m > 0) return `${m}m ${String(s).padStart(2, "0")}s`
+  return `${s}s`
+}
+
 /** Truncate a long id/hash for display, keeping head and tail. */
 export function truncateMiddle(value: string, head = 8, tail = 6): string {
   if (!value) return ""

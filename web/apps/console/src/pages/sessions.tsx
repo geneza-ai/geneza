@@ -155,8 +155,8 @@ export function SessionsPage() {
           <>
             <Table>
               <TableHeader>
-                <TableRow>
-                  <TableHead>Session ID</TableHead>
+                <TableRow className="hover:bg-transparent">
+                  <TableHead className="pl-5">Session ID</TableHead>
                   <SortableHead label="Node" col="node" sort={ctl} onSort={(s) => ctl.setSort(s.sort, s.order)} />
                   <SortableHead label="User" col="user" sort={ctl} onSort={(s) => ctl.setSort(s.sort, s.order)} />
                   <SortableHead label="Action" col="action" sort={ctl} onSort={(s) => ctl.setSort(s.sort, s.order)} />
@@ -176,12 +176,12 @@ export function SessionsPage() {
                     key={s.sessionId}
                     data-state={s.state === "active" ? "selected" : undefined}
                   >
-                    <TableCell>
+                    <TableCell className="py-3 pl-5">
                       <CopyId value={s.sessionId} label="Session ID copied" />
                     </TableCell>
-                    <TableCell className="font-medium">
+                    <TableCell className="font-mono text-[13px]">
                       {s.nodeName || (
-                        <span className="font-mono text-xs text-muted-foreground">
+                        <span className="text-xs text-muted-foreground">
                           {s.nodeId}
                         </span>
                       )}
@@ -193,7 +193,7 @@ export function SessionsPage() {
                     <TableCell>
                       <StateBadge state={s.state} />
                     </TableCell>
-                    <TableCell className="text-sm text-muted-foreground">
+                    <TableCell className="font-mono text-[11.5px] text-muted-foreground">
                       {relativeTime(s.startedUnix)}
                     </TableCell>
                     <TableCell className="text-center">

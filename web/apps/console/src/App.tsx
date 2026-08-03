@@ -17,39 +17,57 @@ import { PolicyPage } from "@/pages/policy"
 import { AuditPage } from "@/pages/audit"
 import { TokensPage } from "@/pages/tokens"
 import { ActivatePage } from "@/pages/activate"
+import { EmbedShellPage } from "@/pages/embed-shell"
 import { NotFound } from "@/pages/not-found"
+
+function ConsoleRoutes() {
+  return (
+    <Routes>
+      <Route element={<AppLayout />}>
+        <Route index element={<DashboardPage />} />
+        <Route path="nodes" element={<NodesPage />} />
+        <Route path="nodes/:id" element={<NodeDetailPage />} />
+        <Route path="metrics" element={<MetricsPage />} />
+        <Route path="sessions" element={<SessionsPage />} />
+        <Route path="recordings" element={<RecordingsPage />} />
+        <Route path="vulnerabilities" element={<VulnerabilitiesPage />} />
+        <Route path="activate" element={<ActivatePage />} />
+        <Route path="policy" element={<PolicyPage />} />
+        <Route path="audit" element={<AuditPage />} />
+        <Route
+          path="tokens"
+          element={
+            <RequireAdmin>
+              <TokensPage />
+            </RequireAdmin>
+          }
+        />
+        <Route path="404" element={<NotFound />} />
+        <Route path="*" element={<Navigate to="/404" replace />} />
+      </Route>
+    </Routes>
+  )
+}
 
 function App() {
   return (
     <ThemeProvider>
       <TooltipProvider delayDuration={200}>
         <BrowserRouter>
-          <AuthGate>
-            <Routes>
-              <Route element={<AppLayout />}>
-                <Route index element={<DashboardPage />} />
-                <Route path="nodes" element={<NodesPage />} />
-                <Route path="nodes/:id" element={<NodeDetailPage />} />
-                <Route path="metrics" element={<MetricsPage />} />
-                <Route path="sessions" element={<SessionsPage />} />
-                <Route path="recordings" element={<RecordingsPage />} />
-                <Route path="vulnerabilities" element={<VulnerabilitiesPage />} />
-                <Route path="activate" element={<ActivatePage />} />
-                <Route path="policy" element={<PolicyPage />} />
-                <Route path="audit" element={<AuditPage />} />
-                <Route
-                  path="tokens"
-                  element={
-                    <RequireAdmin>
-                      <TokensPage />
-                    </RequireAdmin>
-                  }
-                />
-                <Route path="404" element={<NotFound />} />
-                <Route path="*" element={<Navigate to="/404" replace />} />
-              </Route>
-            </Routes>
-          </AuthGate>
+          <Routes>
+            {/* Hosted-UI launch: authenticated by a single-use launch code in the
+                URL fragment, NOT by a console login — so it sits outside AuthGate
+                and never renders the console shell. */}
+            <Route path="/embed/shell" element={<EmbedShellPage />} />
+            <Route
+              path="*"
+              element={
+                <AuthGate>
+                  <ConsoleRoutes />
+                </AuthGate>
+              }
+            />
+          </Routes>
         </BrowserRouter>
         <Toaster />
       </TooltipProvider>

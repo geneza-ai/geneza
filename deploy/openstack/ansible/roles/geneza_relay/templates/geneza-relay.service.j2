@@ -1,0 +1,21 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Geneza relay
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Restart=always
+RestartSec=5
+ExecStartPre=-/usr/bin/docker rm -f geneza-relay
+ExecStart=/usr/bin/docker run --rm --name geneza-relay \
+  --network host \
+  --user {{ geneza_uid }}:{{ geneza_uid }} \
+  -v {{ geneza_conf_dir }}:/etc/geneza:ro \
+  -v /var/lib/geneza/relay:/var/lib/geneza/relay \
+  {{ geneza_relay_image }} \
+  --config /etc/geneza/relay.yaml
+ExecStop=/usr/bin/docker stop geneza-relay
+
+[Install]
+WantedBy=multi-user.target

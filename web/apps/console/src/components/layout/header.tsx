@@ -1,13 +1,18 @@
-import { useLocation } from "react-router-dom"
+import { useEffect } from "react"
+import { useLocation, useNavigate } from "react-router-dom"
+import { Search } from "lucide-react"
 
-import { useSession } from "@/components/session-context"
+import { useTheme } from "@/components/theme-provider"
+import { useHeaderOverride } from "@/components/layout/page-header-context"
 import { MobileNav } from "@/components/layout/mobile-nav"
-import { UserMenu } from "@/components/layout/user-menu"
 
 const TITLES: Record<string, string> = {
   "/": "Dashboard",
   "/nodes": "Nodes",
   "/sessions": "Sessions",
+  "/metrics": "Metrics",
+  "/recordings": "Recordings",
+  "/vulnerabilities": "Vulnerabilities",
   "/policy": "Policy",
   "/audit": "Audit log",
   "/tokens": "Access tokens",
@@ -22,27 +27,78 @@ function titleFor(pathname: string): string {
   return match ? TITLES[match] : "Geneza"
 }
 
+// The fleet-search affordance: not an input itself, it jumps to the nodes list
+// (whose toolbar owns the real search) — same target as the ⌘K shortcut.
+function SearchAffordance({ onGo }: { onGo: () => void }) {
+  return (
+    <button
+      onClick={onGo}
+      className="hidden h-9 w-64 items-center gap-2 rounded-[9px] border bg-card px-3 text-faint transition-colors hover:border-input hover:text-muted-foreground lg:flex"
+    >
+      <Search className="size-[15px] shrink-0" />
+      <span className="font-mono text-xs">Search fleet…</span>
+      <kbd className="ml-auto rounded border px-1.5 py-px font-mono text-[10.5px]">
+        ⌘K
+      </kbd>
+    </button>
+  )
+}
+
+// Light/dark toggle, worn on the sleeve like the mock: a forest dot plus the
+// current mode in machine text. The "system" preference stays in the user menu.
+function ThemeToggle() {
+  const { resolvedTheme, setTheme } = useTheme()
+  return (
+    <button
+      onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
+      className="flex h-9 items-center gap-2 rounded-[9px] border bg-card px-3 font-mono text-[11.5px] text-foreground transition-colors hover:bg-accent"
+      aria-label="Toggle color theme"
+    >
+      <span className="size-2 rounded-full bg-brand" />
+      {resolvedTheme === "dark" ? "Dark" : "Light"}
+    </button>
+  )
+}
+
 export function Header() {
   const { pathname } = useLocation()
-  const { config } = useSession()
-  const title = titleFor(pathname)
+  const navigate = useNavigate()
+  const { override } = useHeaderOverride()
+
+  const title = override?.title ?? titleFor(pathname)
+  const crumb = override?.crumb
+
+  const goSearch = () => navigate("/nodes", { state: { focusSearch: true } })
+
+  // ⌘K / Ctrl-K jumps to the fleet search from anywhere.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault()
+        navigate("/nodes", { state: { focusSearch: true } })
+      }
+    }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [navigate])
 
   return (
-    <header className="sticky top-0 z-20 flex h-14 shrink-0 items-center justify-between gap-4 border-b bg-background/80 px-5 backdrop-blur">
-      <div className="flex min-w-0 items-center gap-2">
+    <header className="sticky top-0 z-20 flex h-[60px] shrink-0 items-center gap-4 border-b bg-background px-6">
+      <div className="flex min-w-0 flex-1 items-center gap-2">
         <MobileNav />
-        <h1 className="truncate font-serif text-lg font-medium tracking-tight">{title}</h1>
-      </div>
-      <div className="flex items-center gap-3">
-        <div className="hidden items-center gap-2 text-sm text-muted-foreground sm:flex">
-          <span>Cluster</span>
-          <span className="rounded-md border bg-muted/40 px-2 py-0.5 font-mono text-xs text-foreground">
-            {config.clusterName}
-          </span>
+        <div className="min-w-0">
+          {crumb && (
+            <p className="truncate font-mono text-[11px] leading-tight text-faint">
+              {crumb}
+            </p>
+          )}
+          <h1 className="truncate font-serif text-[21px] font-medium leading-tight tracking-tight">
+            {title}
+          </h1>
         </div>
-        <div className="h-6 w-px bg-border" />
-        <UserMenu />
       </div>
+      <SearchAffordance onGo={goSearch} />
+      <ThemeToggle />
     </header>
   )
 }

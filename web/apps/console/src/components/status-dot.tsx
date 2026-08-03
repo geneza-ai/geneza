@@ -14,7 +14,7 @@ export function StatusDot({
     <span
       className={cn(
         "inline-block size-2 shrink-0 rounded-full",
-        online ? "bg-success status-glow" : "bg-muted-foreground/40",
+        online ? "bg-success status-glow" : "bg-offline",
         pulse && "animate-live-pulse",
         className
       )}

@@ -1,0 +1,7 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Renew Geneza server certificates
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/geneza-cert-renew

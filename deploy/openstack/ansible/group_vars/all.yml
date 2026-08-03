@@ -1,0 +1,64 @@
+---
+# Shared facts. Secrets (postgres password, relay shared secret) belong in an
+# Ansible Vault file or the environment — never here.
+
+geneza_cluster_name: geneza
+geneza_conf_dir: /etc/geneza
+geneza_data_dir: /var/lib/geneza/controller
+geneza_uid: 65532 # distroless nonroot
+
+geneza_controller_image: "ghcr.io/geneza-ai/geneza-controller:{{ geneza_image_tag }}"
+geneza_relay_image: "ghcr.io/geneza-ai/geneza-relay:{{ geneza_image_tag }}"
+geneza_image_tag: latest
+
+# Where the CA material is staged on the OPERATOR's machine between generating it
+# on the primary controller and copying it to the others. Treat this directory as
+# sensitive: it holds the fleet's trust anchor, and after evacuation it holds the
+# ONLY copy of the root key.
+#
+# NAMESPACED BY SITE, and that is not cosmetic: a flat path would mean deploying
+# a second cluster from the same checkout silently overwrites the first one's
+# staged root key. Since evacuation deletes that key from the controller, the
+# local copy is the only one — overwriting it loses it for good, with nothing to
+# tell you until the day you need to rotate.
+geneza_local_ca_dir: "{{ playbook_dir }}/.ca/{{ site_domain }}"
+
+# Move the CA ROOT key off the running controller after init. ARCHITECTURE §2
+# ranks it above the controller itself: "whoever holds them owns the fleet."
+# Leaving it on an internet-facing instance means a controller compromise is a
+# fleet compromise, which the whole two-tier CA design exists to prevent.
+geneza_evacuate_root_key: true
+
+geneza_policy_file: "{{ playbook_dir }}/files/policy.yaml"
+geneza_auto_provision_policy_file: "{{ playbook_dir }}/files/auto-provision-policy.yaml"
+geneza_metrics_url: "http://{{ hostvars[groups['controllers'][0]]['private_ip'] }}:8428"
+
+# Certificates
+geneza_relay_cert_ttl: 2160h # 90d; the registrar renews well before this
+geneza_cert_renew_before_days: 30
+
+geneza_turn_realm: geneza
+geneza_relay_max_control_mux: 2048
+
+# Postgres. Prefer a managed service: it is the ONE component whose HA you must
+# provide yourself — controllers and relays are stateless.
+geneza_postgres_db: geneza
+geneza_postgres_user: geneza
+
+# Derived, not hand-written: the host comes from the inventory (Terraform), the
+# password from secrets.yml. sslmode=require rather than verify-full because the
+# in-cluster Postgres uses Ubuntu's self-signed snakeoil cert; point
+# external_postgres_dsn at a managed service with a real cert and raise it.
+geneza_postgres_dsn: >-
+  postgres://{{ geneza_postgres_user }}:{{ geneza_postgres_password }}@{{
+  hostvars[groups['database'][0]]['private_ip'] }}:5432/{{ geneza_postgres_db
+  }}?sslmode=require
+
+# Empty unless the deployment integrates with an OpenStack you operate; see
+# secrets.yml.example.
+geneza_clouds: {}
+
+# Every relay in the fleet, as hostvars dicts — the controller config lists their
+# FLOATING IPs in relay_addrs/relay_data_addrs. Derived from the inventory rather
+# than written by hand so adding a relay region needs no edit here.
+geneza_relays: "{{ groups['relays'] | default([]) | map('extract', hostvars) | list }}"

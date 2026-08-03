@@ -23,7 +23,7 @@ const TableHeader = React.forwardRef<
   <thead
     ref={ref}
     className={cn(
-      "sticky top-0 z-10 bg-card [&_tr]:border-b",
+      "sticky top-0 z-10 bg-card [&_tr]:border-b [&_tr]:border-border",
       className
     )}
     {...props}
@@ -55,7 +55,7 @@ const TableRow = React.forwardRef<HTMLTableRowElement, TableRowProps>(
       ref={ref}
       data-muted={muted ? "" : undefined}
       className={cn(
-        "border-b transition-colors hover:bg-muted/50 data-[state=selected]:border-l-2 data-[state=selected]:border-l-brand data-[state=selected]:bg-row-selected data-[muted]:text-muted-foreground",
+        "border-b border-line2 transition-colors hover:bg-muted/40 data-[state=selected]:border-l-2 data-[state=selected]:border-l-brand data-[state=selected]:bg-row-selected data-[muted]:text-muted-foreground",
         className
       )}
       {...props}
@@ -71,7 +71,7 @@ const TableHead = React.forwardRef<
   <th
     ref={ref}
     className={cn(
-      "h-8 whitespace-nowrap px-3 text-left align-middle text-xs font-medium uppercase tracking-wide text-muted-foreground [&:has([role=checkbox])]:pr-0",
+      "h-9 whitespace-nowrap px-3 text-left align-middle font-mono text-[10px] font-medium uppercase tracking-[0.08em] text-faint [&:has([role=checkbox])]:pr-0",
       className
     )}
     {...props}

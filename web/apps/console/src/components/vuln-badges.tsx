@@ -1,48 +1,73 @@
 import { ShieldAlert } from "lucide-react"
 
+import { cn } from "@geneza/ui"
 import { Badge } from "@/components/ui/badge"
+import { severityKey, type SevKey } from "@/lib/severity"
 import type { CVEStatus } from "@/types"
 
-const STATUS_VARIANT: Record<
-  string,
-  "success" | "muted" | "warning" | "secondary" | "destructive"
-> = {
-  affected: "destructive",
-  fixed: "success",
-  not_affected: "muted",
-  under_investigation: "warning",
+// The CVE state pill is deliberately quiet — colored text and a faint border,
+// no fill. The severity dot next to it carries the alarm.
+const STATUS_CLASS: Record<string, string> = {
+  affected: "border-faint/40 text-faint",
+  fixed: "border-success/35 text-success",
+  not_affected: "border-muted-foreground/35 text-muted-foreground",
+  under_investigation: "border-warning/35 text-warning",
 }
 
 const STATUS_LABEL: Record<string, string> = {
-  affected: "Affected",
-  fixed: "Fixed",
-  not_affected: "Not affected",
-  under_investigation: "Investigating",
+  affected: "open",
+  fixed: "fixed",
+  not_affected: "not affected",
+  under_investigation: "investigating",
 }
 
 export function StatusBadge({ status }: { status: CVEStatus }) {
-  const variant = STATUS_VARIANT[status] ?? "secondary"
-  return <Badge variant={variant}>{STATUS_LABEL[status] ?? status}</Badge>
-}
-
-// Severity is a free-text label from the advisory feed; colour the well-known
-// ratings and fall back to a neutral badge for anything unrecognized.
-const SEVERITY_VARIANT: Record<string, "destructive" | "warning" | "muted"> = {
-  critical: "destructive",
-  high: "destructive",
-  medium: "warning",
-  moderate: "warning",
-  low: "muted",
-  negligible: "muted",
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center whitespace-nowrap rounded-[5px] border px-2 py-0.5 font-mono text-[11px]",
+        STATUS_CLASS[status] ?? "border-border text-muted-foreground"
+      )}
+    >
+      {STATUS_LABEL[status] ?? status}
+    </span>
+  )
 }
 
 export function SeverityBadge({ severity }: { severity: string }) {
   if (!severity) return <span className="text-muted-foreground">—</span>
-  const variant = SEVERITY_VARIANT[severity.toLowerCase()] ?? "secondary"
+  const key = severityKey(severity)
   return (
-    <Badge variant={variant} className="capitalize">
+    <Badge variant={key ?? "secondary"} className="lowercase">
       {severity}
     </Badge>
+  )
+}
+
+// The 8px severity dot that anchors a CVE row.
+const SEV_DOT: Record<SevKey, string> = {
+  "sev-crit": "bg-sev-crit",
+  "sev-high": "bg-sev-high",
+  "sev-med": "bg-sev-med",
+  "sev-low": "bg-sev-low",
+}
+
+export function SeverityDot({
+  severity,
+  className,
+}: {
+  severity: string
+  className?: string
+}) {
+  const key = severityKey(severity)
+  return (
+    <span
+      className={cn(
+        "inline-block size-2 shrink-0 rounded-full",
+        key ? SEV_DOT[key] : "bg-faint",
+        className
+      )}
+    />
   )
 }
 

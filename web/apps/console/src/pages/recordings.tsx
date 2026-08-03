@@ -1,31 +1,17 @@
-import { useState } from "react"
-import { PlayCircle, Video } from "lucide-react"
+import { useMemo, useState } from "react"
+import { Play, Search, Video } from "lucide-react"
 
 import { api } from "@/api"
 import { usePolling } from "@/hooks/use-polling"
-import { Badge } from "@/components/ui/badge"
-import { Button } from "@geneza/ui"
-import { Card } from "@geneza/ui"
-import { Skeleton } from "@geneza/ui"
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table"
+import { Card, Skeleton, cn } from "@geneza/ui"
 import { EmptyState, ErrorState } from "@/components/states"
-import { PageToolbar } from "@/components/page-toolbar"
 import { Pagination } from "@/components/data-pagination"
-import { CopyId } from "@/components/copy-id"
-import { ActionBadge } from "@/components/session-badges"
 import { RecordingPlayer } from "@/components/recording-player"
 import { formatBytes } from "@/lib/recording"
-import { relativeTime } from "@/lib/format"
+import { formatDuration, relativeTime } from "@/lib/format"
 import type { RecordingInfo, RecordingsResponse } from "@/types"
 
-const PAGE_SIZE = 25
+const PAGE_SIZE = 24
 
 // A recording is playable once the session has ended (it carries an end time) — a
 // still-running session's cast is incomplete.
@@ -33,11 +19,63 @@ function isPlayable(r: RecordingInfo): boolean {
   return r.endedUnix > 0
 }
 
+// One recording card: play tile, identity line, and the size/duration strip in
+// machine text — the Console design's recording tile.
+function RecordingCard({
+  rec,
+  onPlay,
+}: {
+  rec: RecordingInfo
+  onPlay: () => void
+}) {
+  const playable = isPlayable(rec)
+  return (
+    <Card
+      onClick={playable ? onPlay : undefined}
+      className={cn(
+        "flex items-center gap-4 p-4",
+        playable && "cursor-pointer transition-colors hover:border-input"
+      )}
+    >
+      <div className="flex size-[46px] shrink-0 items-center justify-center rounded-[10px] border bg-elev text-brand">
+        <Play className="size-[18px]" />
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="mb-1 flex items-center gap-2">
+          <span className="truncate font-mono text-[12.5px]">{rec.sessionId}</span>
+          {!playable && (
+            <span className="shrink-0 rounded border border-brand-line px-1.5 py-px font-mono text-[9.5px] text-brand">
+              ● LIVE
+            </span>
+          )}
+          {rec.truncated && (
+            <span className="shrink-0 rounded border border-warning/35 px-1.5 py-px font-mono text-[9.5px] text-warning">
+              truncated
+            </span>
+          )}
+        </div>
+        <div className="truncate font-mono text-[11px] text-muted-foreground">
+          {rec.principal || "—"} → {rec.nodeId}
+        </div>
+        <div className="mt-1.5 truncate font-mono text-2xs text-faint">
+          {relativeTime(rec.startedUnix)} ·{" "}
+          {formatDuration(rec.startedUnix, rec.endedUnix)} ·{" "}
+          {formatBytes(rec.sizeBytes)}
+        </div>
+      </div>
+      <span className="shrink-0 rounded-[5px] border border-brand-line px-2 py-0.5 font-mono text-[11px] text-brand">
+        {rec.action || "shell"}
+      </span>
+    </Card>
+  )
+}
+
 // RecordingsPage lists the workspace's session recordings (audit/replay-gated on
 // the controller) and lets an auditor play one back. The cast itself is fetched and
 // decrypted client-side by the player; this view only enumerates the index.
 export function RecordingsPage() {
   const [page, setPage] = useState(1)
+  const [query, setQuery] = useState("")
   const [target, setTarget] = useState<RecordingInfo | null>(null)
 
   const { data, error, initialLoading, loading, refresh } =
@@ -51,127 +89,98 @@ export function RecordingsPage() {
       [page]
     )
 
-  const recordings = data?.recordings ?? []
   const total = data?.total ?? 0
   const forbidden = error?.toLowerCase().includes("capability")
 
-  return (
-    <div className="space-y-4">
-      <PageToolbar
-        description={`${total} recording${total === 1 ? "" : "s"}`}
-        onRefresh={refresh}
-        refreshing={loading}
-      />
+  const filtered = useMemo(() => {
+    const recordings = data?.recordings ?? []
+    const q = query.trim().toLowerCase()
+    if (!q) return recordings
+    return recordings.filter((r) =>
+      `${r.sessionId} ${r.principal} ${r.nodeId} ${r.action}`
+        .toLowerCase()
+        .includes(q)
+    )
+  }, [data, query])
 
-      <Card className="overflow-hidden p-0">
-        {error && !data ? (
-          forbidden ? (
-            <EmptyState
-              icon={<Video className="size-8" />}
-              title="Replay not permitted"
-              message="Session replay is privileged. Ask a workspace admin for the auditor role to view recordings."
-            />
-          ) : (
-            <ErrorState message={error} onRetry={refresh} />
-          )
-        ) : initialLoading ? (
-          <RowsSkeleton />
-        ) : total === 0 ? (
+  if (error && !data && forbidden) {
+    return (
+      <Card>
+        <EmptyState
+          icon={<Video className="size-8" />}
+          title="Replay not permitted"
+          message="Session replay is privileged. Ask a workspace admin for the auditor role to view recordings."
+        />
+      </Card>
+    )
+  }
+
+  return (
+    <div className="space-y-5">
+      <div className="flex max-w-md items-center gap-2.5 rounded-[9px] border bg-card px-3.5 py-[9px]">
+        <Search className="size-[15px] shrink-0 text-faint" />
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search by user, node, or id…"
+          className="w-full border-none bg-transparent font-mono text-[12.5px] text-foreground outline-none placeholder:text-faint"
+        />
+      </div>
+
+      {error && !data ? (
+        <Card>
+          <ErrorState message={error} onRetry={refresh} />
+        </Card>
+      ) : initialLoading ? (
+        <div className="grid grid-cols-1 gap-3.5 lg:grid-cols-2">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <Card key={i} className="flex items-center gap-4 p-4">
+              <Skeleton className="size-[46px] rounded-[10px]" />
+              <div className="flex-1 space-y-2">
+                <Skeleton className="h-3.5 w-32" />
+                <Skeleton className="h-3 w-48" />
+              </div>
+            </Card>
+          ))}
+        </div>
+      ) : total === 0 ? (
+        <Card>
           <EmptyState
             icon={<Video className="size-8" />}
             title="No recordings"
             message="No session recordings have been captured in this workspace yet."
           />
-        ) : (
-          <>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Session ID</TableHead>
-                  <TableHead>Node</TableHead>
-                  <TableHead>Principal</TableHead>
-                  <TableHead>Action</TableHead>
-                  <TableHead>Started</TableHead>
-                  <TableHead className="text-right">Size</TableHead>
-                  <TableHead className="text-right">Play</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {recordings.map((r) => (
-                  <TableRow key={r.sessionId}>
-                    <TableCell>
-                      <CopyId value={r.sessionId} label="Session ID copied" />
-                    </TableCell>
-                    <TableCell className="font-mono text-xs text-muted-foreground">
-                      {r.nodeId}
-                    </TableCell>
-                    <TableCell className="text-sm">
-                      {r.principal || "—"}
-                    </TableCell>
-                    <TableCell>
-                      <ActionBadge action={r.action || "shell"} />
-                      {r.truncated && (
-                        <Badge variant="warning" className="ml-1.5">
-                          truncated
-                        </Badge>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-sm text-muted-foreground">
-                      {relativeTime(r.startedUnix)}
-                    </TableCell>
-                    <TableCell className="text-right tabular-nums text-sm text-muted-foreground">
-                      {formatBytes(r.sizeBytes)}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      {isPlayable(r) ? (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setTarget(r)}
-                        >
-                          <PlayCircle className="size-4" />
-                          Play
-                        </Button>
-                      ) : (
-                        <span className="text-xs text-muted-foreground">
-                          in progress
-                        </span>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-            <Pagination
-              total={total}
-              pageSize={PAGE_SIZE}
-              page={page}
-              onPage={setPage}
-              loading={loading}
-            />
-          </>
-        )}
-      </Card>
+        </Card>
+      ) : filtered.length === 0 ? (
+        <Card>
+          <div className="p-10 text-center font-mono text-[13px] text-faint">
+            No recordings match your search.
+          </div>
+        </Card>
+      ) : (
+        <>
+          <div className="grid grid-cols-1 gap-3.5 lg:grid-cols-2">
+            {filtered.map((r) => (
+              <RecordingCard key={r.sessionId} rec={r} onPlay={() => setTarget(r)} />
+            ))}
+          </div>
+          {total > PAGE_SIZE && (
+            <Card className="p-0">
+              <Pagination
+                total={total}
+                pageSize={PAGE_SIZE}
+                page={page}
+                onPage={setPage}
+                loading={loading}
+              />
+            </Card>
+          )}
+        </>
+      )}
 
       {target && (
         <RecordingPlayer recording={target} onClose={() => setTarget(null)} />
       )}
-    </div>
-  )
-}
-
-function RowsSkeleton() {
-  return (
-    <div className="divide-y">
-      {Array.from({ length: 6 }).map((_, i) => (
-        <div key={i} className="flex items-center gap-4 px-3 py-3">
-          <Skeleton className="h-4 w-36" />
-          <Skeleton className="h-4 w-24" />
-          <Skeleton className="h-4 w-20" />
-          <Skeleton className="h-5 w-14" />
-          <Skeleton className="ml-auto h-4 w-16" />
-        </div>
-      ))}
     </div>
   )
 }

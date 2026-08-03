@@ -101,6 +101,13 @@ func DialController(addr string, pool *x509.CertPool, clientCert *tls.Certificat
 // its signed addresses in order. It returns a WorkspaceAPI client plus a closer the
 // caller ties to the session lifetime (the connection carries the session's
 // presence heartbeat and signaling after the redirect is followed).
+// DialRedirect is dialRedirect for callers outside this package — the
+// controller's in-process web-shell proxy, which follows the same redirect the
+// native client does so an HA fleet behaves identically on both paths.
+func DialRedirect(red *genezav1.ControllerRedirect, pool *x509.CertPool, cert *tls.Certificate) (genezav1.WorkspaceAPIClient, func() error, error) {
+	return dialRedirect(red, pool, cert)
+}
+
 func dialRedirect(red *genezav1.ControllerRedirect, pool *x509.CertPool, cert *tls.Certificate) (genezav1.WorkspaceAPIClient, func() error, error) {
 	var lastErr error
 	for _, addr := range red.GetAddrs() {

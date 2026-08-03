@@ -31,7 +31,7 @@ import {
 import { EmptyState, ErrorState } from "@/components/states"
 import { PageToolbar } from "@/components/page-toolbar"
 import { CopyId } from "@/components/copy-id"
-import { AuditTypeIcon } from "@/components/audit-type-badge"
+import { AuditTag } from "@/components/audit-type-badge"
 import { absoluteTime, relativeTime } from "@/lib/format"
 import { cn } from "@geneza/ui"
 import type { AuditRecord } from "@/types"
@@ -139,8 +139,8 @@ export function AuditPage() {
         ) : (
           <Table>
             <TableHeader>
-              <TableRow>
-                <TableHead className="w-10" />
+              <TableRow className="hover:bg-transparent">
+                <TableHead className="w-10 pl-5" />
                 <TableHead className="w-16">Seq</TableHead>
                 <TableHead>Time</TableHead>
                 <TableHead>Type</TableHead>
@@ -178,7 +178,7 @@ function AuditRow({ rec }: { rec: AuditRecord }) {
         className={cn(hasDetail && "cursor-pointer")}
         onClick={() => hasDetail && setOpen((v) => !v)}
       >
-        <TableCell className="text-muted-foreground">
+        <TableCell className="pl-5 text-faint">
           {hasDetail ? (
             open ? (
               <ChevronDown className="size-4" />
@@ -187,26 +187,24 @@ function AuditRow({ rec }: { rec: AuditRecord }) {
             )
           ) : null}
         </TableCell>
-        <TableCell className="font-mono text-xs tabular-nums text-muted-foreground">
+        <TableCell className="font-mono text-xs tabular-nums text-faint">
           {rec.seq}
         </TableCell>
         <TableCell
-          className="whitespace-nowrap text-sm text-muted-foreground"
+          className="whitespace-nowrap font-mono text-[11.5px] text-muted-foreground"
           title={absoluteTime(rec.ts)}
         >
           {relativeTime(rec.ts)}
         </TableCell>
         <TableCell>
-          <span className="inline-flex items-center gap-1.5">
-            <AuditTypeIcon
-              type={rec.type}
-              className="size-3.5 text-muted-foreground"
-            />
-            <span className="font-mono text-xs">{rec.type}</span>
-          </span>
+          <AuditTag type={rec.type} />
         </TableCell>
-        <TableCell className="text-sm">{rec.actor || "—"}</TableCell>
-        <TableCell className="text-sm">{rec.node || "—"}</TableCell>
+        <TableCell className="text-[13px] text-muted-foreground">
+          {rec.actor || "—"}
+        </TableCell>
+        <TableCell className="text-[13px] text-muted-foreground">
+          {rec.node || "—"}
+        </TableCell>
         <TableCell onClick={(e) => e.stopPropagation()}>
           {rec.session ? (
             <CopyId value={rec.session} head={6} tail={4} label="Session copied" />
@@ -256,13 +254,13 @@ function ChainBanner({
   chainOk?: boolean
   loading: boolean
 }) {
-  if (loading) return <Skeleton className="h-14 w-full rounded-lg" />
+  if (loading) return <Skeleton className="h-14 w-full rounded-[14px]" />
 
   const ok = chainOk !== false
   return (
     <div
       className={cn(
-        "flex items-center gap-3 rounded-lg border px-4 py-3",
+        "flex items-center gap-3 rounded-[14px] border px-4 py-3",
         ok
           ? "border-success/30 bg-success/5"
           : "border-destructive/40 bg-destructive/10"
