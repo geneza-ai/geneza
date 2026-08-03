@@ -20,7 +20,7 @@ geneza_relay_image: "ghcr.io/geneza-ai/geneza-relay:{{ geneza_image_tag }}"
 # NOTE the tag has NO leading 'v': the release workflow uses
 # `type=semver,pattern={{ version }}`, which strips it. Git tag v0.0.9 publishes
 # image tag 0.0.9, and pinning "v0.0.9" fails at pull time.
-geneza_image_tag: "0.0.10"
+geneza_image_tag: "0.0.11"
 
 # Where the CA material is staged on the OPERATOR's machine between generating it
 # on the primary controller and copying it to the others. Treat this directory as
