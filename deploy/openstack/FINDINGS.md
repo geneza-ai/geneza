@@ -152,6 +152,34 @@ gw2 | addrs: ["gw2.gzo.lab.osie.cloud:7401", "gzo.lab.osie.cloud:7401", ...]
   (`read: connection reset by peer`). Terraform is resumable, so re-running
   cleared it both times.
 
+## Found by using it, after the deploy "passed"
+
+Three more, all invisible to the deployment's own checks because the deployment
+genuinely succeeded — the *product* behind it was misconfigured or wrong.
+
+| # | Where | What |
+|---|---|---|
+| 28 | `roles/caddy` | Caddy proxied EVERYTHING to the console. The installer and enrolment paths live on the controller's `:7402`, so `/install.sh` returned the console's SPA fallback and `curl … | sh` piped HTML into a shell: `Syntax error: newline unexpected`. A status-code check reads **200** throughout, which is exactly how it survived review. Now an explicit `@controller` matcher with a *verified* upstream against the Geneza CA. |
+| 29 | `group_vars/all.yml` | `geneza_metrics_url` pointed at `controller[0]:8428` but nothing deployed VictoriaMetrics. The console's metrics view showed a raw `connection refused`. Empty means disabled in the controller, so pointing at a phantom is strictly worse than not setting it. Now a real backend on the database host, with `metrics_enabled` to turn it off. |
+
+And one in the product, not the deployment:
+
+| # | Where | What |
+|---|---|---|
+| 30 | `internal/controller` | Agent liveness was read from the LOCAL registry. An agent homes its stream to one controller, so every agent on a sibling read as offline — behind one round-robin name the same node flipped between online and offline per request. Worse, the web-shell pre-flight used the same check and rejected shells with "node is offline" *before* `brokerWebSession` could follow the `ControllerRedirect`, silently defeating that fix for (N-1)/N of requests. `agentLivenessMap` already merged the shared presence rows; these call sites just were not using it. |
+
+### The lesson, again
+
+Finding 28 is the same mistake twice in one session: a 200 from a catch-all SPA
+is not evidence the endpoint exists. It was caught the first time (on `/launch`),
+written down, and then repeated on `/install.sh` — and only a human running the
+real command surfaced it. **Verify by response body, not status code**, for
+anything behind a proxy that has an SPA fallback.
+
+Finding 30 is the other shape of the same problem: the deployment was healthy,
+idempotent, and green on every check it knew how to run. It took enrolling an
+actual node to find that the control plane disagreed with itself.
+
 ## Still not covered
 
 - No agent has joined either cluster, so no session has crossed a relay on a
