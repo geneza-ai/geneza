@@ -42,11 +42,32 @@ geneza_evacuate_root_key: true
 
 geneza_policy_file: "{{ playbook_dir }}/files/policy.yaml"
 geneza_auto_provision_policy_file: "{{ playbook_dir }}/files/auto-provision-policy.yaml"
-geneza_metrics_url: "http://{{ hostvars[groups['controllers'][0]]['private_ip'] }}:8428"
+# Metrics backend. EMPTY MEANS DISABLED, and that is the honest default when no
+# backend exists: the controller reports metrics as off instead of the console
+# surfacing a bare "connection refused" from an address nobody listens on.
+#
+# It pointed at controller[0]:8428 before, but nothing deployed VictoriaMetrics
+# there — a promise the stack never kept. It now lives on the database host (the
+# stateful one) and this follows whether that role ran.
+geneza_metrics_enabled: true
+geneza_metrics_url: >-
+  {{ ("http://" ~ hostvars[groups['database'][0]]['private_ip'] ~ ":8428")
+     if (geneza_metrics_enabled | bool and groups['database'] | default([]) | length > 0)
+     else "" }}
+
+# VictoriaMetrics
+vm_image: victoriametrics/victoria-metrics:v1.111.0
+vm_data_dir: /var/lib/victoriametrics
+vm_uid: 1000
+vm_retention: 30d
 
 # Certificates
 geneza_relay_cert_ttl: 2160h # 90d; the registrar renews well before this
 geneza_cert_renew_before_days: 30
+
+# Readable copy of the Geneza CA roots for Caddy's verified upstream to the
+# controller's :7402 listener.
+caddy_ca_roots_path: /etc/ssl/certs/geneza-ca-roots.pem
 
 geneza_turn_realm: geneza
 geneza_relay_max_control_mux: 2048

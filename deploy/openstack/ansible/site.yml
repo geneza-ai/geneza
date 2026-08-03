@@ -41,6 +41,10 @@
   become: true
   roles:
     - postgres
+    # Metrics are state, so they live with the other state rather than on a
+    # controller that is supposed to be disposable.
+    - role: victoriametrics
+      when: geneza_metrics_enabled | bool
 
 - name: Controllers
   hosts: controllers

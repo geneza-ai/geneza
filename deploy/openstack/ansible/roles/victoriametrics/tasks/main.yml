@@ -1,0 +1,50 @@
+---
+# VictoriaMetrics: the time-series backend behind the console's per-node CPU and
+# memory view. The controller proxies agent metric pushes to its import endpoint
+# and console PromQL to its query API — with no backend the console surfaces a
+# raw "connection refused" from whatever address it was pointed at.
+#
+# It lives on the DATABASE host on purpose. Metrics are state, and controllers
+# are meant to stay disposable; putting a TSDB on one would quietly make it
+# precious. Single-instance, like Postgres here — see the README on why that is
+# the component whose HA you provide yourself.
+- name: Create the VictoriaMetrics data directory
+  ansible.builtin.file:
+    path: "{{ vm_data_dir }}"
+    state: directory
+    owner: "{{ vm_uid }}"
+    group: "{{ vm_uid }}"
+    mode: "0750"
+
+- name: Install the VictoriaMetrics systemd unit
+  ansible.builtin.template:
+    src: victoriametrics.service.j2
+    dest: /etc/systemd/system/victoriametrics.service
+    mode: "0644"
+  notify:
+    - reload systemd
+    - restart victoriametrics
+
+- name: Enable and start VictoriaMetrics
+  ansible.builtin.systemd:
+    name: victoriametrics
+    enabled: true
+    state: started
+    daemon_reload: true
+
+# Bound to the private address only — the security group admits 8428 from the
+# controller group alone, and this is the belt to that braces.
+- name: Wait for the query API
+  ansible.builtin.wait_for:
+    host: "{{ private_ip }}"
+    port: 8428
+    timeout: 90
+
+- name: Confirm it answers PromQL
+  ansible.builtin.uri:
+    url: "http://{{ private_ip }}:8428/api/v1/query?query=up"
+    status_code: 200
+  register: vm_probe
+  retries: 5
+  delay: 3
+  until: vm_probe is succeeded

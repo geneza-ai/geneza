@@ -224,3 +224,13 @@ variable "public_subnet_id" {
   type        = string
   default     = ""
 }
+
+# Metrics. The console has a per-node CPU/memory view that is dead without a
+# time-series backend: the controller proxies agent metric pushes to its import
+# endpoint and console PromQL to its query API. Off means the console reports
+# metrics as disabled rather than surfacing a connection error.
+variable "metrics_enabled" {
+  description = "Deploy VictoriaMetrics on the database host and point the controllers at it."
+  type        = bool
+  default     = true
+}

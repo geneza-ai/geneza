@@ -1,0 +1,24 @@
+# {{ ansible_managed }}
+[Unit]
+Description=VictoriaMetrics (Geneza metrics backend)
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Restart=always
+RestartSec=5
+ExecStartPre=-/usr/bin/docker rm -f victoriametrics
+# Bound to the PRIVATE address: this is reachable from the controllers over the
+# tenant network and from nowhere else. Retention lives here, not in the Geneza
+# config (metrics_retention there is accepted and ignored).
+ExecStart=/usr/bin/docker run --rm --name victoriametrics \
+  -p {{ private_ip }}:8428:8428 \
+  --user {{ vm_uid }}:{{ vm_uid }} \
+  -v {{ vm_data_dir }}:/victoria-metrics-data \
+  {{ vm_image }} \
+  -retentionPeriod={{ vm_retention }} \
+  -httpListenAddr=:8428
+ExecStop=/usr/bin/docker stop victoriametrics
+
+[Install]
+WantedBy=multi-user.target

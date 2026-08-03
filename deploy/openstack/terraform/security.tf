@@ -174,6 +174,20 @@ resource "openstack_networking_secgroup_rule_v2" "db_egress_v4" {
   security_group_id = openstack_networking_secgroup_v2.db.id
 }
 
+# VictoriaMetrics rides the database host — it is the one stateful box, and
+# controllers are meant to stay disposable. Only they may query or push to it.
+resource "openstack_networking_secgroup_rule_v2" "db_metrics" {
+  count             = var.metrics_enabled ? 1 : 0
+  direction         = "ingress"
+  ethertype         = "IPv4"
+  protocol          = "tcp"
+  port_range_min    = 8428
+  port_range_max    = 8428
+  remote_group_id   = openstack_networking_secgroup_v2.controller.id
+  description       = "VictoriaMetrics: agent metric import + console PromQL"
+  security_group_id = openstack_networking_secgroup_v2.db.id
+}
+
 resource "openstack_networking_secgroup_rule_v2" "db_postgres" {
   direction         = "ingress"
   ethertype         = "IPv4"
