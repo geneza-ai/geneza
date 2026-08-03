@@ -181,6 +181,74 @@ export async function exchangeHandoff(code: string): Promise<boolean> {
   return false
 }
 
+// --- hosted-UI launch (embedded, node-scoped) -------------------------------
+
+export interface LaunchScope {
+  nodeId: string
+  nodeName: string
+  actions: string[]
+}
+
+interface LaunchBody {
+  token?: string
+  scope?: LaunchScope
+}
+
+/**
+ * The single-use launch code from a hosted-UI launch URL. It rides the FRAGMENT
+ * (#lc=…), never the query string: fragments are not sent to servers, so the
+ * code stays out of the controller's access log, the provider portal's proxy
+ * log, and every Referer header.
+ */
+export function launchCode(): string | null {
+  const hash = window.location.hash.replace(/^#/, "")
+  return new URLSearchParams(hash).get("lc")
+}
+
+/**
+ * Swap a launch code for a node-scoped session. The token is held in memory
+ * ONLY — never sessionStorage — so it dies with the frame and leaves nothing
+ * behind in the provider's page.
+ *
+ * credentials: "same-origin" sends the geneza_launch companion cookie on the
+ * top-level flow (the second secret). An embedded launch has no such cookie and
+ * the server does not expect one — the record decides, not the client.
+ */
+export async function exchangeLaunch(code: string): Promise<LaunchScope | null> {
+  const res = await fetch("/api/v1/session/launch", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ code }),
+  })
+  if (!res.ok) return null
+  const data = (await res.json()) as LaunchBody
+  if (!data.token || !data.scope) return null
+  inMemoryToken = data.token
+  return data.scope
+}
+
+export interface RenewResult {
+  expiresUnix: number
+  maxExpiresUnix: number
+}
+
+/**
+ * Slide a launch session's expiry forward. Returns null when the server refuses
+ * — revoked, suspended, or already at its absolute ceiling — which the caller
+ * surfaces rather than retrying, since none of those recover on their own.
+ */
+export async function renewLaunchSession(): Promise<RenewResult | null> {
+  const token = getToken()
+  if (!token) return null
+  const res = await fetch("/api/v1/session/renew", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!res.ok) return null
+  return (await res.json()) as RenewResult
+}
+
 // --- OIDC discovery + Authorization Code + PKCE (to obtain an id_token) -----
 
 async function discover(issuer: string): Promise<DiscoveryDoc> {

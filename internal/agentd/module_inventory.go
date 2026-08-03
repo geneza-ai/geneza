@@ -383,8 +383,11 @@ func (m *inventoryModule) collectOSPackages(ctx context.Context, root string) ([
 		Extractors: exts,
 		ScanRoots:  scalibrfs.RealFSScanRoots(root),
 		// The walker requires a metric sink; we record none.
-		Stats:      stats.NoopCollector{},
-		DirsToSkip: dirsToSkip,
+		Stats: stats.NoopCollector{},
+		// Filtered like the language scan: scalibr rejects a DirsToSkip entry
+		// outside the scan root, so a custom scan_root must not pass the
+		// absolute host-wide set.
+		DirsToSkip: skipDirsUnder(root),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("scan os packages under %s: %w", root, err)

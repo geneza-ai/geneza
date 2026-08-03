@@ -7,6 +7,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	genezav1 "geneza.io/internal/pb/geneza/v1"
+	"geneza.io/internal/types"
 )
 
 type workspaceAPIService struct {
@@ -62,10 +63,19 @@ func (u *workspaceAPIService) ListServices(ctx context.Context, req *genezav1.Li
 	return &genezav1.ListServicesResponse{Services: out}, nil
 }
 
+// CreateSession brokers a session for a mTLS-authenticated caller. The client
+// path comes from the VERIFIED CERT, never from req.client_path — a client that
+// could assert "native" would defeat a require_native rule. A cert may carry a
+// web pin (issued by this CA for the web-shell proxy following a cross-controller
+// redirect); since that pin only ever narrows, honouring it is safe, while
+// ignoring it would let an HA web shell be brokered as native.
 func (u *workspaceAPIService) CreateSession(ctx context.Context, req *genezav1.CreateSessionRequest) (*genezav1.CreateSessionResponse, error) {
 	ident, _, ok := identityFrom(ctx)
 	if !ok {
 		return nil, status.Error(codes.Unauthenticated, "no verified identity")
+	}
+	if ident.ClientPath == types.PathWeb {
+		return u.s.broker.CreateSessionWeb(ctx, ident, req)
 	}
 	return u.s.broker.CreateSession(ctx, ident, req)
 }

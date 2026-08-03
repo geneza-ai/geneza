@@ -21,6 +21,18 @@ var bucketHandoffCodes = []byte("handoff_codes") // sha256(code) -> HandoffRecor
 // HandoffRecord is a resolved-but-not-yet-minted session, pending the SPA
 // exchange. CookieHash is the second secret: a leaked code is useless without
 // the companion cookie.
+//
+// A hosted-UI LAUNCH ticket (docs/hosted-ui-launch-spec.md) reuses this record
+// with an EMPTY CookieHash, because the embed flow cannot rely on a cookie: the
+// launch page is loaded inside the cloud provider's portal, where a third-party
+// cookie write is blocked by Safari ITP and Chrome's phase-out. It substitutes
+// fragment-only delivery (never in a Referer or an access log) + a shorter TTL +
+// a narrowed scope for the second secret.
+//
+// The two redeem paths are MUTUALLY EXCLUSIVE and each fails closed against the
+// other's records: RedeemHandoff refuses a record with no cookie leg, and
+// RedeemLaunch refuses one that has it. So a cookie-bound handoff can never be
+// spent through the cookieless path.
 type HandoffRecord struct {
 	CodeHash    string       `json:"code_hash"`
 	CookieHash  string       `json:"cookie_hash"`
@@ -50,8 +62,88 @@ func (s *bboltStore) RedeemHandoff(code, cookie string, now int64) (sessionInput
 		if now >= rec.ExpiresUnix {
 			return fmt.Errorf("handoff code expired")
 		}
-		if rec.CookieHash != hashToken(cookie) {
+		// A hosted-UI launch ticket is never redeemable here. Discriminate on the
+		// SCOPE, not on the cookie: a bound launch ticket also carries a cookie,
+		// so a cookie test would let one through and mint an UNSCOPED session
+		// from it — silently turning a one-node launch into a full console.
+		if rec.Session.Scope != nil {
+			return fmt.Errorf("not a handoff code")
+		}
+		if rec.CookieHash == "" || rec.CookieHash != hashToken(cookie) {
 			return fmt.Errorf("handoff cookie mismatch")
+		}
+		out = rec.Session
+		return nil
+	})
+	return out, err
+}
+
+// RedeemLaunch atomically consumes a hosted-UI launch ticket: verify it exists,
+// is unexpired and unredeemed, check whatever second secret the record carries,
+// then DELETE it and return the resolved (scoped) session input. Single bbolt
+// Update = single-use; the code burns on any redeem attempt, successful or not.
+//
+// The cookie requirement is a property of the RECORD, not of the caller:
+//   - CookieHash set → the cookie must match (the top-level flow, where stage one
+//     minted code and cookie together);
+//   - CookieHash empty → allowed only for an embed-scoped ticket, which cannot
+//     carry a cookie because a third-party iframe may not be able to set one.
+//
+// So an unbound top-level ticket cannot be spent cookielessly by presenting it
+// straight to the redeem endpoint.
+func (s *bboltStore) RedeemLaunch(code, cookie string, now int64) (sessionInput, error) {
+	ch := hashToken(code)
+	var out sessionInput
+	err := s.db.Update(func(tx *bbolt.Tx) error {
+		var rec HandoffRecord
+		if err := getJSON(tx, bucketHandoffCodes, ch, &rec); err != nil {
+			return fmt.Errorf("invalid or used launch code")
+		}
+		_ = tx.Bucket(bucketHandoffCodes).Delete([]byte(ch))
+		if now >= rec.ExpiresUnix {
+			return fmt.Errorf("launch code expired")
+		}
+		// Scope, not CookieHash, is what tells the two ticket kinds apart: a
+		// trusted-dashboard handoff carries no scope and must never be spendable here.
+		if rec.Session.Scope == nil {
+			return fmt.Errorf("not a launch code")
+		}
+		if rec.CookieHash != "" {
+			if rec.CookieHash != hashToken(cookie) {
+				return fmt.Errorf("launch cookie mismatch")
+			}
+		} else if !rec.Session.Scope.Embed {
+			return fmt.Errorf("this launch ticket must be bound before it is redeemed")
+		}
+		out = rec.Session
+		return nil
+	})
+	return out, err
+}
+
+// RedeemLaunchBind consumes an UNBOUND top-level launch ticket — stage one of
+// the two-stage flow, where the controller mints the browser-facing code and its
+// companion cookie together and re-stores them as a fresh record. It is the
+// exact complement of RedeemLaunch: it accepts only what RedeemLaunch refuses
+// (no cookie leg, not embed-scoped), so neither stage can consume the other's
+// tickets and a bound ticket can never be re-bound.
+func (s *bboltStore) RedeemLaunchBind(code string, now int64) (sessionInput, error) {
+	ch := hashToken(code)
+	var out sessionInput
+	err := s.db.Update(func(tx *bbolt.Tx) error {
+		var rec HandoffRecord
+		if err := getJSON(tx, bucketHandoffCodes, ch, &rec); err != nil {
+			return fmt.Errorf("invalid or used launch code")
+		}
+		_ = tx.Bucket(bucketHandoffCodes).Delete([]byte(ch)) // single-use
+		if now >= rec.ExpiresUnix {
+			return fmt.Errorf("launch code expired")
+		}
+		if rec.Session.Scope == nil {
+			return fmt.Errorf("not a launch code")
+		}
+		if rec.CookieHash != "" || rec.Session.Scope.Embed {
+			return fmt.Errorf("this launch ticket is not awaiting a bind")
 		}
 		out = rec.Session
 		return nil

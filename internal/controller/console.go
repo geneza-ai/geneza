@@ -63,6 +63,9 @@ type consoleUser struct {
 	Roles       []string
 	Admin       bool
 	ExpiresUnix int64
+	// Scope is non-nil for a hosted-UI launch session: the caller is pinned to
+	// one node and one action set. Nil for every ordinary console session.
+	Scope *SessionScope
 }
 
 func (c *consoleAPI) handler() http.Handler {
@@ -72,9 +75,11 @@ func (c *consoleAPI) handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/session/local", c.handleSessionLocal)
 	mux.HandleFunc("POST /api/v1/session/oidc", c.handleSessionOIDC)
 	mux.HandleFunc("POST /api/v1/session/keystone", c.handleSessionKeystone)
-	// Session lifecycle (the SPA bootstrap probe + logout).
-	mux.Handle("GET /api/v1/session", c.auth(c.handleSession))
-	mux.Handle("DELETE /api/v1/session", c.auth(c.handleLogout))
+	// Session lifecycle (the SPA bootstrap probe + logout). Scoped: an embedded
+	// launch session must be able to read its own identity and end itself.
+	mux.Handle("GET /api/v1/session", c.authScoped(c.handleSession))
+	mux.Handle("DELETE /api/v1/session", c.authScoped(c.handleLogout))
+	mux.Handle("POST /api/v1/session/renew", c.authScoped(c.handleSessionRenew))
 	// Presence hardware-factor enroll: begin/finish store an EnrolledCredential
 	// so the software-stub gate refuses software thereafter.
 	mux.Handle("POST /api/v1/presence/enroll/begin", c.auth(c.handleEnrollBegin))
@@ -92,6 +97,12 @@ func (c *consoleAPI) handler() http.Handler {
 	// SPA swaps the returned single-use code for a session.
 	mux.HandleFunc("POST /openstack/{svc}", c.handleTrustedDashboard)
 	mux.HandleFunc("POST /api/v1/session/handoff", c.handleSessionHandoff)
+	// Hosted-UI launch: the cloud's tenant portal mints a single-use, node-scoped
+	// URL (server-to-server, carrying the tenant's OWN keystone token); the embed
+	// page swaps the code for a scoped session.
+	mux.HandleFunc("POST /openstack/{svc}/launch", c.handleLaunchMint)
+	mux.HandleFunc("GET /launch", c.handleLaunchBind)
+	mux.HandleFunc("POST /api/v1/session/launch", c.handleSessionLaunch)
 	mux.Handle("GET /api/v1/overview", c.auth(c.handleOverview))
 	mux.Handle("GET /api/v1/nodes", c.auth(c.handleNodes))
 	mux.Handle("GET /api/v1/sessions", c.auth(c.handleSessions))
@@ -142,19 +153,46 @@ func (c *consoleAPI) handler() http.Handler {
 	// Browser remote shell (WebSocket; authenticates from ?token= since a WS
 	// handshake can't carry the Authorization header). Policy is enforced
 	// server-side as client_path=web.
-	mux.Handle("POST /api/v1/nodes/{id}/shell-ticket", c.auth(c.handleShellTicket))
+	mux.Handle("POST /api/v1/nodes/{id}/shell-ticket", c.authScoped(c.handleShellTicket))
 	mux.HandleFunc("GET /api/v1/nodes/{id}/shell", c.handleShell)
 	mux.HandleFunc("/", c.serveSPA)
 	return secHeaders(mux)
 }
 
+// embedPathPrefix is the ONLY part of the console that may ever be framed, and
+// only when a cloud opts in with an exact frame-ancestors allow-list. Every
+// other path — the whole console — keeps X-Frame-Options: DENY.
+const embedPathPrefix = "/embed/"
+
 func secHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("X-Frame-Options", "DENY")
+		if !strings.HasPrefix(r.URL.Path, embedPathPrefix) {
+			// The embed document sets its own framing policy (CSP frame-ancestors,
+			// which XFO would otherwise contradict); serveSPA falls back to DENY
+			// there whenever embedding is not explicitly allowed.
+			w.Header().Set("X-Frame-Options", "DENY")
+		}
+		// A launch URL carries its single-use code in the fragment, which is never
+		// sent anywhere — but keep referrers off the provider's portal regardless.
 		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
 		next.ServeHTTP(w, r)
 	})
+}
+
+// embedFramingHeaders emits the framing policy for an /embed/ document. The
+// ?cloud= query is a ROUTING hint only — it selects which allow-list to serve
+// and authenticates nothing (the launch code, and therefore all authority,
+// lives in the fragment and is exchanged later). An unknown cloud, a cloud with
+// launch or embedding off, or a missing hint all fail closed to 'none'.
+func (c *consoleAPI) embedFramingHeaders(w http.ResponseWriter, r *http.Request) {
+	ancestors := c.s.cfg.Clouds[r.URL.Query().Get("cloud")].frameAncestors()
+	if len(ancestors) == 0 {
+		w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
+		w.Header().Set("X-Frame-Options", "DENY")
+		return
+	}
+	w.Header().Set("Content-Security-Policy", "frame-ancestors "+strings.Join(ancestors, " "))
 }
 
 // ---- auth ----
@@ -248,6 +286,7 @@ func (c *consoleAPI) authenticateSessionHash(tokenHash string) (*consoleUser, er
 		Roles:       rec.Roles,
 		Admin:       rec.Admin,
 		ExpiresUnix: rec.ExpiresUnix,
+		Scope:       rec.Scope,
 	}, nil
 }
 
@@ -259,6 +298,12 @@ func isWorkspaceAdmin(roles []string) bool {
 	return contains(roles, roleAdmin) || contains(roles, roleWSAdmin)
 }
 
+// auth is the ordinary console gate. It refuses a SCOPED (hosted-UI launch)
+// session outright: a launch session reaches only the handful of routes that
+// deliberately opt in via authScoped. This is an allow-list by construction —
+// a route added to the console later is denied to launch sessions until someone
+// changes its wrapper, rather than being exposed by forgetting a deny-list
+// entry. It holds even for endpoints the caller's own roles would permit.
 func (c *consoleAPI) auth(fn func(http.ResponseWriter, *http.Request, *consoleUser)) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		u, err := c.authenticate(r)
@@ -268,6 +313,33 @@ func (c *consoleAPI) auth(fn func(http.ResponseWriter, *http.Request, *consoleUs
 		}
 		if len(u.Roles) == 0 {
 			writeErr(w, http.StatusForbidden, "no roles for this user")
+			return
+		}
+		if u.Scope != nil {
+			writeErr(w, http.StatusForbidden, "this session is scoped to a single node and may not use the console API")
+			return
+		}
+		fn(w, r, u)
+	})
+}
+
+// authScoped admits BOTH ordinary console sessions and hosted-UI launch
+// sessions. It is used only on the few routes an embedded shell needs. When the
+// caller is scoped and the route is node-addressed, the node in the path must be
+// the one the launch pinned — a scoped session can never address a second node.
+func (c *consoleAPI) authScoped(fn func(http.ResponseWriter, *http.Request, *consoleUser)) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		u, err := c.authenticate(r)
+		if err != nil {
+			writeErr(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		if len(u.Roles) == 0 {
+			writeErr(w, http.StatusForbidden, "no roles for this user")
+			return
+		}
+		if id := r.PathValue("id"); id != "" && !u.Scope.allowsNode(id) {
+			writeErr(w, http.StatusForbidden, "this session is scoped to a different node")
 			return
 		}
 		fn(w, r, u)
@@ -675,6 +747,9 @@ func (c *consoleAPI) serveSPA(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(r.URL.Path, "/api/") {
 		http.NotFound(w, r)
 		return
+	}
+	if strings.HasPrefix(r.URL.Path, embedPathPrefix) {
+		c.embedFramingHeaders(w, r)
 	}
 	clean := filepath.Clean(r.URL.Path)
 	p := filepath.Join(c.static, clean)

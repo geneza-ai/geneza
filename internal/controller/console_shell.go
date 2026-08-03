@@ -65,6 +65,12 @@ func (c *consoleAPI) handleShellTicket(w http.ResponseWriter, r *http.Request, u
 		writeErr(w, http.StatusNotFound, "node not found")
 		return
 	}
+	// A hosted-UI launch session may only mint a ticket for the action its launch
+	// authorized. (authScoped already pinned the node; this pins the verb.)
+	if !u.Scope.allowsAction(types.ActionShell) {
+		writeErr(w, http.StatusForbidden, "this session is not authorized for shell access")
+		return
+	}
 	tok, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !ok || tok == "" {
 		writeErr(w, http.StatusUnauthorized, "unauthorized")
@@ -97,6 +103,14 @@ func (c *consoleAPI) handleShell(w http.ResponseWriter, r *http.Request) {
 	nodeID := r.PathValue("id")
 	if nodeID != ticketNode {
 		writeErr(w, http.StatusForbidden, "ticket is scoped to a different node")
+		return
+	}
+	// Re-pin the launch scope on the socket itself. The ticket was already
+	// node-scoped at mint, but this path re-reads the session (certs rotate,
+	// sessions get revoked) so it re-checks the scope from the same record —
+	// never inferring authority from the ticket alone.
+	if !u.Scope.allowsNode(nodeID) || !u.Scope.allowsAction(types.ActionShell) {
+		writeErr(w, http.StatusForbidden, "this session is scoped to a different node or action")
 		return
 	}
 	node, err := c.s.store.FindNode(u.Workspace, nodeID)
@@ -181,8 +195,11 @@ func (c *consoleAPI) runWebShell(ctx context.Context, conn *websocket.Conn, u *c
 		wsClose(conn, "key generation failed")
 		return
 	}
-	ident := &ca.Identity{Kind: ca.KindUser, Workspace: u.Workspace, Name: u.Name, Roles: u.Roles, Provider: u.Provider, Subject: u.Subject}
-	resp, err := c.s.broker.CreateSessionWeb(ctx, ident, &genezav1.CreateSessionRequest{
+	// Broker the session, following a cross-controller redirect when this
+	// controller does not hold the target agent's control stream. Without this an
+	// HA fleet would fail every web shell whose node is homed elsewhere — the
+	// redirect response carries no grant and no relay floor.
+	resp, ownerClose, err := c.brokerWebSession(ctx, u, &genezav1.CreateSessionRequest{
 		Node:           node.ID,
 		Action:         types.ActionShell,
 		WantPty:        true,
@@ -191,6 +208,9 @@ func (c *consoleAPI) runWebShell(ctx context.Context, conn *websocket.Conn, u *c
 	if err != nil {
 		wsClose(conn, "access denied: "+statusMessage(err))
 		return
+	}
+	if ownerClose != nil {
+		defer func() { _ = ownerClose() }()
 	}
 
 	pool, err := ca.PoolFromPEM(c.s.ca.RootsPEM)

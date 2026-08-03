@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"net/url"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -622,6 +623,126 @@ type CloudConfig struct {
 	// ControllerGRPC is the host:port the agent dials for the enroll RPC; falls back
 	// to host(ControllerURL):7401.
 	ControllerGRPC string `yaml:"controller_grpc,omitempty"`
+	// Launch gates the hosted-UI launch plane for this cloud: the provider's own
+	// tenant portal minting a one-click, node-scoped shell URL. Opt-in, default off.
+	Launch LaunchConfig `yaml:"launch,omitempty"`
+}
+
+// LaunchConfig is the hosted-UI launch plane (docs/hosted-ui-launch-spec.md):
+// the cloud's tenant portal presents a signed-in human's OWN Keystone token and
+// gets back a single-use URL that opens a shell on one instance. Off by default.
+type LaunchConfig struct {
+	// Allow enables POST /openstack/<svc-uid>/launch for this cloud.
+	Allow bool `yaml:"allow,omitempty"`
+	// Actions is the allow-list of session actions a launch may request
+	// (default ["shell"]). An action absent here is refused at mint AND pinned
+	// out of the minted session's scope.
+	Actions []string `yaml:"actions,omitempty"`
+	// TicketTTL bounds the single-use launch code (default 2m, max 15m). This is
+	// only the window between the portal minting a URL and the tenant's browser
+	// spending it — NOT the session length. It has to absorb a background tab, a
+	// slow first paint, and a cold bundle fetch, so it is not as tight as it looks.
+	TicketTTL Duration `yaml:"ticket_ttl,omitempty"`
+	// MaxSessionTTL is the scoped session's IDLE window (default 15m): how long
+	// it survives without a renewal. An attended shell renews and keeps going;
+	// an abandoned one dies here. Still capped by the Keystone token's expiry.
+	MaxSessionTTL Duration `yaml:"max_session_ttl,omitempty"`
+	// AbsoluteTTL is the hard ceiling renewal can never slide past (default 8h),
+	// so a shell held open forever still ends and the tenant must re-launch from
+	// the portal — which re-validates their Keystone token and re-runs policy.
+	AbsoluteTTL Duration `yaml:"absolute_ttl,omitempty"`
+	// Embed allows the launched UI to be FRAMED by the provider's portal.
+	// Separately opt-in: a provider can ship the launch button in a new tab
+	// without ever allowing Geneza to be embedded.
+	Embed EmbedConfig `yaml:"embed,omitempty"`
+}
+
+// EmbedConfig is the iframe-embedding allow-list for a cloud's launched UI. It
+// is the entire anti-clickjacking story, so the origins are exact and the
+// config loader rejects anything looser (wildcards, paths, bare hosts).
+type EmbedConfig struct {
+	Allow bool `yaml:"allow,omitempty"`
+	// FrameAncestors are exact scheme://host[:port] origins permitted to frame
+	// the embed UI, emitted as CSP frame-ancestors. Required when Allow is set.
+	FrameAncestors []string `yaml:"frame_ancestors,omitempty"`
+}
+
+// launchableActions are the session actions a hosted-UI launch may ever carry.
+// "shell" today; "agent" (a live agentic session) lands here as its OWN action,
+// deliberately never folded into shell — a human at a prompt and an LLM driving
+// that prompt are different grants.
+var launchableActions = map[string]bool{types.ActionShell: true}
+
+func (c CloudConfig) launchActions() []string {
+	if len(c.Launch.Actions) > 0 {
+		return c.Launch.Actions
+	}
+	return []string{types.ActionShell}
+}
+
+// allowsLaunchAction reports whether this cloud permits launching an action.
+func (c CloudConfig) allowsLaunchAction(action string) bool {
+	return contains(c.launchActions(), action)
+}
+
+func (c CloudConfig) launchTicketTTL() time.Duration {
+	if c.Launch.TicketTTL > 0 {
+		return c.Launch.TicketTTL.D()
+	}
+	return 2 * time.Minute
+}
+
+func (c CloudConfig) launchSessionTTL() time.Duration {
+	if c.Launch.MaxSessionTTL > 0 {
+		return c.Launch.MaxSessionTTL.D()
+	}
+	return 15 * time.Minute
+}
+
+func (c CloudConfig) launchAbsoluteTTL() time.Duration {
+	if c.Launch.AbsoluteTTL > 0 {
+		return c.Launch.AbsoluteTTL.D()
+	}
+	return 8 * time.Hour
+}
+
+// frameAncestors returns the origins allowed to frame this cloud's embed UI, or
+// nil when embedding is off (the caller then emits frame-ancestors 'none').
+func (c CloudConfig) frameAncestors() []string {
+	if !c.Launch.Allow || !c.Launch.Embed.Allow {
+		return nil
+	}
+	return c.Launch.Embed.FrameAncestors
+}
+
+// validateFrameAncestor enforces an EXACT origin: scheme://host[:port], https
+// (http only for loopback development), and nothing else. A wildcard, a path,
+// or a bare host is a config-load error rather than a silently wide allow-list.
+func validateFrameAncestor(origin string) error {
+	if origin == "" {
+		return fmt.Errorf("empty origin")
+	}
+	if strings.Contains(origin, "*") {
+		return fmt.Errorf("%q: wildcards are not permitted (name each origin exactly)", origin)
+	}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return fmt.Errorf("%q: %w", origin, err)
+	}
+	if u.Scheme != "https" && !(u.Scheme == "http" && isLoopbackHost(u.Hostname())) {
+		return fmt.Errorf("%q: must be an https:// origin (http:// only for loopback)", origin)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("%q: missing host", origin)
+	}
+	if u.Path != "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
+		return fmt.Errorf("%q: must be scheme://host[:port] with no path, query, fragment or userinfo", origin)
+	}
+	return nil
+}
+
+func isLoopbackHost(h string) bool {
+	return h == "localhost" || h == "127.0.0.1" || h == "::1"
 }
 
 func (c CloudConfig) endpointInterface() string {
@@ -1179,6 +1300,61 @@ func (c *Config) validate() error {
 		}
 		if reservedRoles[cl.DefaultRole] {
 			return fmt.Errorf("clouds[%q].default_role = %q: a reserved cluster role cannot be a keystone default (use %q)", uid, cl.DefaultRole, roleWSAdmin)
+		}
+		// Hosted-UI launch plane. Every gate here fails the LOAD rather than
+		// degrading at runtime: this surface is tenant-facing, so a typo must be
+		// loud, never a silently wider allow-list.
+		if cl.Launch.Allow {
+			// The launch URL handed to the provider's portal is absolute, built
+			// from console.external_url. Without it the portal would be redirected
+			// to a RELATIVE path that resolves against the portal's own host — a
+			// broken launch — and the redeem's origin check would silently no-op
+			// (checkShellOrigin allows everything when it has no origin to pin).
+			ext := strings.TrimRight(c.Console.ExternalURL, "/")
+			if ext == "" {
+				return fmt.Errorf("clouds[%q].launch.allow requires console.external_url to be set (the launch URL handed to the portal must be absolute, and the redeem origin check pins against it)", uid)
+			}
+			u, uerr := url.Parse(ext)
+			if uerr != nil || u.Host == "" {
+				return fmt.Errorf("console.external_url = %q is not a valid absolute origin (required by clouds[%q].launch)", c.Console.ExternalURL, uid)
+			}
+			// The launch cookie is Secure, so a plain-http console silently drops
+			// it and every top-level launch fails at redeem. Refuse to start
+			// rather than ship that.
+			if u.Scheme != "https" && !isLoopbackHost(u.Hostname()) {
+				return fmt.Errorf("console.external_url = %q must be https for clouds[%q].launch (the launch cookie is Secure; a plain-http console would drop it and every launch would fail at redeem)", c.Console.ExternalURL, uid)
+			}
+			for _, a := range cl.launchActions() {
+				if !launchableActions[a] {
+					return fmt.Errorf("clouds[%q].launch.actions: %q is not launchable (allowed: shell)", uid, a)
+				}
+			}
+			if ttl := cl.launchTicketTTL(); ttl > 15*time.Minute {
+				return fmt.Errorf("clouds[%q].launch.ticket_ttl = %s: a single-use launch code may live at most 15m", uid, ttl)
+			}
+			if ttl := cl.launchSessionTTL(); ttl > 24*time.Hour {
+				return fmt.Errorf("clouds[%q].launch.max_session_ttl = %s: implausibly long for a scoped launch session", uid, ttl)
+			}
+			// The ceiling must actually bound the idle window, or renewal would
+			// silently be a no-op and the session would end at the first window.
+			if abs, idle := cl.launchAbsoluteTTL(), cl.launchSessionTTL(); abs < idle {
+				return fmt.Errorf("clouds[%q].launch.absolute_ttl (%s) is shorter than max_session_ttl (%s): the ceiling must bound the renewal window", uid, abs, idle)
+			}
+			if abs := cl.launchAbsoluteTTL(); abs > 7*24*time.Hour {
+				return fmt.Errorf("clouds[%q].launch.absolute_ttl = %s: a tenant-facing launch may not be renewable for more than 7d", uid, abs)
+			}
+			if cl.Launch.Embed.Allow {
+				if len(cl.Launch.Embed.FrameAncestors) == 0 {
+					return fmt.Errorf("clouds[%q].launch.embed.allow is true but frame_ancestors is empty: name the exact portal origin(s) permitted to frame the console", uid)
+				}
+				for _, o := range cl.Launch.Embed.FrameAncestors {
+					if err := validateFrameAncestor(o); err != nil {
+						return fmt.Errorf("clouds[%q].launch.embed.frame_ancestors: %w", uid, err)
+					}
+				}
+			}
+		} else if cl.Launch.Embed.Allow {
+			return fmt.Errorf("clouds[%q].launch.embed.allow is true but launch.allow is false: embedding without launch has no effect", uid)
 		}
 	}
 	// Console must never be reachable without a login mechanism (fail closed):

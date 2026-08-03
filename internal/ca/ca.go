@@ -61,6 +61,18 @@ type Identity struct {
 	// mutable, so suspension/presence key on (workspace, provider, subject), never
 	// on Name. Empty Subject on a suspendable/presence path => cannot-verify => deny.
 	Subject string
+	// ClientPath pins a cert to a RESTRICTED session path ("web"). It exists so
+	// the in-process web-shell proxy can follow a cross-controller redirect and
+	// have the owning controller still broker the session as web — otherwise the
+	// owner would treat an ordinary user cert as native and a `require_native`
+	// rule (the policy that reserves sensitive targets for the native client)
+	// would be silently bypassed on the web path under HA.
+	//
+	// It is MONOTONIC: it can only narrow. An empty value means native (the
+	// default), and the only value that does anything is "web", which is strictly
+	// more restricted. So a stolen or forged marked cert can never widen access —
+	// the worst it achieves is restricting itself.
+	ClientPath string
 }
 
 // IdentityClaims is the JSON payload of OIDRolesExt.
@@ -68,6 +80,8 @@ type IdentityClaims struct {
 	Roles    []string `json:"roles,omitempty"`
 	Provider string   `json:"provider,omitempty"`
 	Subject  string   `json:"subject,omitempty"`
+	// ClientPath pins this cert to a restricted session path; see Identity.
+	ClientPath string `json:"client_path,omitempty"`
 }
 
 // CA wraps the issuing certificate and its signer.
@@ -416,6 +430,7 @@ func PeerIdentity(cert *x509.Certificate) (*Identity, error) {
 				id.Roles = claims.Roles
 				id.Provider = claims.Provider
 				id.Subject = claims.Subject
+				id.ClientPath = claims.ClientPath
 			}
 		}
 		if id.Name == "" {

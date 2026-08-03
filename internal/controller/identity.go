@@ -120,6 +120,14 @@ func (ia *identityAuth) authenticateLocal(username, password string) (user, subj
 // device-grant redeem (the only login that yields a CLI cert). Roles are
 // reserved-stripped at the boundary as defense-in-depth.
 func (s *Server) issueUserCert(provider, user, subject, ws string, roles []string, csrPEM []byte, ttl time.Duration) (certPEM []byte, expiresUnix int64, err error) {
+	return s.issueUserCertPath(provider, user, subject, ws, "", roles, csrPEM, ttl)
+}
+
+// issueUserCertPath is issueUserCert with an optional restricted client-path pin
+// (see ca.Identity.ClientPath). Only the web-shell proxy uses the pin, to follow
+// a cross-controller redirect without the owning controller re-classifying the
+// session as native.
+func (s *Server) issueUserCertPath(provider, user, subject, ws, clientPath string, roles []string, csrPEM []byte, ttl time.Duration) (certPEM []byte, expiresUnix int64, err error) {
 	if len(csrPEM) == 0 {
 		return nil, 0, fmt.Errorf("csr is required")
 	}
@@ -131,7 +139,10 @@ func (s *Server) issueUserCert(provider, user, subject, ws string, roles []strin
 		Workspace: ws,
 		Name:      user,
 		TTL:       ttl,
-		Claims:    &ca.IdentityClaims{Roles: stripReservedRoles(roles), Provider: provider, Subject: subject},
+		Claims: &ca.IdentityClaims{
+			Roles: stripReservedRoles(roles), Provider: provider, Subject: subject,
+			ClientPath: clientPath,
+		},
 	})
 	if err != nil {
 		return nil, 0, fmt.Errorf("issue user cert: %w", err)

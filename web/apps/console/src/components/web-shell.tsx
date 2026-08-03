@@ -5,7 +5,8 @@ import "@xterm/xterm/css/xterm.css"
 
 import { api } from "@/api"
 import { desktop, isDesktop } from "@/desktop/bridge"
-import { Button } from "@geneza/ui"
+import { Button, cn } from "@geneza/ui"
+import { useSession } from "@/components/session-context"
 
 type Status = "connecting" | "open" | "closed" | "error"
 
@@ -15,6 +16,7 @@ type Status = "connecting" | "open" | "closed" | "error"
 // native, controller out of the data path) via the Wails bridge — same xterm.js
 // renderer, more native transport.
 export function WebShell({ nodeId, nodeName }: { nodeId: string; nodeName: string }) {
+  const { me } = useSession()
   const holder = useRef<HTMLDivElement>(null)
   const [status, setStatus] = useState<Status>("connecting")
   const [detail, setDetail] = useState<string>("")
@@ -29,11 +31,16 @@ export function WebShell({ nodeId, nodeName }: { nodeId: string; nodeName: strin
       cursorBlink: true,
       fontSize: 13,
       fontFamily:
-        'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
+        '"IBM Plex Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
+      // The design's warm-black terminal, independent of the console theme.
       theme: {
-        background: "#0a0a0a",
-        foreground: "#e5e5e5",
-        cursor: "#e5e5e5",
+        background: "#14130E",
+        foreground: "#ECE8DE",
+        cursor: "#ECE8DE",
+        selectionBackground: "#3A5A40",
+        green: "#6FB377",
+        red: "#E0695C",
+        yellow: "#D4A648",
       },
     })
     const fit = new FitAddon()
@@ -174,28 +181,37 @@ export function WebShell({ nodeId, nodeName }: { nodeId: string; nodeName: strin
     }
   }, [nodeId, generation])
 
+  const statusLine =
+    status === "open"
+      ? `connected · ${nodeName}${me.recordingEnabled ? " · recording at agent" : ""}`
+      : status === "connecting"
+        ? "connecting…"
+        : status === "error"
+          ? detail || "connection error"
+          : detail || "session closed"
+
   return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2 text-sm">
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div
+          className={cn(
+            "flex items-center gap-2.5 rounded-[9px] border px-3.5 py-[9px] font-mono text-xs text-muted-foreground",
+            status === "open" || status === "connecting"
+              ? "border-brand-line bg-brand-tint"
+              : "border-destructive/35 bg-destructive/5"
+          )}
+        >
           <span
-            className={
+            className={cn(
+              "size-[7px] rounded-full",
               status === "open"
-                ? "size-2 rounded-full bg-success"
+                ? "bg-brand animate-live-pulse"
                 : status === "connecting"
-                  ? "size-2 animate-pulse rounded-full bg-warning"
-                  : "size-2 rounded-full bg-destructive"
-            }
+                  ? "bg-warning animate-live-pulse"
+                  : "bg-destructive"
+            )}
           />
-          <span className="text-muted-foreground">
-            {status === "open"
-              ? `Connected to ${nodeName}`
-              : status === "connecting"
-                ? "Connecting…"
-                : status === "error"
-                  ? detail || "Connection error"
-                  : detail || "Session closed"}
-          </span>
+          {statusLine}
         </div>
         {(status === "closed" || status === "error") && (
           <Button
@@ -207,10 +223,18 @@ export function WebShell({ nodeId, nodeName }: { nodeId: string; nodeName: strin
           </Button>
         )}
       </div>
-      <div
-        ref={holder}
-        className="h-[460px] w-full overflow-hidden rounded-md border bg-[#0a0a0a] p-2"
-      />
+      {/* The design's warm-black terminal window: chrome dots + identity strip. */}
+      <div className="overflow-hidden rounded-[14px] border bg-[#14130E]">
+        <div className="flex items-center gap-2 border-b border-[#2A271F] px-4 py-3">
+          <span className="size-2.5 rounded-full bg-[#322E25]" />
+          <span className="size-2.5 rounded-full bg-[#322E25]" />
+          <span className="size-2.5 rounded-full bg-[#322E25]" />
+          <span className="ml-2.5 truncate font-mono text-[11px] text-[#7E7868]">
+            {me.user}@{nodeName} — geneza shell
+          </span>
+        </div>
+        <div ref={holder} className="h-[460px] w-full p-3" />
+      </div>
     </div>
   )
 }

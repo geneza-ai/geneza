@@ -165,6 +165,8 @@ type Store interface {
 	PutToken(token string, rec *TokenRecord) error
 	PutWorkspace(rec *WorkspaceRecord) error
 	RedeemHandoff(code, cookie string, now int64) (sessionInput, error)
+	RedeemLaunch(code, cookie string, now int64) (sessionInput, error)
+	RedeemLaunchBind(code string, now int64) (sessionInput, error)
 	RedeemWSTicket(ticket string, now int64) (sessionTokenHash, nodeID string, err error)
 	RevokeAuthSessionsForSubject(provider, subject string) (int, error)
 	RevokeAuthSessionsForUser(user string) (int, error)
