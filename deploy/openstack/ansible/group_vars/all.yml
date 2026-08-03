@@ -9,7 +9,14 @@ geneza_uid: 65532 # distroless nonroot
 
 geneza_controller_image: "ghcr.io/geneza-ai/geneza-controller:{{ geneza_image_tag }}"
 geneza_relay_image: "ghcr.io/geneza-ai/geneza-relay:{{ geneza_image_tag }}"
-geneza_image_tag: latest
+
+# PIN A VERSION, do not track `latest`. `latest` only moves when a v* tag is
+# pushed, so it silently lags the branch — a deploy from this repo ran a
+# month-old build and nothing said so. Worse, a mutable tag means two
+# controllers provisioned a week apart can end up on different builds, which is
+# a miserable thing to debug in a fleet that is supposed to be homogeneous.
+# Bump this deliberately when you want the fleet to move.
+geneza_image_tag: v0.0.9
 
 # Where the CA material is staged on the OPERATOR's machine between generating it
 # on the primary controller and copying it to the others. Treat this directory as

@@ -184,6 +184,20 @@ A relay in a wholly different cloud works the same way; it needs its own
   replicated service and this Terraform skips building it.
 - **CA root rotation does not exist.** See the certificates section above.
 
+## Upgrading
+
+`geneza_image_tag` in `ansible/group_vars/all.yml` pins the controller and relay
+images to a released version. **Do not set it to `latest`.** That tag only moves
+when a `v*` tag is pushed, so it lags `main` silently — a deploy from this repo
+once ran a month-old build with nobody the wiser. A mutable tag also means two
+controllers provisioned a week apart can end up on different builds.
+
+To move the fleet: bump `geneza_image_tag` and re-run `./deploy.sh`. Controllers
+roll one at a time (`serial: 1`), and a restart drops no live session — sessions
+are end-to-end between client and agent over the relay, so the controller is out
+of the data path. It briefly refuses NEW sessions, which is why the play is
+serialised.
+
 ## Status
 
 Applied and run against **two** live OpenStack clouds on 2026-08-03: acvile
