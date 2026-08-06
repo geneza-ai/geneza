@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { ShieldCheck } from "lucide-react"
+import { ShieldCheck, ShieldQuestion } from "lucide-react"
 
 import { usePolling } from "@/hooks/use-polling"
 import { api } from "@/api"
@@ -8,7 +8,7 @@ import { Card } from "@geneza/ui"
 import { EmptyState, ErrorState } from "@/components/states"
 import { Pagination } from "@/components/data-pagination"
 import { CVETable } from "@/components/cve-table"
-import type { NodeCVEsResponse } from "@/types"
+import type { NodeCVEsResponse, VulnFeedStatus } from "@/types"
 
 const PAGE_SIZE = 25
 
@@ -18,6 +18,12 @@ export function NodeVulnerabilities({ nodeId }: { nodeId: string }) {
   const [affectedOnly, setAffectedOnly] = useState(false)
   const [page, setPage] = useState(1)
   const offset = (page - 1) * PAGE_SIZE
+
+  const { data: feed } = usePolling<VulnFeedStatus>(
+    (s) => api.getVulnFeedStatus(s),
+    300000
+  )
+  const feedReady = !!feed?.enabled && feed.advisoryCount > 0
 
   const { data, error, initialLoading, loading, refresh } =
     usePolling<NodeCVEsResponse>(
@@ -61,13 +67,36 @@ export function NodeVulnerabilities({ nodeId }: { nodeId: string }) {
             Loading…
           </div>
         ) : total === 0 ? (
+          // Distinguish "clean" from "never matched": with no feed, or a feed that
+          // has not synced, this node's inventory has never been compared against
+          // anything, and a reassuring shield icon here is simply wrong.
           <EmptyState
-            icon={<ShieldCheck className="size-8" />}
-            title={affectedOnly ? "No affected findings" : "No findings"}
+            icon={
+              feedReady ? (
+                <ShieldCheck className="size-8" />
+              ) : (
+                <ShieldQuestion className="size-8" />
+              )
+            }
+            title={
+              !feedReady
+                ? "Not scanned"
+                : affectedOnly
+                  ? "No affected findings"
+                  : "No findings"
+            }
             message={
-              affectedOnly
-                ? "Nothing on this node is currently affected."
-                : "No vulnerabilities have been matched against this node's inventory yet."
+              !feedReady
+                ? !feed
+                  ? "Checking the CVE feed…"
+                  : !feed.enabled
+                    ? "No CVE feed is configured on this controller, so this node's inventory has never been matched against an advisory."
+                    : feed.lastError
+                      ? `The ${feed.source} feed has not completed a sync: ${feed.lastError}`
+                      : `The ${feed.source} feed has not finished its first sync yet.`
+                : affectedOnly
+                  ? "Nothing on this node is currently affected."
+                  : "No vulnerabilities have been matched against this node's inventory yet."
             }
           />
         ) : (

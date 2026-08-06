@@ -110,8 +110,15 @@ default, S3 optional); the encryption boundary is identical either way.
 ## Metadata index (new table) — goes into BOTH sql schemas + bbolt
 
 `recordings` keyed `(workspace_id, session_id)`: node_id, principal (durable subject), action,
-started_unix, ended_unix, size_bytes, sha256 (over ciphertext), node_sig, audit_key_id,
-blob_ref (`local:<id>.cast.age` | `s3://…`), truncated, stored_unix. Index on started_unix.
+started_unix, ended_unix, size_bytes, sha256 (over ciphertext), node_sig, node_spki,
+audit_key_id, blob_ref (`local:<id>.cast.age` | `s3://…`), truncated, stored_unix. Index on
+started_unix.
+
+`node_spki` is the DER SubjectPublicKeyInfo of the node cert that produced `node_sig`,
+captured at upload. It is not redundant with the cert on the node: node certs live 24h, so
+without the key as it was at upload, `node_sig` is a signature with nothing to check it
+against — which is what it was for its first several releases. Rows written before it exists
+stay unverifiable, and both clients say so rather than implying the signature passed.
 Mirrors the `sessions` schema convention; must be added through the multi-backend dialect
 (Postgres + MariaDB) AND the bbolt store. Set `SessionRecord.Recorded=true` for a badge
 without a join. NOTE: depends on the multi-DB store refactor landing first.

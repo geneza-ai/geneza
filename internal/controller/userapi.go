@@ -206,7 +206,13 @@ func (u *workspaceAPIService) ListSessions(ctx context.Context, req *genezav1.Li
 	if !ok {
 		return nil, status.Error(codes.Unauthenticated, "no verified identity")
 	}
-	seeAll := !req.GetMineOnly() && hasRole(ident, "admin")
+	// A WORKSPACE admin may widen the view — that is the role a console or device
+	// login can actually hold. Testing the reserved cluster role here meant `ps
+	// --all` silently never widened for anyone who logged in, while the console's
+	// own session list applied no user filter at all: the two surfaces disagreed
+	// about who may see what, which is a bad property for the audit story.
+	seeAll := !req.GetMineOnly() &&
+		(hasRole(ident, roleWSAdmin) || hasRole(ident, roleAdmin) || hasRole(ident, rolePlatformAdmin))
 	q := SessionQuery{
 		Order: "desc", // newest first
 		Page:  Page{Limit: int(req.GetLimit()), Offset: int(req.GetOffset())},

@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"geneza.io/internal/affected"
 	"geneza.io/internal/types"
 	bbolt "go.etcd.io/bbolt"
 )
@@ -57,6 +59,13 @@ var (
 	// advisory is the same fact for every tenant. Any feed writes here through the
 	// same store method; the by-package resolve scans this bucket.
 	bucketAdvisories = []byte("advisories")
+
+	// bucketAdvisoryIdx is the (ecosystem_key, package_name) -> advisory id index.
+	// Without it every per-component lookup was a full scan of the advisories
+	// bucket with a JSON decode per record: on a real feed that is ~400k decodes
+	// per component, so a node with 800 components took minutes of pure CPU. Keys
+	// are "<ecoKey>\x00<name>\x00<id>" so one prefix seek answers a lookup.
+	bucketAdvisoryIdx = []byte("advisory_idx")
 	// bucketImageComponents holds a container image's flattened component set keyed by
 	// content digest, stored ONCE no matter how many nodes (across any tenant) run it.
 	// Global because a sha256 digest is content-addressable: the same image bytes
@@ -107,9 +116,9 @@ var (
 
 // Settings keys.
 const (
-	settingStableVersion        = "stable_version"
-	settingCanaryVersion        = "canary_version"
-	settingCanaryNodes          = "canary_nodes"
+	settingStableVersion = "stable_version"
+	settingCanaryVersion = "canary_version"
+	settingCanaryNodes   = "canary_nodes"
 	// Relay rollout ring, kept on its own keys so a relay rollout never disturbs
 	// the agent ring (the two products roll independently). Same generic settings
 	// KV — no DDL, works byte-for-byte on bbolt and both SQL engines.
@@ -364,9 +373,15 @@ type RecordingRecord struct {
 	StartedUnix int64  `json:"started_unix,omitempty"`
 	EndedUnix   int64  `json:"ended_unix,omitempty"`
 	SizeBytes   int64  `json:"size_bytes,omitempty"`
-	SHA256      string `json:"sha256,omitempty"`       // hex, over the ciphertext
-	NodeSig     []byte `json:"node_sig,omitempty"`     // ECDSA-P256 over the manifest digest
-	AuditKeyID  string `json:"audit_key_id,omitempty"` // the audit recipient the cast was sealed to
+	SHA256  string `json:"sha256,omitempty"`   // hex, over the ciphertext
+	NodeSig []byte `json:"node_sig,omitempty"` // ECDSA-P256 over the manifest digest
+	// NodeSPKI is the DER SubjectPublicKeyInfo of the node cert that signed
+	// NodeSig, captured at upload. Node certs rotate every 24h, so without the key
+	// as it was AT UPLOAD there is nothing to re-verify the signature against
+	// later — which is why the signature shipped for a long time as a header no
+	// client could check.
+	NodeSPKI   []byte `json:"node_spki,omitempty"`
+	AuditKeyID string `json:"audit_key_id,omitempty"` // the audit recipient the cast was sealed to
 	BlobRef     string `json:"blob_ref,omitempty"`     // "local:<id>.cast.age" | "s3://…"
 	Truncated   bool   `json:"truncated,omitempty"`
 	StoredUnix  int64  `json:"stored_unix,omitempty"`
@@ -414,6 +429,10 @@ type ComponentRecord struct {
 	Ecosystem   string `json:"ecosystem,omitempty"`
 	Name        string `json:"name,omitempty"`
 	Version     string `json:"version,omitempty"`
+	// SourceName is the source package this binary package was built from
+	// ("openssl" for "libssl3"). Distro advisories are filed against the source
+	// package, so the by-package lookup indexes BOTH names.
+	SourceName string `json:"source_name,omitempty"`
 	// Distro qualifies the version so a backported fix is compared against the
 	// distro's own patched version, never an upstream one.
 	Distro string `json:"distro,omitempty"`
@@ -468,13 +487,14 @@ type CVEEnrichment struct {
 // reported ("image:<ref>@sha256:<hex>"), kept verbatim so a verdict points at the
 // exact image. Keyed (Digest, Purl, Source).
 type ImageComponentRecord struct {
-	Digest    string `json:"digest"`
-	Purl      string `json:"purl"`
-	Source    string `json:"source"`
-	Ecosystem string `json:"ecosystem,omitempty"`
-	Name      string `json:"name,omitempty"`
-	Version   string `json:"version,omitempty"`
-	Distro    string `json:"distro,omitempty"`
+	Digest     string `json:"digest"`
+	Purl       string `json:"purl"`
+	Source     string `json:"source"`
+	Ecosystem  string `json:"ecosystem,omitempty"`
+	Name       string `json:"name,omitempty"`
+	Version    string `json:"version,omitempty"`
+	SourceName string `json:"source_name,omitempty"`
+	Distro     string `json:"distro,omitempty"`
 }
 
 // ImageCVERecord is one computed verdict for an image digest: a (digest, cve, purl)
@@ -554,7 +574,7 @@ func OpenStore(path string) (Store, error) {
 		return nil, fmt.Errorf("open state db %s: %w", path, err)
 	}
 	err = db.Update(func(tx *bbolt.Tx) error {
-		for _, b := range [][]byte{bucketWS, bucketWorkspaces, bucketNodeWS, bucketTokens, bucketSettings, bucketArtifact, bucketSrcBindings, bucketOSEnroll, bucketRevokedCerts, bucketAuthSessions, bucketDeviceCodes, bucketUserCodes, bucketHandoffCodes, bucketWSTickets, bucketSuspensions, bucketQuarantines, bucketAgentAffinity, bucketRelays, bucketAgentPresence, bucketControllers, bucketAdvisories, bucketImageComponents, bucketImageCVE, bucketManagedCerts, bucketSubdomains, bucketFunnels} {
+		for _, b := range [][]byte{bucketWS, bucketWorkspaces, bucketNodeWS, bucketTokens, bucketSettings, bucketArtifact, bucketSrcBindings, bucketOSEnroll, bucketRevokedCerts, bucketAuthSessions, bucketDeviceCodes, bucketUserCodes, bucketHandoffCodes, bucketWSTickets, bucketSuspensions, bucketQuarantines, bucketAgentAffinity, bucketRelays, bucketAgentPresence, bucketControllers, bucketAdvisories, bucketAdvisoryIdx, bucketImageComponents, bucketImageCVE, bucketManagedCerts, bucketSubdomains, bucketFunnels} {
 			if _, err := tx.CreateBucketIfNotExists(b); err != nil {
 				return err
 			}
@@ -564,6 +584,13 @@ func OpenStore(path string) (Store, error) {
 	if err != nil {
 		db.Close()
 		return nil, err
+	}
+	// An existing store has advisories but no index entries; build them once.
+	// Skipping this would make every lookup return nothing after the upgrade —
+	// silently, and indistinguishable from a clean fleet.
+	if err := backfillAdvisoryIndex(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("build advisory index: %w", err)
 	}
 	return &bboltStore{db: db}, nil
 }
@@ -1600,6 +1627,7 @@ func (s *bboltStore) ListNodeComponents(ws, nodeID string) ([]ComponentRecord, e
 // index, so it scans the workspace's components and filters — the same in-memory
 // filter the other bbolt list views use; the SQL store serves it from an index.
 func (s *bboltStore) ListComponentsByPackage(ws, ecosystem, name string) ([]ComponentRecord, error) {
+	key := affected.EcosystemKey(ecosystem)
 	var out []ComponentRecord
 	err := s.db.View(func(tx *bbolt.Tx) error {
 		b := wsChildR(tx, ws, childComponents)
@@ -1611,7 +1639,7 @@ func (s *bboltStore) ListComponentsByPackage(ws, ecosystem, name string) ([]Comp
 			if err := json.Unmarshal(v, &rec); err != nil {
 				return err
 			}
-			if rec.Ecosystem == ecosystem && rec.Name == name {
+			if affected.EcosystemKey(rec.Ecosystem) == key && componentNamed(rec.Name, rec.SourceName, name) {
 				out = append(out, rec)
 			}
 			return nil
@@ -1621,6 +1649,13 @@ func (s *bboltStore) ListComponentsByPackage(ws, ecosystem, name string) ([]Comp
 		return nil, err
 	}
 	return out, nil
+}
+
+// componentNamed reports whether a stored component answers to an advisory's
+// package name. Distro advisories name the SOURCE package ("openssl") while the
+// installed component is a binary split of it ("libssl3"), so both names resolve.
+func componentNamed(name, sourceName, want string) bool {
+	return name == want || (sourceName != "" && sourceName == want)
 }
 
 func (s *bboltStore) UpsertNodeCVE(rec *NodeCVERecord) error {
@@ -1916,6 +1951,7 @@ func (s *bboltStore) ListImageComponents(digest string) ([]ImageComponentRecord,
 // ListComponentsByPackage but over the global image set, so a changed advisory
 // re-matches only the digests that carry its package, never every digest.
 func (s *bboltStore) ImageDigestsForPackage(ecosystem, name string) ([]string, error) {
+	key := affected.EcosystemKey(ecosystem)
 	seen := map[string]struct{}{}
 	var out []string
 	err := s.db.View(func(tx *bbolt.Tx) error {
@@ -1924,7 +1960,7 @@ func (s *bboltStore) ImageDigestsForPackage(ecosystem, name string) ([]string, e
 			if err := json.Unmarshal(v, &rec); err != nil {
 				return err
 			}
-			if rec.Ecosystem == ecosystem && rec.Name == name {
+			if affected.EcosystemKey(rec.Ecosystem) == key && componentNamed(rec.Name, rec.SourceName, name) {
 				if _, ok := seen[rec.Digest]; !ok {
 					seen[rec.Digest] = struct{}{}
 					out = append(out, rec.Digest)
@@ -2150,36 +2186,107 @@ func (s *bboltStore) EnrichImageCVEs(scores map[string]CVEEnrichment) (int, erro
 func (s *bboltStore) PutAdvisories(recs []AdvisoryRecord) error {
 	return s.db.Update(func(tx *bbolt.Tx) error {
 		b := tx.Bucket(bucketAdvisories)
+		idx := tx.Bucket(bucketAdvisoryIdx)
 		for i := range recs {
+			// A re-written advisory may have moved package: drop its old index entry
+			// before writing the new one, or a stale key resolves to a record that no
+			// longer names that package.
+			if old := b.Get([]byte(recs[i].ID)); old != nil {
+				var prev AdvisoryRecord
+				if json.Unmarshal(old, &prev) == nil {
+					if k := advisoryIdxKey(prev.Ecosystem, prev.PackageName, prev.ID); k != nil {
+						_ = idx.Delete(k)
+					}
+				}
+			}
 			if err := putJSONB(b, recs[i].ID, &recs[i]); err != nil {
 				return err
+			}
+			if k := advisoryIdxKey(recs[i].Ecosystem, recs[i].PackageName, recs[i].ID); k != nil {
+				if err := idx.Put(k, nil); err != nil {
+					return err
+				}
 			}
 		}
 		return nil
 	})
 }
 
-// AdvisoriesForPackage resolves the advisories filed against (ecosystem, name),
-// the matcher's inner lookup. bbolt scans and filters; the SQL store uses the
-// (ecosystem, package_name) index.
-func (s *bboltStore) AdvisoriesForPackage(ecosystem, name string) ([]AdvisoryRecord, error) {
-	var out []AdvisoryRecord
-	err := s.db.View(func(tx *bbolt.Tx) error {
-		return tx.Bucket(bucketAdvisories).ForEach(func(_, v []byte) error {
+// backfillAdvisoryIndex populates the (ecosystem_key, package) index for advisories
+// stored before it existed. It is a no-op once the index is non-empty, so a normal
+// open pays only a bucket-stats read.
+func backfillAdvisoryIndex(db *bbolt.DB) error {
+	return db.Update(func(tx *bbolt.Tx) error {
+		adv := tx.Bucket(bucketAdvisories)
+		idx := tx.Bucket(bucketAdvisoryIdx)
+		if adv.Stats().KeyN == 0 || idx.Stats().KeyN > 0 {
+			return nil
+		}
+		slog.Info("building advisory index", "component", "store", "advisories", adv.Stats().KeyN)
+		return adv.ForEach(func(_, v []byte) error {
 			var rec AdvisoryRecord
 			if err := json.Unmarshal(v, &rec); err != nil {
 				return err
 			}
-			if rec.Ecosystem == ecosystem && rec.PackageName == name {
-				out = append(out, rec)
+			if k := advisoryIdxKey(rec.Ecosystem, rec.PackageName, rec.ID); k != nil {
+				return idx.Put(k, nil)
 			}
 			return nil
 		})
+	})
+}
+
+// advisoryIdxKey builds the secondary-index key for one advisory row. The
+// ecosystem is stored NORMALIZED, so a lookup keyed on the component's own
+// spelling finds an advisory filed under the distro's ("Ubuntu:22.04:LTS").
+func advisoryIdxKey(ecosystem, name, id string) []byte {
+	if ecosystem == "" || name == "" {
+		return nil
+	}
+	return []byte(affected.EcosystemKey(ecosystem) + "\x00" + name + "\x00" + id)
+}
+
+// AdvisoriesForPackage resolves the advisories filed against (ecosystem, name),
+// the matcher's inner lookup. bbolt scans and filters; the SQL store uses the
+// (ecosystem_key, package_name) index.
+//
+// Both sides are compared through the normalized family:release key, never the
+// verbatim OSV string: Canonical files "Ubuntu:22.04:LTS" while the agent reports
+// "Ubuntu:22.04", so an exact compare here matched nothing at all for Ubuntu.
+func (s *bboltStore) AdvisoriesForPackage(ecosystem, name string) ([]AdvisoryRecord, error) {
+	prefix := []byte(affected.EcosystemKey(ecosystem) + "\x00" + name + "\x00")
+	var out []AdvisoryRecord
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		adv := tx.Bucket(bucketAdvisories)
+		c := tx.Bucket(bucketAdvisoryIdx).Cursor()
+		for k, _ := c.Seek(prefix); k != nil && bytes.HasPrefix(k, prefix); k, _ = c.Next() {
+			id := k[len(prefix):]
+			v := adv.Get(id)
+			if v == nil {
+				continue // index entry outliving its record; harmless
+			}
+			var rec AdvisoryRecord
+			if err := json.Unmarshal(v, &rec); err != nil {
+				return err
+			}
+			out = append(out, rec)
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
+}
+
+// CountAdvisories reports the number of stored advisory rows.
+func (s *bboltStore) CountAdvisories() (int64, error) {
+	var n int64
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		n = int64(tx.Bucket(bucketAdvisories).Stats().KeyN)
+		return nil
+	})
+	return n, err
 }
 
 // --- settings (global) ---

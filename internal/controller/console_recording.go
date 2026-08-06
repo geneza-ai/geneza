@@ -152,13 +152,16 @@ func (c *consoleAPI) handleRecordingBlob(w http.ResponseWriter, r *http.Request,
 		"sha256":       rec.SHA256,
 	})
 
-	// The manifest rides headers so the auditor can re-verify integrity (and later
-	// the node signature) in the browser before decrypting.
+	// The manifest rides headers so the auditor can re-verify integrity AND the node
+	// signature in the browser before decrypting. The signature is useless without
+	// the key that made it, so the node's SubjectPublicKeyInfo (captured at upload,
+	// when the controller checked the signature itself) is served alongside it.
 	h := w.Header()
 	h.Set("Content-Type", "application/octet-stream")
 	h.Set("X-Geneza-Recording-Sha256", rec.SHA256)
 	h.Set("X-Geneza-Recording-Size", strconv.FormatInt(rec.SizeBytes, 10))
 	h.Set("X-Geneza-Recording-Node-Sig", base64.StdEncoding.EncodeToString(rec.NodeSig))
+	h.Set("X-Geneza-Recording-Node-Key", base64.StdEncoding.EncodeToString(rec.NodeSPKI))
 	h.Set("X-Geneza-Recording-Audit-Key-Id", rec.AuditKeyID)
 	h.Set("X-Geneza-Recording-Started-Unix", strconv.FormatInt(rec.StartedUnix, 10))
 	h.Set("X-Geneza-Recording-Ended-Unix", strconv.FormatInt(rec.EndedUnix, 10))

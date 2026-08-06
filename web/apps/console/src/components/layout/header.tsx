@@ -15,7 +15,10 @@ const TITLES: Record<string, string> = {
   "/vulnerabilities": "Vulnerabilities",
   "/policy": "Policy",
   "/audit": "Audit log",
-  "/tokens": "Access tokens",
+  "/tokens": "Node enrollment",
+  "/members": "Members",
+  "/activate": "Approve device login",
+  "/404": "Not found",
 }
 
 function titleFor(pathname: string): string {

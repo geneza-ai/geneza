@@ -60,7 +60,6 @@ export interface NodeInfo {
   lastSeenUnix: number
   activeSessions: number
   detachedSessions: number
-  createdUnix: number
   approved: boolean
   // Non-empty when the node is quarantined (drift or a manual deny) rather
   // than freshly pending; re-approving it requires a recorded reason.
@@ -70,6 +69,10 @@ export interface NodeInfo {
 
 export interface NodesResponse {
   nodes: NodeInfo[]
+  /** The server's count for the CURRENT filter, which is what the pager needs. */
+  total: number
+  limit: number
+  offset: number
 }
 
 export type SessionAction =
@@ -234,6 +237,12 @@ export interface RecordingBlob {
   ciphertext: Uint8Array
   sha256: string // hex, over the ciphertext, from the manifest header
   sizeBytes: number
+  endedUnix: number
+  /** ECDSA P-256 ASN.1 signature the NODE made over the manifest digest. */
+  nodeSig: Uint8Array
+  /** DER SubjectPublicKeyInfo of the node cert that made nodeSig, as captured at
+   *  upload. Empty for recordings stored before the key was retained. */
+  nodeKey: Uint8Array
 }
 
 // Prometheus HTTP API response shape (matrix/vector), served by the controller.
@@ -258,10 +267,28 @@ export interface Fleet {
   canaryNodes: string[]
 }
 
+export interface PolicyTimeWindow {
+  days?: string[]
+  start?: string
+  end?: string
+}
+
+// Mirrors internal/policy.Rule. The index signature is deliberate: the visual
+// editor round-trips a document through the server's own parser, so a field it
+// does not model must survive editing rather than be silently dropped.
 export interface PolicyRule {
   actions?: string[]
+  services?: string[]
+  service_kinds?: string[]
+  service_labels?: Record<string, string>
   node_labels?: Record<string, string> | string[]
-  time_window?: string
+  time_window?: PolicyTimeWindow
+  max_session_ttl?: string
+  allow_detach?: boolean
+  record?: boolean
+  read_only?: boolean
+  read_only_time_window?: PolicyTimeWindow
+  require_presence?: boolean
   require_native?: boolean
   [key: string]: unknown
 }
@@ -284,6 +311,25 @@ export interface Policy {
 // The workspace policy as served by GET /api/v1/policy: the editable raw document
 // plus the parsed structure (for the preview), edit provenance, and whether the
 // caller (a ws-admin) may edit it.
+// The server's rendering of a structure back into the canonical document. The
+// console ships no YAML emitter on purpose — both directions go through the same
+// parser that stores the policy, so the editor and the enforcer cannot drift.
+export interface PolicyRender {
+  valid: boolean
+  yaml: string
+  error?: string
+}
+
+export interface PolicyRevision {
+  yaml: string
+  updatedBy: string
+  updatedUnix: number
+}
+
+export interface PolicyHistory {
+  revisions: PolicyRevision[]
+}
+
 export interface PolicyDocument {
   workspace: string
   yaml: string
@@ -317,15 +363,83 @@ export interface AuditRecord {
 export interface AuditResponse {
   records: AuditRecord[]
   chainOk: boolean
+  total: number
+  limit: number
+  offset: number
+}
+
+// The CVE feed's own state. The console gates every "no vulnerabilities" surface
+// on this: with no feed configured, or a feed that has never completed a sync,
+// an empty result set says nothing about the fleet's actual exposure.
+export interface VulnFeedStatus {
+  enabled: boolean
+  source: string
+  ecosystems?: string[]
+  lastSyncUnix: number
+  advisoryCount: number
+  lastError?: string
+}
+
+// A workspace member: a principal bound to this workspace with per-workspace
+// roles. This is the console's own authorization model — the thing that decides
+// who can see and do what — and until now it had no UI and no CLI at all.
+export interface Member {
+  provider: string
+  username: string
+  subject: string
+  roles: string[]
+  groups: string[]
+  addedBy: string
+  createdUnix: number
+  updatedUnix: number
+}
+
+export interface MembersResponse {
+  members: Member[]
+  /** The roles a workspace admin may grant; the server rejects anything else. */
+  grantableRoles: string[]
+  providers: string[]
+}
+
+export interface MemberRequest {
+  provider: string
+  username: string
+  subject?: string
+  roles: string[]
+  groups?: string[]
+}
+
+// A suspended principal: authorization revoked in this workspace. The console has
+// always ENFORCED these (login, web-shell watchdog, cert auth) — it just could not
+// see or change them.
+export interface Suspension {
+  provider: string
+  subject: string
+  username: string
+  reason: string
+  suspendedBy: string
+  suspendedUnix: number
+}
+
+export interface SuspensionsResponse {
+  suspensions: Suspension[]
 }
 
 export interface TokenRequest {
   ttlSeconds: number
   labels: Record<string, string>
   maxUses: number
+  autoApprove: boolean
 }
 
 export interface TokenResponse {
   token: string
   expiresUnix: number
+  autoApprove: boolean
+  // The artifact install.sh actually accepts: the token bound to the pinned root
+  // fingerprint and the runtime endpoints. Absent when the controller serves no
+  // root pubkey. installCommand additionally requires install_dir to be set, so
+  // it is absent on controllers that serve no installer.
+  enrollCode?: string
+  installCommand?: string
 }

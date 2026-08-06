@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"geneza.io/internal/affected"
 	"geneza.io/internal/types"
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -86,7 +87,15 @@ func OpenSQLStore(ctx context.Context, backend, dsn string) (Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("apply store schema: %w", err)
 	}
-	return &sqlStore{db: db, dialect: d, dsn: dsn}, nil
+	s := &sqlStore{db: db, dialect: d, dsn: dsn}
+	// The DDL above is all CREATE ... IF NOT EXISTS, so it cannot add a column to
+	// a table an earlier release already created. Additive changes are applied
+	// (and backfilled) explicitly.
+	if err := s.ensureSchemaAdditions(ctx); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("apply store schema additions: %w", err)
+	}
+	return s, nil
 }
 
 // dialectFor maps a configured backend name to its dialect. The two MySQL aliases
@@ -787,7 +796,7 @@ func (s *sqlStore) ListAllSessions() ([]*SessionRecord, error) {
 // recordingColumns is the column list both the SELECT and the scan use, kept in
 // one place so they can never drift out of order.
 const recordingColumns = `workspace_id, session_id, node_id, principal, action, ` +
-	`started_unix, ended_unix, size_bytes, sha256, node_sig, audit_key_id, ` +
+	`started_unix, ended_unix, size_bytes, sha256, node_sig, node_spki, audit_key_id, ` +
 	`blob_ref, truncated, stored_unix`
 
 func scanRecording(sc interface{ Scan(...any) error }) (*RecordingRecord, error) {
@@ -802,7 +811,7 @@ func scanRecording(sc interface{ Scan(...any) error }) (*RecordingRecord, error)
 		truncated sql.NullBool
 	)
 	if err := sc.Scan(&rec.WorkspaceID, &rec.SessionID, &nodeID, &principal, &action,
-		&rec.StartedUnix, &rec.EndedUnix, &rec.SizeBytes, &sha, &rec.NodeSig, &auditKey,
+		&rec.StartedUnix, &rec.EndedUnix, &rec.SizeBytes, &sha, &rec.NodeSig, &rec.NodeSPKI, &auditKey,
 		&blobRef, &truncated, &rec.StoredUnix); err != nil {
 		return nil, err
 	}
@@ -820,17 +829,17 @@ func (s *sqlStore) PutRecording(ws string, rec *RecordingRecord) error {
 	rec.WorkspaceID = ws
 	_, err := s.exec(s.ctx(), s.db,
 		`INSERT INTO recordings (workspace_id, session_id, node_id, principal, action,
-			started_unix, ended_unix, size_bytes, sha256, node_sig, audit_key_id,
+			started_unix, ended_unix, size_bytes, sha256, node_sig, node_spki, audit_key_id,
 			blob_ref, truncated, stored_unix)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 		 ON CONFLICT (workspace_id, session_id) DO UPDATE SET
 			node_id = EXCLUDED.node_id, principal = EXCLUDED.principal, action = EXCLUDED.action,
 			started_unix = EXCLUDED.started_unix, ended_unix = EXCLUDED.ended_unix,
 			size_bytes = EXCLUDED.size_bytes, sha256 = EXCLUDED.sha256, node_sig = EXCLUDED.node_sig,
-			audit_key_id = EXCLUDED.audit_key_id, blob_ref = EXCLUDED.blob_ref,
+			node_spki = EXCLUDED.node_spki, audit_key_id = EXCLUDED.audit_key_id, blob_ref = EXCLUDED.blob_ref,
 			truncated = EXCLUDED.truncated, stored_unix = EXCLUDED.stored_unix`,
 		ws, rec.SessionID, rec.NodeID, rec.Principal, rec.Action,
-		rec.StartedUnix, rec.EndedUnix, rec.SizeBytes, rec.SHA256, rec.NodeSig, rec.AuditKeyID,
+		rec.StartedUnix, rec.EndedUnix, rec.SizeBytes, rec.SHA256, rec.NodeSig, rec.NodeSPKI, rec.AuditKeyID,
 		rec.BlobRef, rec.Truncated, rec.StoredUnix)
 	return err
 }
@@ -923,9 +932,10 @@ func (s *sqlStore) UpsertNodeComponents(ws, nodeID string, comps []ComponentReco
 		for i := range comps {
 			c := comps[i]
 			if _, err := s.exec(s.ctx(), tx,
-				`INSERT INTO node_components (workspace_id, node_id, purl, source, ecosystem, name, version, distro)
-				 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-				ws, nodeID, c.Purl, c.Source, c.Ecosystem, c.Name, c.Version, c.Distro); err != nil {
+				`INSERT INTO node_components (workspace_id, node_id, purl, source, ecosystem, ecosystem_key, name, version, source_name, distro)
+				 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+				ws, nodeID, c.Purl, c.Source, c.Ecosystem, affected.EcosystemKey(c.Ecosystem),
+				c.Name, c.Version, c.SourceName, c.Distro); err != nil {
 				return err
 			}
 		}
@@ -935,23 +945,25 @@ func (s *sqlStore) UpsertNodeComponents(ws, nodeID string, comps []ComponentReco
 
 // componentColumns is the column list the by-node and by-package reads share, kept
 // in one place so the SELECT and the scan can never drift.
-const componentColumns = `workspace_id, node_id, purl, source, ecosystem, name, version, distro`
+const componentColumns = `workspace_id, node_id, purl, source, ecosystem, name, version, source_name, distro`
 
 func scanComponent(sc interface{ Scan(...any) error }) (ComponentRecord, error) {
 	var (
-		rec       ComponentRecord
-		ecosystem sql.NullString
-		name      sql.NullString
-		version   sql.NullString
-		distro    sql.NullString
+		rec        ComponentRecord
+		ecosystem  sql.NullString
+		name       sql.NullString
+		version    sql.NullString
+		sourceName sql.NullString
+		distro     sql.NullString
 	)
 	if err := sc.Scan(&rec.WorkspaceID, &rec.NodeID, &rec.Purl, &rec.Source,
-		&ecosystem, &name, &version, &distro); err != nil {
+		&ecosystem, &name, &version, &sourceName, &distro); err != nil {
 		return rec, err
 	}
 	rec.Ecosystem = ecosystem.String
 	rec.Name = name.String
 	rec.Version = version.String
+	rec.SourceName = sourceName.String
 	rec.Distro = distro.String
 	return rec, nil
 }
@@ -980,8 +992,9 @@ func (s *sqlStore) ListNodeComponents(ws, nodeID string) ([]ComponentRecord, err
 
 func (s *sqlStore) ListComponentsByPackage(ws, ecosystem, name string) ([]ComponentRecord, error) {
 	return s.listComponents(
-		`SELECT `+componentColumns+` FROM node_components WHERE workspace_id=$1 AND ecosystem=$2 AND name=$3`,
-		ws, ecosystem, name)
+		`SELECT `+componentColumns+` FROM node_components
+		 WHERE workspace_id=$1 AND ecosystem_key=$2 AND (name=$3 OR source_name=$3)`,
+		ws, affected.EcosystemKey(ecosystem), name)
 }
 
 func (s *sqlStore) UpsertNodeCVE(rec *NodeCVERecord) error {
@@ -1193,9 +1206,10 @@ func (s *sqlStore) PutImageComponents(digest string, comps []ImageComponentRecor
 		for i := range comps {
 			c := comps[i]
 			if _, err := s.exec(s.ctx(), tx,
-				`INSERT INTO image_components (digest, purl, source, ecosystem, name, version, distro)
-				 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-				digest, c.Purl, c.Source, c.Ecosystem, c.Name, c.Version, c.Distro); err != nil {
+				`INSERT INTO image_components (digest, purl, source, ecosystem, ecosystem_key, name, version, source_name, distro)
+				 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+				digest, c.Purl, c.Source, c.Ecosystem, affected.EcosystemKey(c.Ecosystem),
+				c.Name, c.Version, c.SourceName, c.Distro); err != nil {
 				return err
 			}
 		}
@@ -1203,22 +1217,25 @@ func (s *sqlStore) PutImageComponents(digest string, comps []ImageComponentRecor
 	})
 }
 
-const imageComponentColumns = `digest, purl, source, ecosystem, name, version, distro`
+const imageComponentColumns = `digest, purl, source, ecosystem, name, version, source_name, distro`
 
 func scanImageComponent(sc interface{ Scan(...any) error }) (ImageComponentRecord, error) {
 	var (
-		rec       ImageComponentRecord
-		ecosystem sql.NullString
-		name      sql.NullString
-		version   sql.NullString
-		distro    sql.NullString
+		rec        ImageComponentRecord
+		ecosystem  sql.NullString
+		name       sql.NullString
+		version    sql.NullString
+		sourceName sql.NullString
+		distro     sql.NullString
 	)
-	if err := sc.Scan(&rec.Digest, &rec.Purl, &rec.Source, &ecosystem, &name, &version, &distro); err != nil {
+	if err := sc.Scan(&rec.Digest, &rec.Purl, &rec.Source, &ecosystem, &name, &version,
+		&sourceName, &distro); err != nil {
 		return rec, err
 	}
 	rec.Ecosystem = ecosystem.String
 	rec.Name = name.String
 	rec.Version = version.String
+	rec.SourceName = sourceName.String
 	rec.Distro = distro.String
 	return rec, nil
 }
@@ -1245,7 +1262,8 @@ func (s *sqlStore) ListImageComponents(digest string) ([]ImageComponentRecord, e
 // name), served from the (ecosystem, name) index.
 func (s *sqlStore) ImageDigestsForPackage(ecosystem, name string) ([]string, error) {
 	rows, err := s.query(s.ctx(), s.db,
-		`SELECT DISTINCT digest FROM image_components WHERE ecosystem=$1 AND name=$2`, ecosystem, name)
+		`SELECT DISTINCT digest FROM image_components WHERE ecosystem_key=$1 AND (name=$2 OR source_name=$2)`,
+		affected.EcosystemKey(ecosystem), name)
 	if err != nil {
 		return nil, err
 	}
@@ -1464,13 +1482,15 @@ func (s *sqlStore) PutAdvisories(recs []AdvisoryRecord) error {
 				doc = "{}"
 			}
 			if _, err := s.exec(s.ctx(), tx,
-				`INSERT INTO advisories (id, source, ecosystem, package_name, doc, modified_unix)
-				 VALUES ($1, $2, $3, $4, $5::jsonb, $6)
+				`INSERT INTO advisories (id, source, ecosystem, ecosystem_key, package_name, doc, modified_unix)
+				 VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)
 				 ON CONFLICT (id) DO UPDATE SET
 					source = EXCLUDED.source, ecosystem = EXCLUDED.ecosystem,
+					ecosystem_key = EXCLUDED.ecosystem_key,
 					package_name = EXCLUDED.package_name, doc = EXCLUDED.doc,
 					modified_unix = EXCLUDED.modified_unix`,
-				recs[i].ID, recs[i].Source, recs[i].Ecosystem, recs[i].PackageName, doc, recs[i].ModifiedUnix); err != nil {
+				recs[i].ID, recs[i].Source, recs[i].Ecosystem, affected.EcosystemKey(recs[i].Ecosystem),
+				recs[i].PackageName, doc, recs[i].ModifiedUnix); err != nil {
 				return err
 			}
 		}
@@ -1478,10 +1498,19 @@ func (s *sqlStore) PutAdvisories(recs []AdvisoryRecord) error {
 	})
 }
 
+// CountAdvisories reports the number of stored advisory rows.
+func (s *sqlStore) CountAdvisories() (int64, error) {
+	var n int64
+	if err := s.queryRow(s.ctx(), s.db, `SELECT count(*) FROM advisories`).Scan(&n); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
 func (s *sqlStore) AdvisoriesForPackage(ecosystem, name string) ([]AdvisoryRecord, error) {
 	rows, err := s.query(s.ctx(), s.db,
 		`SELECT id, source, ecosystem, package_name, doc, modified_unix
-		 FROM advisories WHERE ecosystem=$1 AND package_name=$2`, ecosystem, name)
+		 FROM advisories WHERE ecosystem_key=$1 AND package_name=$2`, affected.EcosystemKey(ecosystem), name)
 	if err != nil {
 		return nil, err
 	}

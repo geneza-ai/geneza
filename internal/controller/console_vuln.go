@@ -138,6 +138,20 @@ func (c *consoleAPI) handleWorkspaceCVEs(w http.ResponseWriter, r *http.Request,
 		}
 		rollups = filtered
 	}
+	// Severity filtering belongs here, with the paging. Filtering it in the browser
+	// over the rows of the CURRENT page instead means `total` describes a different
+	// set than the rows do: the rollup is sorted severity-descending, so selecting
+	// "Medium" on a page of criticals renders "nothing matches" over a non-zero
+	// total, and the pager is the only way out.
+	if sev := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("severity"))); sev != "" && sev != "all" {
+		filtered := rollups[:0]
+		for _, row := range rollups {
+			if severityMatches(row.Severity, sev) {
+				filtered = append(filtered, row)
+			}
+		}
+		rollups = filtered
+	}
 	out := make([]map[string]any, 0, len(rollups))
 	for _, row := range rollups {
 		out = append(out, workspaceCVEJSON(row))
@@ -146,6 +160,17 @@ func (c *consoleAPI) handleWorkspaceCVEs(w http.ResponseWriter, r *http.Request,
 	total := len(out)
 	lo, hi := pg.bounds(total)
 	writeJSON(w, pageEnvelope("cves", out[lo:hi], total, pg))
+}
+
+// severityMatches compares an advisory's own severity label against a filter key.
+// "medium" also accepts "moderate": Red Hat and a few other sources use that word
+// for the same band, and treating them as different silently hides findings.
+func severityMatches(rowSeverity, filter string) bool {
+	s := strings.ToLower(strings.TrimSpace(rowSeverity))
+	if filter == "medium" {
+		return s == "medium" || s == "moderate"
+	}
+	return s == filter
 }
 
 // handleNodeComponents returns a node's resolved software inventory (the
@@ -180,4 +205,16 @@ func (c *consoleAPI) handleNodeComponents(w http.ResponseWriter, r *http.Request
 	total := len(out)
 	lo, hi := pg.bounds(total)
 	writeJSON(w, pageEnvelope("components", out[lo:hi], total, pg))
+}
+
+// handleVulnFeedStatus reports whether the CVE feed is configured and whether it
+// has ever produced anything. The console gates its empty states on this: with no
+// feed, or with a feed that has never finished a sync, "no vulnerabilities" is not
+// a clean bill of health and must not be rendered as one.
+func (c *consoleAPI) handleVulnFeedStatus(w http.ResponseWriter, r *http.Request, u *consoleUser) {
+	if !consoleCanViewVulns(u) {
+		writeErr(w, http.StatusForbidden, "not permitted to view vulnerabilities")
+		return
+	}
+	writeJSON(w, c.s.vulnFeedStatus())
 }

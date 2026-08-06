@@ -119,14 +119,20 @@ func imageDedupMatchSuite(t *testing.T, s Store) {
 	if _, err := feed2.Sync(ctx, time.Time{}); err != nil {
 		t.Fatalf("feed2.Sync: %v", err)
 	}
-	changed := feed2.Changed()
-	if len(changed) != 1 {
-		t.Fatalf("feed2 changed: want 1 got %d", len(changed))
+	changed := feed2.ChangedPackages()
+	if len(changed) != 1 || changed[0].Name != "openssl" {
+		t.Fatalf("feed2 changed packages: %+v", changed)
+	}
+	// Read the advisory back through the feed's own by-package resolve, the same
+	// path the re-match uses.
+	advs, err := feed2.Advisories(changed[0].Ecosystem, changed[0].Name)
+	if err != nil || len(advs) != 1 {
+		t.Fatalf("Advisories: err=%v len=%d", err, len(advs))
 	}
 	// The advisory-change image direction re-matches every digest carrying the package
 	// ONCE (dedup by digest), not per node.
 	m2 := newAffectedMatcher(s, nil, nil)
-	if _, err := m2.MatchAdvisoryImages(ctx, feed2, changed[0]); err != nil {
+	if _, err := m2.MatchAdvisoryImages(ctx, feed2, advs[0]); err != nil {
 		t.Fatalf("MatchAdvisoryImages: %v", err)
 	}
 	// Both nodes still affected (image openssl is below the new fixed version too).

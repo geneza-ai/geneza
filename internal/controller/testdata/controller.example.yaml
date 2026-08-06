@@ -11,11 +11,29 @@ data_dir: /var/lib/geneza/controller
 
 # mTLS gRPC listener (enrollment, node control, user/admin API).
 grpc_listen: ":7401"
-# HTTPS listener (CA roots, auth-config, desired-version, artifact blobs).
+# HTTPS listener (CA roots, auth-config, desired-version, artifact blobs, the
+# curl|bash installer, and the OpenStack vendordata callback — the last one is
+# authenticated by Keystone, not by the network, and is why this listener is TLS).
 http_listen: ":7402"
 
 # Stamped into CA subject names and server cert identities.
 cluster_name: geneza1
+
+# Persistence. "" / bbolt is the zero-dependency single-node default (a file under
+# data_dir). postgres | mariadb | mysql move the store to a shared SQL server,
+# which is what lets several controllers front the same fleet. A SQL backend with
+# no store_dsn is a hard error, never a silent localhost fallback.
+# store: postgres
+# store_dsn: "postgres://geneza:pw@db.example.internal:5432/geneza?sslmode=verify-full"
+
+# Multi-controller only. Each controller MUST carry a globally-unique
+# controller_id (it owns the affinity directory, the per-controller bus subject
+# and the audit label; it defaults to the hostname), and the router MUST be `pg`
+# — the default `inproc` router cannot reach a session pinned to a sibling, so a
+# fleet on inproc fails to route rather than failing to start.
+# controller_id: controller-a
+# router: pg
+# region: eu-west
 
 # SANs for the controller and relay TLS server certs issued at init.
 # localhost/127.0.0.1/::1 are always added on top.
@@ -30,9 +48,42 @@ advertise:
 relay_addrs:
   - 192.0.2.10:7403
 
+# Where agents send data-plane UDP (the blind forwarder). Separate from
+# relay_addrs (TCP rendezvous) because the data port may be reached on a
+# different address. Empty = host(relay_addrs[0]):7404.
+# relay_data_addrs:
+#   - 192.0.2.10:7404
+
+# TURN realm and the coturn-style REST shared secret the controller uses to MINT
+# ephemeral TURN credentials. Both MUST match the relay's own config, or the relay
+# rejects every credential the controller issues.
+relay_realm: geneza
+relay_shared_secret: "replace-me-with-a-long-random-string"
+
+# Tenant DNS suffix machine names live under (default "geneza"):
+# <machine>.<dns_zone> resolves to the machine's overlay IP, gated by policy.
+# dns_zone: geneza
+
 # Policy-as-data document (roles, bindings, allow rules). Reloadable at
 # runtime via the admin API without restarting.
+#
+# NOTE: this file is the SEED only. The console's policy editor writes to the
+# store, and once a workspace has a stored policy it wins forever — editing this
+# file afterwards changes nothing.
 policy_file: /etc/geneza/policy.yaml
+
+# Tenants this controller hosts. Omitted = one synthesized "default" workspace
+# using policy_file with open membership (single-tenant, unchanged). Each
+# workspace gets its own policy and membership; a user's workspace is checked at
+# login and then carried in their cert. `bindings` pre-binds a cloud source (an
+# OpenStack project) so both its VMs and its humans land here — see clouds: below.
+# workspaces:
+#   - id: platform
+#     name: Platform Engineering
+#     policy_file: /etc/geneza/policy-platform.yaml
+#     overlay_cidr: 100.64.0.0/24
+#     member_groups: [platform-eng]
+#     bindings: ["openstack:project:mycloud:8f3c…"]
 
 # Short-TTL certificate lifetimes: expiry is revocation.
 cert_ttl:
@@ -61,6 +112,94 @@ local_users:
     password_bcrypt: "$2a$10$replace-me-with-real-hash"
     groups: [admins]
 
+# Load ADDITIONAL local_users from their own file (a document with a top-level
+# local_users: list), appended to the inline ones above. Deploys use this so an
+# installer can re-render controller.yaml freely without touching credentials.
+# local_users_file: /etc/geneza/local_users.yml
+
+# Browser control panel. Empty listen = disabled. It is PLAIN HTTP by design —
+# put it behind a TLS front (the compose installer uses Caddy) and set
+# external_url to the public origin, which is what the session cookie and the
+# OIDC redirect_uri are built from. Enabling it with no login mechanism (no oidc,
+# no local_users, no clouds) is a config error, not a lockout at runtime.
+# console:
+#   listen: ":7406"
+#   static_dir: /var/lib/geneza/console-web   # built SPA (web/apps/console/dist)
+#   external_url: https://geneza.example.com
+#   oidc_client_id: geneza-console            # the BROWSER's own audience
+#   auth:
+#     session_ttl: 12h
+#     device_code_ttl: 10m       # in-flight `geneza login` device flow
+#     handoff_code_ttl: 30s      # trusted-dashboard (Horizon) handoff
+
+# OpenStack clouds registry: one Keystone per entry, keyed by a STABLE operator
+# slug (the service-uid). The slug rides the vendordata path as a routing key and
+# qualifies every binding — it is NOT the Keystone FQDN, which is mutable. Nova
+# calls https://<controller>/openstack/vendordata/<slug> on http_listen above.
+# See docs/openstack-integration-guide.md.
+# clouds:
+#   mycloud:
+#     kind: openstack
+#     keystone_url: https://identity.example.com/v3
+#     require_nova_service_token: true   # forced true; only Nova may enroll a VM
+#     auto_provision: false              # prod: pre-bind projects to workspaces
+#     role_map: { admin: ws-admin, member: ws-user, reader: ws-viewer }
+#     default_role: ws-viewer            # keystone roles that map to nothing
+
+# CVE affectedness. WITHOUT THIS BLOCK the controller still collects every node's
+# SBOM but matches it against nothing, so the console shows a full inventory and
+# zero vulnerabilities — which reads like "you are clean" rather than "no feed is
+# configured". osv_bulk pulls the OSV.dev distro + language advisories (Debian,
+# Ubuntu, Alpine, Red Hat, npm, PyPI, …) and needs egress; osv_dir reads a
+# directory you mirror yourself; geneza-paid is the signed commercial bundle.
+# "default" for kev_url/epss_url enriches verdicts with CISA KEV + FIRST EPSS.
+# The first sync runs in the background and takes minutes.
+vuln_feed:
+  source: osv_bulk
+  kev_url: default
+  epss_url: default
+  # sync_interval: 6h
+  # ecosystems: [Debian, Ubuntu, Alpine, "Red Hat"]   # empty = built-in set
+  # vex_dir: /etc/geneza/vex        # OpenVEX suppressions; empty = none
+
+# External VictoriaMetrics. The controller proxies agent metric pushes to its
+# import endpoint and console PromQL to its query API; it keeps NO time series of
+# its own, so empty here means the console's metrics pages have no data. Retention
+# is set on VictoriaMetrics (-retentionPeriod), not here.
+# metrics_url: http://victoriametrics:8428
+
+# curl|bash agent install. install_dir holds the stage-1 binaries the installer
+# serves; empty = installer disabled, and the console then withholds the one-line
+# install command rather than printing one that would 404. agent_release keeps
+# that directory populated from the signed geneza-node GitHub release.
+# install_dir: /var/lib/geneza/install
+# agent_release:
+#   pull: true
+#   tag: ""          # empty = latest
+#   refresh: 24h     # 0 = pull at startup only
+
+# Blob store for session recordings (and later per-node artifacts). Default is
+# local disk under data_dir. Switching to s3 changes only where NEW blobs go —
+# older local: refs stay readable, so this is not a migration.
+# storage:
+#   backend: s3
+#   s3:
+#     endpoint: https://s3.example.com
+#     region: us-east-1
+#     bucket: geneza-recordings
+#     prefix: recordings/
+#     access_key_id: "…"
+#     secret_access_key: "…"
+#     use_path_style: true      # Ceph RGW / MinIO
+
+# Continuous-presence factor: how often an agent must prove liveness and how long
+# a proof stays good. allow_software permits a software attestor where no TPM is
+# available (set false to require hardware).
+# presence:
+#   heartbeat_interval: 30s
+#   ttl: 5m
+#   allow_software: true
+
 # Session-host guardrails pushed to every agent in the signed cluster
 # config. Zero values fall back to agent built-in defaults.
 agent_policy:
@@ -75,6 +214,28 @@ agent_policy:
 # PublishArtifact refuses manifests that do not verify against it. The
 # private key must never be on the controller.
 artifact_pubkey_file: /etc/geneza/artifact.pub
+
+# TUF-lite update trust. root_keys_file is the offline-signed root-keys.json
+# naming the CURRENT release-signing key set; it is re-read per request, so
+# rotating the fleet's trust is one atomic file swap and the controller never
+# holds a private key either way. root_pubkey_file is the PUBLIC root half the
+# curl|bash installer fetches and fingerprint-checks against the --root-fp the
+# operator pasted — that check is what stops a compromised controller swapping
+# the trust anchor at bootstrap. Unset = the built-in root compiled into the binary.
+# root_keys_file: /etc/geneza/root-keys.json
+# root_pubkey_file: /etc/geneza/root.pub
+
+# Policy loaded by a workspace that was provisioned dynamically (a VM enrolling
+# from an unbound project, or a first human login for one). It grants by ROLE NAME
+# with NO user/group bindings, because auto-provisioned members get their roles
+# from store membership rather than from policy bindings. Empty = policy_file.
+# auto_provision_policy_file: /etc/geneza/policy-autoprovision.yaml
+
+# Move the controller↔relay control plane (the relay registrar) onto its OWN mTLS
+# listener so it can be firewalled to the management subnet, independently of the
+# broadly-reachable agent/user channel on grpc_listen. Must differ from every
+# other listener. Empty keeps the registrar on grpc_listen.
+# cluster_control_listen: ":7405"
 
 # Optional off-box, append-only mirror of the hash-chained, HMAC-keyed audit
 # trail (the only tamper-evidence that survives a host able to rewrite the local
@@ -94,6 +255,9 @@ artifact_pubkey_file: /etc/geneza/artifact.pub
 #   token_label: geneza
 #   pin: "1234"
 #   key_label: geneza-ca
+#
+# grant_key_source:
+#   backend: file          # pkcs11 needs an EdDSA-capable token; see above
 
 # Cluster-operator (super-admin) read console, on its OWN mTLS listener. It is
 # gated on a break-glass cluster admin cert OR an OIDC login carrying the required

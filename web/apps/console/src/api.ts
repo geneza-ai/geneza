@@ -10,16 +10,25 @@ import type {
   NodeCVEsResponse,
   NodeModulesResponse,
   NodesAffectedResponse,
+  NodeInfo,
   NodesResponse,
   Overview,
+  Policy,
   PolicyDocument,
+  PolicyHistory,
+  PolicyRender,
   PolicyValidation,
   PromResponse,
   RecordingBlob,
   RecordingsResponse,
   SessionsResponse,
   TokenRequest,
+  Member,
+  MemberRequest,
+  MembersResponse,
+  SuspensionsResponse,
   TokenResponse,
+  VulnFeedStatus,
   WorkspaceCVEsResponse,
 } from "@/types"
 
@@ -114,9 +123,6 @@ export const api = {
   post<T>(path: string, body: unknown, opts?: RequestOptions) {
     return request<T>("POST", path, opts, body)
   },
-  del<T>(path: string, opts?: RequestOptions) {
-    return request<T>("DELETE", path, opts)
-  },
 
   // Typed endpoint helpers --------------------------------------------------
   getConfig: (signal?: AbortSignal) =>
@@ -127,6 +133,8 @@ export const api = {
     request<Overview>("GET", "/overview", { signal }),
   getNodes: (params?: ListParams, signal?: AbortSignal) =>
     request<NodesResponse>("GET", "/nodes", { signal, query: { ...params } }),
+  getNode: (id: string, signal?: AbortSignal) =>
+    request<NodeInfo>("GET", `/nodes/${encodeURIComponent(id)}`, { signal }),
   getSessions: (params?: ListParams, signal?: AbortSignal) =>
     request<SessionsResponse>("GET", "/sessions", { signal, query: { ...params } }),
   getFleet: (signal?: AbortSignal) =>
@@ -135,12 +143,82 @@ export const api = {
     request<PolicyDocument>("GET", "/policy", { signal }),
   validatePolicy: (yaml: string, signal?: AbortSignal) =>
     request<PolicyValidation>("POST", "/policy/validate", { signal }, { yaml }),
+  // Structure -> canonical YAML, validated by the same parser that stores it.
+  renderPolicy: (policy: Policy, signal?: AbortSignal) =>
+    request<PolicyRender>("POST", "/policy/render", { signal }, { policy }),
+  getPolicyHistory: (signal?: AbortSignal) =>
+    request<PolicyHistory>("GET", "/policy/history", { signal }),
   setPolicy: (yaml: string) =>
     request<{ ok: boolean; workspace: string }>("PUT", "/policy", {}, { yaml }),
   getAudit: (
-    query: { since?: number; type?: string; limit?: number },
+    query: {
+      since?: number
+      until?: number
+      type?: string
+      actor?: string
+      node?: string
+      limit?: number
+      offset?: number
+    },
     signal?: AbortSignal
   ) => request<AuditResponse>("GET", "/audit", { query, signal }),
+  // The export is the verbatim chain lines, so the HMACs still verify outside the
+  // console — that is what makes it usable as evidence. It goes through fetch
+  // rather than a plain link because the session is a Bearer token, which a
+  // navigation would not carry.
+  downloadAuditJSONL: async (
+    query: Record<string, string | number | undefined>
+  ): Promise<Blob> => {
+    const headers: Record<string, string> = {}
+    const token = getToken()
+    if (token) headers.Authorization = `Bearer ${token}`
+    const res = await fetch(buildUrl("/audit", { ...query, format: "jsonl" }), {
+      method: "GET",
+      headers,
+    })
+    if (!res.ok) throw new ApiError(res.status, `Export failed (${res.status})`)
+    return res.blob()
+  },
+  // --- workspace members ---
+  getMembers: (signal?: AbortSignal) =>
+    request<MembersResponse>("GET", "/members", { signal }),
+  putMember: (body: MemberRequest) =>
+    request<Member>("POST", "/members", {}, body),
+  deleteMember: (provider: string, subject: string) =>
+    request<{ ok: boolean }>(
+      "DELETE",
+      `/members/${encodeURIComponent(provider)}/${encodeURIComponent(subject)}`
+    ),
+
+  // --- principal suspension ---
+  getSuspensions: (signal?: AbortSignal) =>
+    request<SuspensionsResponse>("GET", "/suspensions", { signal }),
+  suspendPrincipal: (body: {
+    provider: string
+    subject: string
+    username: string
+    reason: string
+    revokeSessions?: boolean
+  }) =>
+    request<{ ok: boolean; sessionsRevoked: number }>(
+      "POST",
+      "/suspensions",
+      {},
+      body
+    ),
+  liftSuspension: (provider: string, subject: string) =>
+    request<{ ok: boolean }>(
+      "DELETE",
+      `/suspensions/${encodeURIComponent(provider)}/${encodeURIComponent(subject)}`
+    ),
+  revokeUserSessions: (user: string, reason?: string) =>
+    request<{ ok: boolean; revoked: number }>(
+      "POST",
+      "/sessions/revoke-user",
+      {},
+      { user, reason }
+    ),
+
   createToken: (body: TokenRequest) =>
     request<TokenResponse>("POST", "/tokens", {}, body),
   revokeSession: (id: string) =>
@@ -185,21 +263,23 @@ export const api = {
       },
       signal,
     }),
-  queryInstant: (query: string, signal?: AbortSignal) =>
-    request<PromResponse>("GET", "/metrics/query", {
-      query: { query },
-      signal,
-    }),
-
   // --- vulnerabilities ---
+  getVulnFeedStatus: (signal?: AbortSignal) =>
+    request<VulnFeedStatus>("GET", "/vuln/feed", { signal }),
   getWorkspaceCVEs: (
-    params?: { cve?: string; limit?: number; offset?: number },
+    params?: {
+      cve?: string
+      severity?: string
+      limit?: number
+      offset?: number
+    },
     signal?: AbortSignal
   ) =>
     request<WorkspaceCVEsResponse>("GET", "/cves", {
       signal,
       query: {
         cve: params?.cve || undefined,
+        severity: params?.severity || undefined,
         limit: params?.limit,
         offset: params?.offset,
       },
@@ -241,6 +321,36 @@ export const api = {
       `/nodes/${encodeURIComponent(id)}/components`,
       { signal, query: { limit: params?.limit, offset: params?.offset } }
     ),
+
+  // downloadNodeDocument fetches a raw (non-JSON) node document — the CycloneDX
+  // SBOM or the OpenVEX findings — and hands back the bytes plus the filename the
+  // controller suggested, so the console can offer the same artifacts `geneza node
+  // inventory export` produces. It bypasses the JSON helper for the same reason
+  // getRecordingBlob does: the body is not JSON.
+  downloadNodeDocument: async (
+    id: string,
+    kind: "sbom" | "findings.vex"
+  ): Promise<{ blob: Blob; filename: string }> => {
+    const headers: Record<string, string> = {}
+    const token = getToken()
+    if (token) headers.Authorization = `Bearer ${token}`
+    const res = await fetch(
+      buildUrl(`/nodes/${encodeURIComponent(id)}/${kind}`),
+      { method: "GET", headers }
+    )
+    if (!res.ok) {
+      throw new ApiError(
+        res.status,
+        res.status === 404
+          ? "This node has not reported an inventory yet."
+          : `Export failed (${res.status})`
+      )
+    }
+    const disposition = res.headers.get("Content-Disposition") ?? ""
+    const match = /filename="?([^";]+)"?/.exec(disposition)
+    const fallback = kind === "sbom" ? `${id}.cdx.json` : `${id}.vex.json`
+    return { blob: await res.blob(), filename: match?.[1] ?? fallback }
+  },
 
   // --- session recordings ---
   getRecordings: (
@@ -294,10 +404,22 @@ export const api = {
       throw new ApiError(res.status, message)
     }
     const buf = new Uint8Array(await res.arrayBuffer())
+    const b64 = (name: string): Uint8Array => {
+      const v = res.headers.get(name)
+      if (!v) return new Uint8Array()
+      try {
+        return Uint8Array.from(atob(v), (c) => c.charCodeAt(0))
+      } catch {
+        return new Uint8Array()
+      }
+    }
     return {
       ciphertext: buf,
       sha256: res.headers.get("X-Geneza-Recording-Sha256") ?? "",
       sizeBytes: Number(res.headers.get("X-Geneza-Recording-Size") ?? buf.length),
+      endedUnix: Number(res.headers.get("X-Geneza-Recording-Ended-Unix") ?? 0),
+      nodeSig: b64("X-Geneza-Recording-Node-Sig"),
+      nodeKey: b64("X-Geneza-Recording-Node-Key"),
     }
   },
 }

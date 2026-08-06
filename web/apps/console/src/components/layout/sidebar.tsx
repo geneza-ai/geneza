@@ -8,6 +8,7 @@ import {
   Shield,
   ShieldX,
   TerminalSquare,
+  Users,
   Video,
 } from "lucide-react"
 
@@ -38,8 +39,10 @@ interface NavGroup {
 }
 
 // The roles that may list/replay recordings, mirroring the controller's
-// consoleCanReplayRecordings gate. ws-admin is covered by me.admin.
-const REPLAY_ROLES = new Set(["ws-auditor", "ws-admin", "admin", "platform-admin"])
+// consoleCanReplayRecordings gate. ws-admin is covered by me.admin. The reserved
+// cluster roles are deliberately absent: auth.go strips admin/platform-admin from
+// every login path, so a console session can never carry them.
+const REPLAY_ROLES = new Set(["ws-auditor", "ws-admin"])
 
 // Navigation is grouped so the rail reads as sections rather than one long list,
 // and so low-traffic entries fold under a heading instead of competing with the
@@ -66,7 +69,8 @@ const GROUPS: NavGroup[] = [
   {
     label: "Admin",
     items: [
-      { to: "/tokens", label: "Access tokens", icon: KeyRound, adminOnly: true },
+      { to: "/tokens", label: "Node enrollment", icon: KeyRound, adminOnly: true },
+      { to: "/members", label: "Members", icon: Users, adminOnly: true },
     ],
   },
 ]

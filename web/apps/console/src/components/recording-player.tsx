@@ -21,8 +21,15 @@ import {
   formatBytes,
   plaintextCast,
   verifyIntegrity,
+  verifyNodeSignature,
 } from "@/lib/recording"
-import { absoluteTime, formatDuration, truncateMiddle } from "@/lib/format"
+import type { NodeSigResult } from "@/lib/recording"
+import {
+  absoluteTime,
+  formatDuration,
+  saveBlob,
+  truncateMiddle,
+} from "@/lib/format"
 import type { RecordingBlob, RecordingInfo } from "@/types"
 
 type Phase = "loading" | "needsKey" | "playing" | "error"
@@ -42,6 +49,7 @@ export function RecordingPlayer({
   const [phase, setPhase] = useState<Phase>("loading")
   const [error, setError] = useState<string | null>(null)
   const [integrityOk, setIntegrityOk] = useState(false)
+  const [nodeSig, setNodeSig] = useState<NodeSigResult>("unavailable")
   const [blob, setBlob] = useState<RecordingBlob | null>(null)
   const [keyText, setKeyText] = useState("")
   const [decrypting, setDecrypting] = useState(false)
@@ -57,9 +65,18 @@ export function RecordingPlayer({
       .getRecordingBlob(recording.sessionId, ctl.signal)
       .then(async (b) => {
         const ok = await verifyIntegrity(b)
+        const sig = await verifyNodeSignature(recording.sessionId, b)
         if (ctl.signal.aborted) return
         setBlob(b)
         setIntegrityOk(ok)
+        setNodeSig(sig)
+        if (sig === "invalid") {
+          setError(
+            "The node's signature over this recording does not verify. The bytes, or the manifest describing them, were changed after the node signed them."
+          )
+          setPhase("error")
+          return
+        }
         if (!ok) {
           setError(
             "Integrity check failed: the fetched bytes do not match the recording's signed digest. The cast may be corrupt or tampered."
@@ -124,6 +141,31 @@ export function RecordingPlayer({
               <Badge variant="destructive" className="gap-1">
                 <ShieldX className="size-3" />
                 integrity failed
+              </Badge>
+            )}
+            {nodeSig === "valid" && (
+              <Badge
+                variant="success"
+                className="gap-1"
+                title="The node signed this exact recording with the key its certificate binds. The controller holds no key that could re-sign a substituted blob."
+              >
+                <ShieldCheck className="size-3" />
+                node-signed
+              </Badge>
+            )}
+            {nodeSig === "invalid" && (
+              <Badge variant="destructive" className="gap-1">
+                <ShieldX className="size-3" />
+                signature failed
+              </Badge>
+            )}
+            {nodeSig === "unavailable" && blob && (
+              <Badge
+                variant="warning"
+                className="gap-1"
+                title="Stored before the controller retained the node's signing key. Node certs rotate daily, so this signature can no longer be checked against anything."
+              >
+                signature not checkable
               </Badge>
             )}
           </DialogTitle>
@@ -244,10 +286,40 @@ export function RecordingPlayer({
                   />
                 </div>
                 <div className="my-4 h-px bg-border" />
-                <div className="flex items-center gap-2 font-mono text-[11.5px] text-success">
-                  ✓ node-attested · tamper-evident
+                {/* Say exactly what this client checked, and no more. The sha256
+                    line alone proves only transport integrity — the digest comes
+                    from the same response as the bytes. The signature line is the
+                    load-bearing one, and only when the node's key was retained. */}
+                <div className="flex flex-col gap-1.5 font-mono text-[11.5px] text-muted-foreground">
+                  <div>✓ sha256 matches the controller manifest</div>
+                  {nodeSig === "valid" && (
+                    <div>
+                      ✓ node signature verifies over session, digest, size and end
+                      time
+                    </div>
+                  )}
+                  {nodeSig === "unavailable" && (
+                    <div className="text-warning">
+                      — no node key stored; this signature cannot be checked
+                    </div>
+                  )}
                 </div>
               </div>
+              {/* The sealed ciphertext, for an auditor who wants to archive the
+                  artifact itself or decrypt it out-of-band with `gz audit rec
+                  pull`. The bytes are already in hand; only the plaintext export
+                  was ever offered. */}
+              {recording.auditKeyId && (
+                <Button
+                  variant="outline"
+                  className="w-full"
+                  onClick={exportSealed}
+                  disabled={!blob}
+                >
+                  <Download className="size-4" />
+                  Download sealed .cast.age
+                </Button>
+              )}
               <Button variant="outline" className="w-full" onClick={exportCast}>
                 <Download className="size-4" />
                 Export transcript
@@ -258,6 +330,17 @@ export function RecordingPlayer({
       </DialogContent>
     </Dialog>
   )
+
+  // Saves the still-encrypted cast exactly as the controller stored it.
+  function exportSealed() {
+    if (!blob) return
+    saveBlob(
+      new Blob([new Uint8Array(blob.ciphertext)], {
+        type: "application/octet-stream",
+      }),
+      `${recording.sessionId}.cast.age`
+    )
+  }
 
   // Saves the decrypted asciicast to disk — the auditor's local transcript copy.
   function exportCast() {

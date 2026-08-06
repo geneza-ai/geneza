@@ -4,13 +4,11 @@ import { Button } from "@geneza/ui"
 import { cn } from "@geneza/ui"
 
 export function PageToolbar({
-  title,
   description,
   children,
   onRefresh,
   refreshing,
 }: {
-  title?: string
   description?: string
   children?: React.ReactNode
   onRefresh?: () => void
@@ -19,9 +17,6 @@ export function PageToolbar({
   return (
     <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
       <div className="min-w-0">
-        {title && (
-          <h2 className="text-sm font-semibold tracking-tight">{title}</h2>
-        )}
         {description && (
           <p className="text-sm text-muted-foreground">{description}</p>
         )}

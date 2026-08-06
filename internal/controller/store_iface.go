@@ -136,6 +136,11 @@ type Store interface {
 	// resolve.
 	PutAdvisories(recs []AdvisoryRecord) error
 	AdvisoriesForPackage(ecosystem, name string) ([]AdvisoryRecord, error)
+	// CountAdvisories reports how many advisory rows are stored. It backs the feed
+	// status the console reads: zero advisories with a feed configured is the
+	// signature of a sync that has never completed, which otherwise presents as a
+	// fleet that is simply clean.
+	CountAdvisories() (int64, error)
 	// Image-digest dedup. A container image's component set and CVE verdicts are a
 	// property of its content digest (the same bytes for every node and tenant), so
 	// they are stored and matched ONCE per digest in the global image tables. The

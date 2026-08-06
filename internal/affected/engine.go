@@ -40,7 +40,15 @@ type Component struct {
 	Ecosystem string
 	Name      string
 	Version   string
-	Distro    string
+	// SourceName is the source package a binary OS package was built from
+	// ("openssl" for "libssl3"). An advisory naming EITHER the binary name or the
+	// source name applies: distro advisories name the source, so matching only on
+	// Name silently clears every split package.
+	SourceName string
+	// SourceVersion is the source package's version when it differs from the
+	// binary package's; empty when they are the same.
+	SourceVersion string
+	Distro        string
 }
 
 // Match is one computed verdict: a component, the CVE it was matched against, the

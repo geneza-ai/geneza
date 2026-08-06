@@ -13,6 +13,7 @@ import { PageToolbar } from "@/components/page-toolbar"
 import { CopyId } from "@/components/copy-id"
 import { relativeTime } from "@/lib/format"
 import type { Policy, PolicyRule, PolicyValidation } from "@/types"
+import { PolicyVisualEditor } from "@/components/policy-visual"
 
 // PolicyPage is the per-workspace authorization editor. A workspace admin edits
 // their own policy document; it validates live against the controller's real
@@ -30,6 +31,16 @@ export function PolicyPage() {
   useEffect(() => {
     setDraft(loadedYaml)
   }, [loadedYaml])
+
+  // Visual | YAML, Tailscale-style. The YAML text stays canonical — it is what is
+  // validated and what is saved — and the visual editor is a view onto it that
+  // renders back through the controller's own parser. One source of truth avoids
+  // the failure mode where the two halves disagree about the document that
+  // decides who may reach what.
+  const [mode, setMode] = useState<"visual" | "yaml">("visual")
+  const [visualDoc, setVisualDoc] = useState<Policy | null>(null)
+  const [visualError, setVisualError] = useState<string | null>(null)
+  const [rendering, setRendering] = useState(false)
 
   const editable = data?.editable ?? false
   const dirty = data !== undefined && draft !== loadedYaml
@@ -64,6 +75,46 @@ export function PolicyPage() {
     }, 450)
     return () => clearTimeout(t)
   }, [draft, data, loadedYaml])
+
+  // Entering the visual editor needs the CURRENT draft as a structure. Parse it
+  // through the controller rather than guessing, and refuse to switch on a
+  // document that does not parse — a structured editor over an unparseable file
+  // would silently discard whatever it could not understand.
+  async function enterVisual() {
+    setVisualError(null)
+    try {
+      const v = await api.validatePolicy(draft)
+      if (!v.valid || !v.policy) {
+        setVisualError(v.error ?? "the document does not parse")
+        return
+      }
+      setVisualDoc(v.policy)
+      setMode("visual")
+    } catch {
+      setVisualError("could not reach the controller")
+    }
+  }
+
+  // A visual edit re-renders the canonical document. The controller emits it, so
+  // the editor never needs a YAML writer of its own.
+  async function applyVisual(next: Policy) {
+    setVisualDoc(next)
+    setRendering(true)
+    try {
+      const r = await api.renderPolicy(next)
+      setDraft(r.yaml)
+      setVisualError(r.valid ? null : (r.error ?? null))
+    } catch {
+      setVisualError("could not reach the controller")
+    } finally {
+      setRendering(false)
+    }
+  }
+
+  // Seed the visual document whenever the loaded policy changes under us.
+  useEffect(() => {
+    if (data?.policy) setVisualDoc(data.policy)
+  }, [data?.policy])
 
   // Preview source: the freshly-validated structure when valid, else the last
   // good loaded policy so the preview never blanks while typing an invalid edit.
@@ -153,9 +204,29 @@ export function PolicyPage() {
               {status.text}
             </span>
           </div>
+          <div className="flex items-center gap-1.5">
+            <ModeTab
+              active={mode === "visual"}
+              onClick={enterVisual}
+              disabled={initialLoading}
+            >
+              Visual
+            </ModeTab>
+            <ModeTab
+              active={mode === "yaml"}
+              onClick={() => setMode("yaml")}
+              disabled={initialLoading}
+            >
+              YAML
+            </ModeTab>
+            {rendering && (
+              <span className="ml-1 text-2xs text-muted-foreground">rendering…</span>
+            )}
+          </div>
+
           {initialLoading ? (
             <div className="h-[60vh] animate-pulse rounded-lg bg-muted/40" />
-          ) : (
+          ) : mode === "yaml" ? (
             <textarea
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
@@ -163,6 +234,24 @@ export function PolicyPage() {
               spellCheck={false}
               className="h-[60vh] w-full resize-none rounded-lg border bg-muted/20 p-3 font-mono text-xs leading-relaxed text-foreground outline-none focus:ring-2 focus:ring-ring read-only:opacity-80"
             />
+          ) : visualDoc ? (
+            <PolicyVisualEditor
+              policy={visualDoc}
+              editable={editable}
+              onChange={applyVisual}
+            />
+          ) : (
+            <Card className="p-4 text-sm text-muted-foreground">
+              This document does not parse, so it cannot be edited structurally.
+              Fix it in the YAML view.
+            </Card>
+          )}
+
+          {visualError && (
+            <div className="flex items-start gap-2 rounded-md border border-warning/40 bg-warning/10 p-2 text-xs text-warning">
+              <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+              <span className="font-mono">{visualError}</span>
+            </div>
           )}
           {validation && !validation.valid && validation.error && (
             <div className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 p-2 text-xs text-destructive">
@@ -175,6 +264,14 @@ export function PolicyPage() {
               Roles grant actions on label-matched nodes; bindings map users and
               IdP groups to roles. <span className="font-mono">admin</span> is the
               reserved cluster role and cannot be granted here.
+              {mode === "visual" && (
+                <>
+                  {" "}
+                  A structural edit rewrites the document from the parsed policy,
+                  so comments and key order are not preserved — use the YAML view
+                  to keep them.
+                </>
+              )}
             </p>
           )}
         </div>
@@ -351,5 +448,34 @@ function ExtraKeys({ rule }: { rule: PolicyRule }) {
         ))}
       </div>
     </>
+  )
+}
+
+// ModeTab is the Visual | YAML switch. Switching to Visual has to parse the
+// current draft first, so it is a callback rather than plain state.
+function ModeTab({
+  active,
+  disabled,
+  onClick,
+  children,
+}: {
+  active: boolean
+  disabled?: boolean
+  onClick: () => void
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={
+        active
+          ? "rounded-[7px] border border-brand-line bg-brand-tint px-3 py-[5px] font-mono text-[11.5px] text-foreground"
+          : "rounded-[7px] border border-border px-3 py-[5px] font-mono text-[11.5px] text-muted-foreground hover:text-foreground"
+      }
+    >
+      {children}
+    </button>
   )
 }

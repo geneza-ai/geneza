@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sort"
 	"strings"
 )
 
@@ -17,6 +18,16 @@ import (
 // roles (admin/platform-admin) are never here — they are break-glass cert only.
 var grantableWSRoles = map[string]bool{
 	roleWSAdmin: true, roleWSMember: true, roleWSAuditor: true, "ws-viewer": true,
+}
+
+// sortedGrantableRoles is the stable, ordered role list the console renders.
+func sortedGrantableRoles() []string {
+	out := make([]string, 0, len(grantableWSRoles))
+	for r := range grantableWSRoles {
+		out = append(out, r)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func memberJSON(m *MemberRecord) map[string]any {
@@ -37,7 +48,14 @@ func (c *consoleAPI) handleListMembers(w http.ResponseWriter, r *http.Request, u
 	for _, m := range ms {
 		out = append(out, memberJSON(m))
 	}
-	writeJSON(w, map[string]any{"members": out})
+	// Ship the grantable set with the list. The console must not hardcode it: the
+	// reserved cluster roles are rejected server-side, and a UI that offers them
+	// would only ever produce a 403 the user cannot act on.
+	writeJSON(w, map[string]any{
+		"members":        out,
+		"grantableRoles": sortedGrantableRoles(),
+		"providers":      []string{providerOIDC, providerKeystone, providerLocal},
+	})
 }
 
 func (c *consoleAPI) handlePutMember(w http.ResponseWriter, r *http.Request, u *consoleUser) {

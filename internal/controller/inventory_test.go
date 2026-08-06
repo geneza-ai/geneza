@@ -545,3 +545,142 @@ func TestInventoryDeltaSQL(t *testing.T) {
 		inventoryDeltaSuite(t, s)
 	})
 }
+
+// realOSVEcosystemSuite is the regression that would have caught the OS-package
+// matcher never producing a verdict. Every other fixture in this repo writes
+// "Ubuntu:22.04" on the ADVISORY side — a string OSV does not publish. Canonical
+// files under "Ubuntu:22.04:LTS" (plus Pro/FIPS variants), Red Hat files the same
+// CVE separately per repo, and the store join used to compare those strings for
+// exact equality. Ubuntu therefore matched nothing, ever, while the tests passed.
+//
+// Everything below is the real spelling, verified against api.osv.dev.
+func realOSVEcosystemSuite(t *testing.T, s Store) {
+	t.Helper()
+	ctx := context.Background()
+	const ws = "ws"
+	if err := s.PutWorkspace(&WorkspaceRecord{ID: ws, Name: "ws"}); err != nil {
+		t.Fatalf("PutWorkspace: %v", err)
+	}
+
+	dir := writeOSVFixtures(t, map[string]string{
+		// As published: the release carries an :LTS suffix the agent never reports.
+		"ubuntu.json": `{
+			"id": "UBUNTU-CVE-2022-0778", "modified": "2024-01-01T00:00:00Z",
+			"aliases": ["CVE-2022-0778"],
+			"affected": [{"package": {"ecosystem": "Ubuntu:22.04:LTS", "name": "openssl"},
+				"ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": "1.1.1f-1ubuntu2.16"}]}]}]
+		}`,
+		// A Pro/FIPS-only advisory. It shares the family AND the release, so a
+		// family-only or key-only match would wrongly land it on a plain host.
+		"ubuntu-pro.json": `{
+			"id": "UBUNTU-CVE-9999-0001", "modified": "2024-01-01T00:00:00Z",
+			"aliases": ["CVE-9999-0001"],
+			"affected": [{"package": {"ecosystem": "Ubuntu:Pro:FIPS-updates:22.04:LTS", "name": "openssl"},
+				"ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": "99.0"}]}]}]
+		}`,
+		// Filed against the SOURCE package. The installed package is a binary split
+		// of it, so a name-only match finds nothing: OSV has 0 advisories for
+		// "libssl3" and 87 for "openssl" on Ubuntu 22.04, 0 for "libc6" and 158 for
+		// "glibc" on Debian 12.
+		"debian-src.json": `{
+			"id": "DSA-5417-1", "modified": "2024-01-01T00:00:00Z",
+			"aliases": ["CVE-2023-0464"],
+			"affected": [{"package": {"ecosystem": "Debian:12", "name": "openssl"},
+				"ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": "3.0.9-1"}]}]}]
+		}`,
+		// Red Hat files one CVE per repo; a host installs from several, so the repo
+		// the advisory happens to name must not scope it away.
+		"redhat.json": `{
+			"id": "RHSA-2024:0001", "modified": "2024-01-01T00:00:00Z",
+			"aliases": ["CVE-2024-1111"],
+			"affected": [{"package": {"ecosystem": "Red Hat:enterprise_linux:9::appstream", "name": "openssl"},
+				"ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": "3.0.7-25.el9_3"}]}]}]
+		}`,
+	})
+	feed := osv.New(dir, FeedStore(s))
+	if _, err := feed.Sync(ctx, time.Time{}); err != nil {
+		t.Fatalf("feed.Sync: %v", err)
+	}
+	srv := &Server{store: s, inventoryFeed: feed}
+
+	// A plain Ubuntu 22.04 host, reporting exactly what osv-scalibr's dpkg
+	// extractor emits: Title(OSID) + ":" + OSVersionID. No :LTS, no Pro.
+	if _, err := srv.ingestInventoryReport(ctx, ws, "ubu", inventoryReportFor(t, "ubu", []sbom.Component{{
+		Purl: "pkg:deb/ubuntu/openssl@1.1.1f-1ubuntu2.10?distro=ubuntu-22.04",
+		Name: "openssl", Version: "1.1.1f-1ubuntu2.10",
+		Ecosystem: "Ubuntu:22.04", Distro: "ubuntu:22.04", Source: "os",
+	}})); err != nil {
+		t.Fatalf("ingest ubuntu node: %v", err)
+	}
+	// A RHEL 9 host whose CPE names the baseos repo, matched against an advisory
+	// filed under appstream.
+	if _, err := srv.ingestInventoryReport(ctx, ws, "rhel", inventoryReportFor(t, "rhel", []sbom.Component{{
+		Purl: "pkg:rpm/redhat/openssl@3.0.7-24.el9?distro=rhel-9",
+		Name: "openssl", Version: "3.0.7-24.el9",
+		Ecosystem: "Red Hat:enterprise_linux:9::baseos", Distro: "rhel:9", Source: "os",
+	}})); err != nil {
+		t.Fatalf("ingest rhel node: %v", err)
+	}
+
+	// A Debian host carrying only the BINARY split package.
+	if _, err := srv.ingestInventoryReport(ctx, ws, "deb", inventoryReportFor(t, "deb", []sbom.Component{{
+		Purl: "pkg:deb/debian/libssl3@3.0.8-1?distro=debian-12&source=openssl",
+		Name: "libssl3", Version: "3.0.8-1",
+		Ecosystem: "Debian:12", Distro: "debian:12", Source: "os",
+		SourceName: "openssl",
+	}})); err != nil {
+		t.Fatalf("ingest debian node: %v", err)
+	}
+
+	deb := map[string]string{}
+	drows, err := s.CVEsForNode(ws, "deb")
+	if err != nil {
+		t.Fatalf("CVEsForNode deb: %v", err)
+	}
+	for _, r := range drows {
+		deb[r.CVE] = r.Status
+	}
+	if deb["CVE-2023-0464"] != "affected" {
+		t.Errorf("a binary package (libssl3) must resolve the advisory filed against its SOURCE (openssl) — got %q (all: %v)",
+			deb["CVE-2023-0464"], deb)
+	}
+
+	ubu := map[string]string{}
+	rows, err := s.CVEsForNode(ws, "ubu")
+	if err != nil {
+		t.Fatalf("CVEsForNode ubu: %v", err)
+	}
+	for _, r := range rows {
+		ubu[r.CVE] = r.Status
+	}
+	if ubu["CVE-2022-0778"] != "affected" {
+		t.Errorf("an Ubuntu host must match an advisory filed under %q — got %q for CVE-2022-0778 (all: %v)",
+			"Ubuntu:22.04:LTS", ubu["CVE-2022-0778"], ubu)
+	}
+	if st, ok := ubu["CVE-9999-0001"]; ok && st == "affected" {
+		t.Errorf("a Pro/FIPS-only advisory must not produce an affected verdict on a plain host (got %q)", st)
+	}
+
+	rhel := map[string]string{}
+	rrows, err := s.CVEsForNode(ws, "rhel")
+	if err != nil {
+		t.Fatalf("CVEsForNode rhel: %v", err)
+	}
+	for _, r := range rrows {
+		rhel[r.CVE] = r.Status
+	}
+	if rhel["CVE-2024-1111"] != "affected" {
+		t.Errorf("a RHEL baseos host must match an advisory filed under ::appstream — got %q (all: %v)",
+			rhel["CVE-2024-1111"], rhel)
+	}
+}
+
+func TestRealOSVEcosystemsBbolt(t *testing.T) {
+	realOSVEcosystemSuite(t, testStore(t))
+}
+
+func TestRealOSVEcosystemsSQL(t *testing.T) {
+	forEachSQLEngine(t, func(t *testing.T, s *sqlStore) {
+		realOSVEcosystemSuite(t, s)
+	})
+}

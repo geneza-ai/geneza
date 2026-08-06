@@ -3,6 +3,7 @@ import { Activity, Power } from "lucide-react"
 import { toast } from "sonner"
 
 import { api, ApiError } from "@/api"
+import { setNodeModuleMerged } from "@/lib/modules"
 import { usePolling } from "@/hooks/use-polling"
 import { useSession } from "@/components/session-context"
 import { Button } from "@geneza/ui"
@@ -49,7 +50,11 @@ export function MetricsPage() {
       .getNodeModules(selected.nodeId)
       .then((r) => {
         if (active)
-          setMonOn(r.modules.some((m) => m.name === "node-exporter" && m.enabled))
+          setMonOn(
+            (r.modules ?? []).some(
+              (m) => m.name === "node-exporter" && m.enabled
+            )
+          )
       })
       .catch(() => active && setMonOn(null))
     return () => {
@@ -62,9 +67,7 @@ export function MetricsPage() {
     setBusy(true)
     const next = !monOn
     try {
-      await api.setNodeModules(selected.nodeId, [
-        { name: "node-exporter", enabled: next },
-      ])
+      await setNodeModuleMerged(selected.nodeId, "node-exporter", next)
       setMonOn(next)
       toast.success(next ? "Monitoring enabled" : "Monitoring disabled", {
         description: selected.name,
@@ -90,7 +93,7 @@ export function MetricsPage() {
 
   return (
     <div className="space-y-4">
-      <PageToolbar description="Built-in metrics — collected over the agent control channel, stored in the controller's embedded TSDB.">
+      <PageToolbar description="Built-in metrics — collected over the agent control channel and forwarded to the configured metrics backend (metrics_url); the controller holds no series of its own.">
         <Select value={node} onValueChange={setNode}>
           <SelectTrigger className="w-48">
             <SelectValue placeholder="Select node" />

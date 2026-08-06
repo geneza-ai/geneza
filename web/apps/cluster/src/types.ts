@@ -19,6 +19,16 @@ export interface Relay {
   version: string
   lastSeenUnix: number
   online: boolean
+  // Shedding for a binary swap: still online and visible, but excluded from
+  // new-session selection. Without this a draining relay renders as plain
+  // "Online", which is exactly the state a swap needs to distinguish.
+  draining: boolean
+  healthy: boolean
+  // Live splice + control-mux count. Reaches 0 once the relay's sessions have
+  // migrated off and the binary is safe to swap — the drain's progress bar.
+  activeCount: number
+  // The serial `genezactl cert revoke` takes.
+  certSerial?: string
   // A configured-but-not-heartbeating relay (relay_addrs). Its version is "".
   static: boolean
 }
@@ -39,12 +49,6 @@ export interface RiskAgent extends Agent {
   cveCount: number
 }
 
-export interface Workspace {
-  id: string
-  name: string
-  overlayCidr: string
-  createdUnix: number
-}
 
 export interface ControllersResponse {
   controllers: Controller[]
@@ -57,7 +61,4 @@ export interface AgentsResponse {
 }
 export interface RiskResponse {
   agents: RiskAgent[]
-}
-export interface WorkspacesResponse {
-  workspaces: Workspace[]
 }

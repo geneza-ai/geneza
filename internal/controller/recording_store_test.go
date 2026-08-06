@@ -31,6 +31,7 @@ func recordingStoreSuite(t *testing.T, s Store) {
 		SizeBytes:   4096,
 		SHA256:      "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
 		NodeSig:     []byte{0x01, 0x02, 0x03, 0x04},
+		NodeSPKI:    []byte{0x30, 0x59, 0x30, 0x13, 0xAA, 0xBB},
 		AuditKeyID:  "age1auditkey",
 		BlobRef:     "local:s-aaaaaaaaaaaa.cast.age",
 		Truncated:   true,
@@ -55,6 +56,12 @@ func recordingStoreSuite(t *testing.T, s Store) {
 	}
 	if got.SHA256 != rec.SHA256 || got.AuditKeyID != rec.AuditKeyID || got.BlobRef != rec.BlobRef {
 		t.Errorf("string fields round-trip wrong: %+v", got)
+	}
+	// Without the key the signature was made with, the stored signature is
+	// unverifiable forever: node certs rotate daily, so there is nothing to check
+	// it against later.
+	if string(got.NodeSPKI) != string(rec.NodeSPKI) {
+		t.Errorf("node_spki round-trip wrong: %x", got.NodeSPKI)
 	}
 	if string(got.NodeSig) != string(rec.NodeSig) {
 		t.Errorf("node_sig round-trip wrong: %x", got.NodeSig)

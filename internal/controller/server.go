@@ -54,8 +54,11 @@ type Server struct {
 	// signal. All nil/off on a deployment with no feed configured, in which case an
 	// inventory report still stores the SBOM and re-indexes components but writes no
 	// verdicts (there are no advisories to match).
-	inventoryFeed     vulnfeed.Feed
-	inventoryVEX      engine.VEXSource
+	inventoryFeed vulnfeed.Feed
+	inventoryVEX  engine.VEXSource
+	// invQueue keeps inventory ingestion off the node control-stream recv loop;
+	// see inventoryqueue.go for why that matters.
+	invQueue          *inventoryQueue
 	inventoryEnricher *enrich.Enricher
 	// inventoryImageAdvisor is the registry scan-by-digest provider folded into an
 	// image digest's match (a known image needs no local scan). Nil until set; the
@@ -326,6 +329,7 @@ func New(cfg *Config) (*Server, error) {
 	// verdicts (today's behaviour, byte-for-byte). The OpenVEX suppression source
 	// and the KEV/EPSS enricher ride alongside, each off unless configured.
 	s.inventoryFeed = s.buildVulnFeed()
+	s.startInventoryQueue()
 	if vex, err := s.buildVulnVEX(); err != nil {
 		s.Close()
 		return nil, err

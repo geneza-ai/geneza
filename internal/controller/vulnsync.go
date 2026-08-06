@@ -26,17 +26,38 @@ const settingPaidBundleVersion = "vuln_paid_bundle_version"
 // and another retries the same window).
 const settingVulnSyncWatermark = "vuln_sync_watermark_unix"
 
+// settingVulnSyncLastError records the most recent sync failure (empty after a
+// success), so the console can tell "no CVEs because the fleet is clean" apart from
+// "no CVEs because the feed has never finished downloading". Without it a failing
+// sync is visible only in whichever controller's logs happened to run the tick.
+const settingVulnSyncLastError = "vuln_sync_last_error"
+
 // vulnSyncMinInterval floors the configured cadence so a misconfigured tiny
 // interval cannot turn the chore into a hot loop hammering the feed source.
 const vulnSyncMinInterval = time.Minute
 
 // changedFeed is the optional surface a feed exposes so the sync chore can
-// re-match ONLY the advisories a sync (re)wrote, instead of re-scanning the
-// fleet. Both OSV sources implement it; a feed that does not is simply synced
-// with no post-sync re-match (its verdicts converge when nodes next report).
+// re-match ONLY what a sync (re)wrote, instead of re-scanning the fleet. All three
+// sources implement it; a feed that does not is simply synced with no post-sync
+// re-match (its verdicts converge when nodes next report).
+//
+// It reports PACKAGES, not advisories: the re-match is keyed by package, and on a
+// first full sync the advisory set is the whole feed — several hundred thousand
+// records held only to be reduced to their package names.
 type changedFeed interface {
-	Changed() []vulnfeed.Vulnerability
+	ChangedPackages() []vulnfeed.Package
 }
+
+// The assertion is the point: this is a SILENT seam. A feed that stops satisfying
+// it — a rename, a signature change — still compiles, still syncs, and simply
+// never re-matches anything again, which presents as a fleet with a full advisory
+// store and no verdicts. Every shipped feed is pinned here so that breaks the build
+// instead. TestEveryConfiguredFeedReportsChangedPackages covers the wiring.
+var (
+	_ changedFeed = (*osv.Feed)(nil)
+	_ changedFeed = (*osv.BulkFeed)(nil)
+	_ changedFeed = (*paid.Feed)(nil)
+)
 
 // buildVulnFeed constructs the configured feed and binds it to this server's
 // advisory store, or returns nil when no source is configured (today's
@@ -150,6 +171,18 @@ func (s *Server) runVulnSync(ctx context.Context) {
 	feedOn := s.cfg.VulnFeed.Enabled() && s.inventoryFeed != nil
 	enrichOn := s.inventoryEnricher != nil
 	if !feedOn && !enrichOn {
+		// Say so. With no feed the inventory module still collects SBOMs and the
+		// console still renders every node, so the deployment looks entirely healthy
+		// while being structurally incapable of ever reporting a CVE. Silence here is
+		// what makes that indistinguishable from a genuinely clean fleet.
+		if !s.cfg.VulnFeed.Enabled() {
+			slog.Warn("vuln feed disabled: no CVE verdicts will be produced"+
+				" (set vuln_feed.source in controller.yaml; SBOM collection is unaffected)",
+				"component", "vulnfeed")
+		} else {
+			slog.Error("vuln feed configured but could not be built: no CVE verdicts will be produced",
+				"component", "vulnfeed", "source", s.cfg.VulnFeed.Source)
+		}
 		return
 	}
 	interval := s.cfg.VulnFeed.SyncInterval.D()
@@ -200,33 +233,7 @@ func (s *Server) vulnSyncTick(ctx context.Context) {
 
 	n, rematched := 0, 0
 	if s.cfg.VulnFeed.Enabled() && s.inventoryFeed != nil {
-		since := s.vulnSyncWatermark()
-		startedUnix := time.Now().Unix()
-		fetched, err := s.inventoryFeed.Sync(ctx, since)
-		if err != nil {
-			slog.Warn("vuln sync: feed sync", "err", err)
-			return
-		}
-		n = fetched
-		if cf, ok := s.inventoryFeed.(changedFeed); ok {
-			for _, adv := range cf.Changed() {
-				w, rerr := s.RematchChangedAdvisory(ctx, s.inventoryVEX, adv)
-				if rerr != nil {
-					// Leave the watermark unadvanced so the next tick re-syncs this window
-					// and re-attempts the re-match; a half-applied window is never recorded.
-					slog.Warn("vuln sync: re-match advisory", "advisory", adv.ID, "err", rerr)
-					return
-				}
-				rematched += w
-			}
-		}
-		// Advance the watermark only after sync + re-match both fully succeeded. The
-		// cursor is the moment the sync STARTED, so an advisory modified during the
-		// fetch is re-considered next tick (at-least-once), never skipped.
-		if err := s.setVulnSyncWatermark(startedUnix); err != nil {
-			slog.Warn("vuln sync: persist watermark", "err", err)
-			return
-		}
+		n, rematched = s.syncAndRematch(ctx)
 	}
 
 	// Enrichment pass: refresh the KEV/EPSS snapshot and overlay it onto the CVEs
@@ -237,6 +244,53 @@ func (s *Server) vulnSyncTick(ctx context.Context) {
 	if n > 0 || rematched > 0 || enriched > 0 {
 		slog.Info("vuln sync complete", "advisories", n, "verdicts", rematched, "enriched", enriched)
 	}
+}
+
+// syncAndRematch pulls the feed from the persisted watermark, queues the changed
+// advisories' packages, and drains as much of that queue as this tick's budget
+// allows. It reports the advisories fetched and the verdict rows written.
+//
+// The watermark advances only when the queue drains completely, so a partial run
+// re-syncs the same window next tick — but the queue keeps what it already did, so
+// "re-sync the window" costs a feed fetch, not the whole re-match again.
+func (s *Server) syncAndRematch(ctx context.Context) (fetched, rematched int) {
+	since := s.vulnSyncWatermark()
+	startedUnix := time.Now().Unix()
+	n, err := s.inventoryFeed.Sync(ctx, since)
+	if err != nil {
+		slog.Warn("vuln sync: feed sync", "err", err)
+		s.setVulnSyncLastError(err.Error())
+		return 0, 0
+	}
+	// Fold the changed advisories into the persisted re-match queue as distinct
+	// (ecosystem, package) keys. See vulnrematch.go for why the unit of work is the
+	// package rather than the advisory.
+	if cf, ok := s.inventoryFeed.(changedFeed); ok {
+		if _, err := s.enqueueRematch(cf.ChangedPackages(), startedUnix); err != nil {
+			slog.Warn("vuln sync: queue re-match", "err", err)
+			s.setVulnSyncLastError(err.Error())
+			return n, 0
+		}
+	}
+	w, drained, err := s.drainRematchQueue(ctx, s.inventoryVEX)
+	if err != nil {
+		slog.Warn("vuln sync: re-match", "err", err)
+		s.setVulnSyncLastError(err.Error())
+		return n, w
+	}
+	s.setVulnSyncLastError("")
+	if !drained {
+		return n, w
+	}
+	// The cursor is the moment this sync STARTED, not the queue's candidate: a feed
+	// that does not report changed advisories never writes a queue, and reading the
+	// watermark back from an absent queue would reset it to zero and re-sync the
+	// whole feed on every tick.
+	if err := s.setVulnSyncWatermark(startedUnix); err != nil {
+		slog.Warn("vuln sync: persist watermark", "err", err)
+		s.setVulnSyncLastError(err.Error())
+	}
+	return n, w
 }
 
 // enrichVerdicts refreshes the KEV/EPSS feeds and overlays them onto the CVEs that
@@ -311,4 +365,52 @@ func (s *Server) vulnSyncWatermark() time.Time {
 // setVulnSyncWatermark persists the last-sync cursor in the shared settings table.
 func (s *Server) setVulnSyncWatermark(unix int64) error {
 	return s.store.SetSetting(settingVulnSyncWatermark, []byte(strconv.FormatInt(unix, 10)))
+}
+
+// setVulnSyncLastError records (or, with "", clears) the last sync failure. A
+// failure to persist it is not worth failing the tick over — it is a status hint.
+func (s *Server) setVulnSyncLastError(msg string) {
+	if err := s.store.SetSetting(settingVulnSyncLastError, []byte(msg)); err != nil {
+		slog.Warn("vuln sync: persist last error", "err", err)
+	}
+}
+
+// vulnSyncLastError reads the recorded last sync failure ("" when the last sync
+// succeeded or none has run).
+func (s *Server) vulnSyncLastError() string {
+	b, err := s.store.GetSetting(settingVulnSyncLastError)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// VulnFeedStatus is what the console needs to render an honest empty state: with a
+// feed off, or synced-but-empty, "no vulnerabilities" is not a clean bill of health.
+type VulnFeedStatus struct {
+	Enabled       bool     `json:"enabled"`
+	Source        string   `json:"source"`
+	Ecosystems    []string `json:"ecosystems,omitempty"`
+	LastSyncUnix  int64    `json:"lastSyncUnix"`
+	AdvisoryCount int64    `json:"advisoryCount"`
+	LastError     string   `json:"lastError,omitempty"`
+}
+
+// vulnFeedStatus assembles the current feed status.
+func (s *Server) vulnFeedStatus() VulnFeedStatus {
+	st := VulnFeedStatus{
+		Enabled:   s.cfg.VulnFeed.Enabled() && s.inventoryFeed != nil,
+		Source:    s.cfg.VulnFeed.Source,
+		LastError: s.vulnSyncLastError(),
+	}
+	if st.Enabled {
+		st.Ecosystems = s.cfg.VulnFeed.Ecosystems
+		if wm := s.vulnSyncWatermark(); !wm.IsZero() {
+			st.LastSyncUnix = wm.Unix()
+		}
+		if n, err := s.store.CountAdvisories(); err == nil {
+			st.AdvisoryCount = n
+		}
+	}
+	return st
 }

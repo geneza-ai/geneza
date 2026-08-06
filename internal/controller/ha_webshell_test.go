@@ -343,6 +343,9 @@ func TestMintTokenReturnsAUsableEnrollCode(t *testing.T) {
 	if srv.rootFingerprint() == "" {
 		t.Fatalf("precondition: the server must now serve a root fingerprint")
 	}
+	// A fingerprint alone does not mean this controller serves /install.sh — the
+	// one-liner is gated on install_dir too, so set it for the happy path.
+	srv.cfg.InstallDir = t.TempDir()
 	tok := mintConsoleSession(t, srv, defaultWorkspace, "admin", roleWSAdmin)
 
 	r := httptest.NewRequest("POST", "/api/v1/tokens", strings.NewReader(`{"ttlSeconds":3600,"maxUses":1}`))
@@ -385,6 +388,75 @@ func TestMintTokenReturnsAUsableEnrollCode(t *testing.T) {
 	}
 }
 
+// rootFingerprint() is non-empty for every release build (it falls back to the
+// compiled-in root), so it does NOT imply this controller serves an installer.
+// With install_dir unset, /install.sh 404s — and behind a catch-all SPA route it
+// answers with index.html and HTTP 200, i.e. HTML piped into `sudo sh`. The mint
+// must therefore withhold the one-liner and hand back the code alone.
+func TestMintTokenOmitsInstallCommandWithoutAnInstaller(t *testing.T) {
+	srv, api, _ := buildLaunchServer(t, EmbedConfig{})
+	rootPub := filepath.Join(t.TempDir(), "root.pub")
+	if err := os.WriteFile(rootPub, []byte(
+		"-----BEGIN PUBLIC KEY-----\n"+
+			"MCowBQYDK2VwAyEALaKgDFdpt/6Ka0BZkCY7qCa6TKUPNhS7CSEMUpQnXtw=\n"+
+			"-----END PUBLIC KEY-----\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srv.cfg.RootPubkeyFile = rootPub
+	srv.cfg.InstallDir = ""
+	tok := mintConsoleSession(t, srv, defaultWorkspace, "admin", roleWSAdmin)
+
+	r := httptest.NewRequest("POST", "/api/v1/tokens", strings.NewReader(`{"ttlSeconds":3600,"maxUses":1}`))
+	r.Header.Set("Authorization", "Bearer "+tok)
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	api.handler().ServeHTTP(w, r)
+	if w.Code != 200 {
+		t.Fatalf("mint: %d %s", w.Code, w.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if cmd, ok := body["installCommand"]; ok {
+		t.Fatalf("installCommand must be withheld when install_dir is unset, got %q", cmd)
+	}
+	if code, _ := body["enrollCode"].(string); !strings.HasPrefix(code, "gzk_") {
+		t.Fatalf("the code itself must still be returned, got %q", code)
+	}
+}
+
+// An unset console.external_url used to render "curl -fsSL /install.sh | sudo sh",
+// a relative URL that cannot work. Fall back to the controller's own runtime base
+// like `geneza node enroll` does, and never emit a host-less command.
+func TestMintTokenNeverEmitsAHostlessInstallCommand(t *testing.T) {
+	srv, api, _ := buildLaunchServer(t, EmbedConfig{})
+	rootPub := filepath.Join(t.TempDir(), "root.pub")
+	if err := os.WriteFile(rootPub, []byte(
+		"-----BEGIN PUBLIC KEY-----\n"+
+			"MCowBQYDK2VwAyEALaKgDFdpt/6Ka0BZkCY7qCa6TKUPNhS7CSEMUpQnXtw=\n"+
+			"-----END PUBLIC KEY-----\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srv.cfg.RootPubkeyFile = rootPub
+	srv.cfg.InstallDir = t.TempDir()
+	srv.cfg.Console.ExternalURL = ""
+	tok := mintConsoleSession(t, srv, defaultWorkspace, "admin", roleWSAdmin)
+
+	r := httptest.NewRequest("POST", "/api/v1/tokens", strings.NewReader(`{"ttlSeconds":3600,"maxUses":1}`))
+	r.Header.Set("Authorization", "Bearer "+tok)
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	api.handler().ServeHTTP(w, r)
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if cmd, _ := body["installCommand"].(string); strings.Contains(cmd, " /install.sh") {
+		t.Fatalf("install command must carry a host, got %q", cmd)
+	}
+}
+
 // The web-shell proxy may only rewrite the relay target to loopback when the
 // relay is actually on this host. It used to do so unconditionally, which is
 // fine on a single box and fatal everywhere else: with a separate relay layer
@@ -421,5 +493,37 @@ func TestLocalRelayOverrideOnlyWhenColocated(t *testing.T) {
 					tc.relay, tc.dnsNames, tc.ips, got, tc.want)
 			}
 		})
+	}
+}
+
+// The console hands out `curl -fsSL <console-origin>/install.sh | sudo sh`, so the
+// console listener must actually serve the installer. It used to fall through to
+// the SPA catch-all, which answers ANY unknown path with index.html and HTTP 200 —
+// so the one-liner piped HTML into `sudo sh` and every status-code check read
+// healthy. Serve the real script, and 404 (never 200) when no installer is set up.
+func TestConsoleListenerServesTheInstaller(t *testing.T) {
+	srv, api, _ := buildLaunchServer(t, EmbedConfig{})
+	h := api.handler()
+
+	// With no install_dir the console must NOT answer 200 with the SPA.
+	srv.cfg.InstallDir = ""
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/install.sh", nil))
+	if w.Code == 200 {
+		t.Fatalf("console served 200 for /install.sh with no installer — that is the SPA, i.e. HTML into sudo sh")
+	}
+
+	// With one configured it must serve the script itself, not the SPA.
+	srv.cfg.InstallDir = t.TempDir()
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/install.sh", nil))
+	if w.Code != 200 {
+		t.Fatalf("install.sh: %d %s", w.Code, w.Body.String())
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "shellscript") {
+		t.Fatalf("content-type %q — the SPA would say text/html", ct)
+	}
+	if body := w.Body.String(); !strings.HasPrefix(body, "#!") {
+		t.Fatalf("body is not a shell script: %.60q", body)
 	}
 }

@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from "react"
-import { useParams, useSearchParams } from "react-router-dom"
-import { ShieldAlert, ShieldCheck } from "lucide-react"
+import { useNavigate, useParams, useSearchParams } from "react-router-dom"
+import { Download, ShieldAlert, ShieldCheck, Trash2 } from "lucide-react"
 import { toast } from "sonner"
 
 import { api, ApiError } from "@/api"
+import { setNodeModuleMerged } from "@/lib/modules"
 import { usePolling } from "@/hooks/use-polling"
 import { useSession } from "@/components/session-context"
 import { Button, Card, CardContent, cn } from "@geneza/ui"
@@ -32,6 +33,16 @@ import { distroFromLabels } from "@/lib/os"
 import { CopyId } from "@/components/copy-id"
 import { LabelTags } from "@/components/label-tags"
 import { ReapproveDialog } from "@/components/reapprove-dialog"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { ActionBadge, StateBadge } from "@/components/session-badges"
 import { NodeMetricsGrid } from "@/components/node-metrics"
 import { NodeVulnerabilities } from "@/components/node-vulnerabilities"
@@ -39,8 +50,8 @@ import { NodeComponentsList } from "@/components/node-components"
 import { WebShell } from "@/components/web-shell"
 import { ErrorState } from "@/components/states"
 import { RANGES } from "@/components/node-metrics"
-import { relativeTime } from "@/lib/format"
-import type { NodeInfo, NodesResponse, SessionInfo, SessionsResponse } from "@/types"
+import { relativeTime, saveBlob } from "@/lib/format"
+import type { NodeInfo, SessionInfo, SessionsResponse } from "@/types"
 
 // One mono-labelled detail entry in the design's Details card.
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
@@ -69,15 +80,17 @@ export function NodeDetailPage() {
   const setTab = (v: string) =>
     setParams(v === "overview" ? {} : { tab: v }, { replace: true })
 
-  const { data, error, refresh } = usePolling<NodesResponse>(
-    (s) => api.getNodes(undefined, s),
-    10000
+  // Fetch THIS node, not the fleet. This used to poll the node list every 10s and
+  // search it for the id, so past the first page a node that plainly exists
+  // rendered "Node not found." — and every open detail page pulled the whole
+  // fleet's worth of rows on a tight loop to read one of them.
+  const { data, error, refresh } = usePolling<NodeInfo>(
+    (s) => api.getNode(id ?? "", s),
+    10000,
+    [id]
   )
   const fleetCves = useFleetCves()
-  const fresh = useMemo<NodeInfo | undefined>(
-    () => data?.nodes.find((n) => n.nodeId === id),
-    [data, id]
-  )
+  const fresh = data ?? undefined
   // Hold the last-seen node so a transient poll (empty list, refetch) never
   // collapses the page to "loading" and tears down a live terminal/tab.
   const [node, setNode] = useState<NodeInfo | undefined>(fresh)
@@ -90,7 +103,11 @@ export function NodeDetailPage() {
   const [rangeSec, setRangeSec] = useState(RANGES[1].sec)
   const [monOn, setMonOn] = useState<boolean | null>(null)
   const [busy, setBusy] = useState(false)
+  const navigate = useNavigate()
   const [reapprove, setReapprove] = useState(false)
+  const [quarantine, setQuarantine] = useState(false)
+  const [retire, setRetire] = useState(false)
+  const [quarantineReason, setQuarantineReason] = useState("")
 
   useEffect(() => {
     if (!node) return
@@ -115,7 +132,7 @@ export function NodeDetailPage() {
     setBusy(true)
     const next = !monOn
     try {
-      await api.setNodeModules(node.nodeId, [{ name: "node-exporter", enabled: next }])
+      await setNodeModuleMerged(node.nodeId, "node-exporter", next)
       setMonOn(next)
       toast.success(next ? "Monitoring enabled" : "Monitoring disabled", {
         description: node.name,
@@ -129,20 +146,21 @@ export function NodeDetailPage() {
     }
   }
 
-  async function setApproval(approve: boolean) {
+  async function setApproval(approve: boolean, reason?: string) {
     if (!node) return
     // Re-approving a quarantined node needs a recorded reason — collect it in
-    // a dialog. Fresh pending approval and quarantine are one click.
+    // a dialog. Fresh pending approval is one click.
     if (approve && node.quarantineReason) {
       setReapprove(true)
       return
     }
     setBusy(true)
     try {
-      await api.approveNode(node.nodeId, approve)
+      await api.approveNode(node.nodeId, approve, reason)
       toast.success(approve ? "Node approved" : "Node quarantined", {
         description: node.name,
       })
+      setQuarantine(false)
       refresh()
     } catch (err) {
       toast.error("Failed to update admission", {
@@ -150,6 +168,40 @@ export function NodeDetailPage() {
       })
     } finally {
       setBusy(false)
+    }
+  }
+
+  // Retiring deletes the node's record; it must re-enroll to come back. The route
+  // and client have existed all along with no caller, so the console could approve
+  // and quarantine a node but never remove one.
+  async function retireNode() {
+    if (!node) return
+    setBusy(true)
+    try {
+      await api.removeNode(node.nodeId)
+      toast.success("Node retired", {
+        description: `${node.name} must re-enroll to return.`,
+      })
+      navigate("/nodes")
+    } catch (err) {
+      toast.error("Failed to retire node", {
+        description: err instanceof ApiError ? err.message : String(err),
+      })
+      setBusy(false)
+    }
+  }
+
+  // The CycloneDX SBOM and the OpenVEX findings are exactly what `geneza node
+  // inventory export [--vex]` produces; both routes were already served.
+  async function exportDocument(kind: "sbom" | "findings.vex") {
+    if (!node) return
+    try {
+      const { blob, filename } = await api.downloadNodeDocument(node.nodeId, kind)
+      saveBlob(blob, filename)
+    } catch (err) {
+      toast.error("Export failed", {
+        description: err instanceof ApiError ? err.message : String(err),
+      })
     }
   }
 
@@ -180,6 +232,81 @@ export function NodeDetailPage() {
           refresh()
         }}
       />
+
+      {/* Quarantining kills live sessions, so it collects the reason the audit
+          log records — the same --reason the CLI takes. It used to be one
+          unconfirmed click with no cause captured. */}
+      <Dialog
+        open={quarantine}
+        onOpenChange={(open) => !open && !busy && setQuarantine(false)}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Quarantine {node.name}?</DialogTitle>
+            <DialogDescription>
+              This revokes the node's approval and immediately kills its live
+              sessions. It stays enrolled and can be re-approved.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-1.5">
+            <Label htmlFor="qreason">Reason</Label>
+            <Input
+              id="qreason"
+              value={quarantineReason}
+              onChange={(e) => setQuarantineReason(e.target.value)}
+              placeholder="why this node is being quarantined"
+            />
+            <p className="text-xs text-muted-foreground">
+              Recorded in the audit log and shown on the node until it is
+              re-approved.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setQuarantine(false)}
+              disabled={busy}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => setApproval(false, quarantineReason)}
+              disabled={busy || !quarantineReason.trim()}
+            >
+              {busy ? "Quarantining…" : "Quarantine node"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={retire}
+        onOpenChange={(open) => !open && !busy && setRetire(false)}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Retire {node.name}?</DialogTitle>
+            <DialogDescription>
+              This deletes the node's record entirely — its inventory, verdicts
+              and history go with it. The machine must enroll again with a new
+              code to come back. To merely block access, quarantine it instead.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setRetire(false)}
+              disabled={busy}
+            >
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={retireNode} disabled={busy}>
+              {busy ? "Retiring…" : "Retire node"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Identity header */}
       <div className="mb-5 flex flex-wrap items-start justify-between gap-5">
@@ -222,7 +349,7 @@ export function NodeDetailPage() {
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => setApproval(false)}
+                  onClick={() => setQuarantine(true)}
                   disabled={busy}
                 >
                   <ShieldAlert className="size-4" />
@@ -241,6 +368,15 @@ export function NodeDetailPage() {
                 disabled={busy || monOn === null}
               >
                 {monOn ? "Disable monitoring" : "Enable monitoring"}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setRetire(true)}
+                disabled={busy}
+              >
+                <Trash2 className="size-4" />
+                Retire
               </Button>
             </>
           )}
@@ -293,6 +429,13 @@ export function NodeDetailPage() {
                     {node.approved ? (
                       <span className="inline-flex items-center gap-1 text-success">
                         <ShieldCheck className="size-3.5" /> approved
+                      </span>
+                    ) : node.quarantineReason ? (
+                      <span className="inline-flex flex-wrap items-center gap-1 text-destructive">
+                        <ShieldAlert className="size-3.5" /> quarantined
+                        <span className="text-muted-foreground">
+                          ({node.quarantineReason})
+                        </span>
                       </span>
                     ) : (
                       <span className="inline-flex items-center gap-1 text-warning">
@@ -453,6 +596,24 @@ export function NodeDetailPage() {
         </TabsContent>
 
         <TabsContent value="inventory">
+          <div className="mb-3 flex flex-wrap justify-end gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => exportDocument("sbom")}
+            >
+              <Download className="size-4" />
+              CycloneDX SBOM
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => exportDocument("findings.vex")}
+            >
+              <Download className="size-4" />
+              OpenVEX findings
+            </Button>
+          </div>
           <NodeComponentsList nodeId={node.nodeId} />
         </TabsContent>
 
@@ -469,9 +630,13 @@ export function NodeDetailPage() {
 const KICKABLE = new Set(["active", "detached", "pending"])
 
 function NodeSessions({ nodeId, admin }: { nodeId: string; admin: boolean }) {
+  // Ask the server for THIS node's sessions. Fetching the workspace's first page
+  // and grepping it meant the tab body and the tab's own count badge could disagree
+  // — two numbers on one screen, both derived from the same fetch.
   const { data, refresh } = usePolling<SessionsResponse>(
-    (s) => api.getSessions(undefined, s),
-    10000
+    (s) => api.getSessions({ q: nodeId, limit: 100 }, s),
+    10000,
+    [nodeId]
   )
   const sessions = useMemo(
     () => (data?.sessions ?? []).filter((s) => s.nodeId === nodeId),

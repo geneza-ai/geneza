@@ -67,6 +67,12 @@ window). Nodes pick up v2 and drop the old key — no node is re-touched.
 
 ## Distribution (channel is untrusted)
 
+> **Not built (2026-08).** The background mirror below does not exist in the code.
+> `GET /v1/desired` returns 204 when the rings are empty, the bootstrap reads 204
+> as "converged", and no shipped deployment publishes a manifest — so agents never
+> self-update, and the console's version tiles render "—" without saying why.
+> Treat this section as the design, not as behaviour.
+
 - **online controller** → background mirror pulls maintainer-signed artifacts from
   upstream and serves them to (air-gapped) agents.
 - **offline site** → `genezactl import <bundle>` verifies the maintainer

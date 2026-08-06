@@ -26,9 +26,9 @@ import (
 type Feed struct {
 	dir   string
 	store vulnfeed.AdvisoryStore
-	// changed holds the advisories the most recent Sync (re)wrote, so the controller
-	// chore re-matches only those — one entry per OSV id.
-	changed []vulnfeed.Vulnerability
+	// changed holds the packages the most recent Sync (re)wrote, so the controller
+	// chore re-matches only those.
+	changed vulnfeed.ChangedPackages
 }
 
 // New builds an OSV feed that loads records from dir into store on Sync. store is
@@ -54,7 +54,7 @@ func (f *Feed) Sync(ctx context.Context, since time.Time) (int, error) {
 		return 0, fmt.Errorf("osv feed: read dir %s: %w", f.dir, err)
 	}
 	var recs []vulnfeed.AdvisoryRecord
-	changedByID := map[string]vulnfeed.Vulnerability{}
+	var changed vulnfeed.ChangedPackages
 	for _, ent := range entries {
 		if ent.IsDir() || !strings.HasSuffix(strings.ToLower(ent.Name()), ".json") {
 			continue
@@ -72,15 +72,13 @@ func (f *Feed) Sync(ctx context.Context, since time.Time) (int, error) {
 			return 0, fmt.Errorf("osv feed: parse %s: %w", path, perr)
 		}
 		recs = append(recs, rs...)
-		if !skipped && len(rs) > 0 {
-			v, perr := parseVulnerability(doc)
-			if perr != nil {
-				return 0, fmt.Errorf("osv feed: parse %s: %w", path, perr)
-			}
-			changedByID[v.ID] = v
+		if !skipped {
+			// The changed packages are already on the records being written; there
+			// is nothing to re-parse and nothing to retain beyond the pairs.
+			changed.AddRecords(rs)
 		}
 	}
-	f.changed = changedFromMap(changedByID)
+	f.changed = changed
 	if len(recs) == 0 {
 		return 0, nil
 	}
@@ -90,25 +88,10 @@ func (f *Feed) Sync(ctx context.Context, since time.Time) (int, error) {
 	return len(recs), nil
 }
 
-// Changed returns the advisories whose records the most recent Sync (re)wrote, so
-// the controller chore re-matches only their packages' nodes. Empty after a sync that
+// ChangedPackages returns the (ecosystem, package) pairs the most recent Sync
+// (re)wrote, so the controller chore re-matches only those. Empty after a sync that
 // changed nothing (e.g. a delta with no files past the watermark).
-func (f *Feed) Changed() []vulnfeed.Vulnerability { return f.changed }
-
-// changedFromMap flattens a by-id changed set into a stable-ordered slice, so the
-// caller's re-match and tests see a deterministic sequence.
-func changedFromMap(byID map[string]vulnfeed.Vulnerability) []vulnfeed.Vulnerability {
-	ids := make([]string, 0, len(byID))
-	for id := range byID {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	out := make([]vulnfeed.Vulnerability, 0, len(byID))
-	for _, id := range ids {
-		out = append(out, byID[id])
-	}
-	return out
-}
+func (f *Feed) ChangedPackages() []vulnfeed.Package { return f.changed.List() }
 
 // Advisories serves the vulnerabilities filed against a package from the store's
 // by-package index. Each row's Doc is the verbatim OSV JSON, parsed back into the

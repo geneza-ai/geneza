@@ -2,7 +2,7 @@ import { useMemo } from "react"
 
 import { api } from "@/api"
 import { usePolling } from "@/hooks/use-polling"
-import type { WorkspaceCVE, WorkspaceCVEsResponse } from "@/types"
+import type { VulnFeedStatus, WorkspaceCVE, WorkspaceCVEsResponse } from "@/types"
 
 export interface SevCount {
   crit: number
@@ -12,6 +12,15 @@ export interface SevCount {
 
 export interface FleetCves {
   loaded: boolean
+  /**
+   * The feed's own state. Undefined while loading, and — critically — the thing
+   * that decides whether an empty result means "clean" or "we have never looked".
+   */
+  feed: VulnFeedStatus | null
+  /** True when the feed is configured AND has advisories to match against. */
+  scanned: boolean
+  /** Set when the rollup could not be read (no permission, or an error). */
+  error?: string
   /** Open (status=affected) rollup rows. */
   open: WorkspaceCVE[]
   /** Fleet-wide open counts by severity. */
@@ -27,9 +36,15 @@ export interface FleetCves {
 // list views never need a per-node fetch. The 200-row window covers any
 // realistic workspace; beyond it the counts degrade to a floor, not an error.
 export function useFleetCves(intervalMs = 30000): FleetCves {
-  const { data } = usePolling<WorkspaceCVEsResponse>(
+  const { data, error } = usePolling<WorkspaceCVEsResponse>(
     (s) => api.getWorkspaceCVEs({ limit: 200 }, s),
     intervalMs
+  )
+  // The feed changes on the order of hours; poll it far more slowly than the
+  // rollup, but do poll it so a first sync completing flips the UI on its own.
+  const { data: feed } = usePolling<VulnFeedStatus>(
+    (s) => api.getVulnFeedStatus(s),
+    Math.max(intervalMs * 10, 300000)
   )
   return useMemo(() => {
     const open = (data?.cves ?? []).filter((r) => r.status === "affected")
@@ -51,8 +66,17 @@ export function useFleetCves(intervalMs = 30000): FleetCves {
         if (s === "critical" || s === "high") risky.add(n)
       }
     }
-    return { loaded: !!data, open, counts, perNode, atRisk: risky.size }
-  }, [data])
+    return {
+      loaded: !!data,
+      feed,
+      scanned: !!feed?.enabled && feed.advisoryCount > 0,
+      error: error ? String(error) : undefined,
+      open,
+      counts,
+      perNode,
+      atRisk: risky.size,
+    }
+  }, [data, feed, error])
 }
 
 /** The risk left-edge class for a node row, per its open CVE counts. */

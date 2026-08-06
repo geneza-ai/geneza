@@ -13,9 +13,10 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
-	"os"
 	"net/url"
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -338,10 +339,10 @@ type Config struct {
 	// MetricsRetention is accepted but ignored — kept so existing configs still
 	// parse under strict (KnownFields) loading. Retention now lives on the external
 	// metrics backend.
-	MetricsRetention   Duration          `yaml:"metrics_retention"`
-	Presence           PresenceConfig    `yaml:"presence"` // continuous-presence factor
-	OIDC               *OIDCConfig       `yaml:"oidc"`
-	LocalUsers         []LocalUser       `yaml:"local_users"`
+	MetricsRetention Duration       `yaml:"metrics_retention"`
+	Presence         PresenceConfig `yaml:"presence"` // continuous-presence factor
+	OIDC             *OIDCConfig    `yaml:"oidc"`
+	LocalUsers       []LocalUser    `yaml:"local_users"`
 	// LocalUsersFile loads ADDITIONAL local_users from a separate YAML file (a
 	// document with a top-level local_users: list), appended to any inline ones. It
 	// lets a deploy keep credentials in their own file that an installer writes once
@@ -984,13 +985,6 @@ func (k ConsoleKeystoneCloud) label() string {
 	return k.Cloud
 }
 
-func (k ConsoleKeystoneCloud) domain() string {
-	if k.DefaultDomain != "" {
-		return k.DefaultDomain
-	}
-	return "Default"
-}
-
 // consoleKeystoneClouds returns the clouds to advertise in the login form: the
 // configured list (validated against the registry), or every registered cloud
 // when keystone is enabled with no explicit list.
@@ -1440,6 +1434,17 @@ func (c *Config) validateForServe() error {
 	// and the deny cache only fails closed on a read error, not on stale data.
 	if c.Router == "pg" && !c.usesSQLStore() {
 		return fmt.Errorf("router=pg requires a shared SQL store (set store=postgres + store_dsn)")
+	}
+	// A shared SQL store means more than one controller may be running, and the
+	// in-process router cannot reach a peer: RouteNetcfg/RouteModcfg/PublishSuspend
+	// are no-ops on it. A module or network change made on a controller that does
+	// not hold the agent's stream is committed and then silently dropped, and the
+	// agent converges only when it happens to reconnect. Warn rather than refuse —
+	// a single controller on Postgres is a legitimate (and common) setup.
+	if c.Router == "inproc" && c.StoreBackend != "" && c.StoreBackend != "bbolt" {
+		slog.Warn("router=inproc with a shared SQL store: config pushed from a controller that does not own an agent's stream will be dropped."+
+			" Set router: pg if more than one controller runs against this database.",
+			"component", "config", "store", c.StoreBackend)
 	}
 	// Each controller LISTENs a per-owner doorbell channel named for its id; a Postgres
 	// channel name is capped at 63 bytes, so an over-long id would fail the LISTEN at

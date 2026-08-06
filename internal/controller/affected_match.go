@@ -42,13 +42,14 @@ func newAffectedMatcher(store Store, vex engine.VEXSource, enricher cveEnricher)
 // componentFromRecord lifts a stored component into the engine's Component shape.
 func componentFromRecord(r ComponentRecord) affected.Component {
 	return affected.Component{
-		NodeID:    r.NodeID,
-		Purl:      r.Purl,
-		Source:    r.Source,
-		Ecosystem: r.Ecosystem,
-		Name:      r.Name,
-		Version:   r.Version,
-		Distro:    r.Distro,
+		NodeID:     r.NodeID,
+		Purl:       r.Purl,
+		Source:     r.Source,
+		Ecosystem:  r.Ecosystem,
+		Name:       r.Name,
+		Version:    r.Version,
+		SourceName: r.SourceName,
+		Distro:     r.Distro,
 	}
 }
 
@@ -82,12 +83,13 @@ func (m *affectedMatcher) persist(ws string, mt affected.Match) error {
 // node attribution is supplied at read-time fan-out from the node->digest association.
 func imageComponentForMatch(r ImageComponentRecord) affected.Component {
 	return affected.Component{
-		Purl:      r.Purl,
-		Source:    r.Source,
-		Ecosystem: r.Ecosystem,
-		Name:      r.Name,
-		Version:   r.Version,
-		Distro:    r.Distro,
+		Purl:       r.Purl,
+		Source:     r.Source,
+		Ecosystem:  r.Ecosystem,
+		Name:       r.Name,
+		Version:    r.Version,
+		SourceName: r.SourceName,
+		Distro:     r.Distro,
 	}
 }
 

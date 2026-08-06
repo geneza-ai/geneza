@@ -593,8 +593,11 @@ func (w *Worker) auditRecipient() string {
 }
 
 // auditRecipients is the full set the session host seals each recording to (from
-// the signed cluster config). Empty when none is configured, in which case the
-// host refuses to record rather than spool plaintext. With a single configured
+// the signed cluster config). Empty when none is configured, in which case the host
+// records PLAINTEXT — it does not refuse. Confidentiality at rest is the operator's
+// choice via whether a recipient is set; the session host tells the recorded user
+// which of the two is happening (GENEZA_SESSION_RECORDED_PLAINTEXT and the PTY
+// banner) and the console badges the stored cast. With a single configured
 // recipient this is a one-element set, identical to the pre-list behavior.
 func (w *Worker) auditRecipients() []string {
 	w.mu.RLock()
@@ -896,12 +899,37 @@ func (w *Worker) streamOnce(ctx context.Context) (bool, error) {
 		return homed, err
 	}
 
+	// controlSendTimeout bounds one control-stream send. It is deliberately far
+	// longer than any healthy send takes: the failure it catches is a controller
+	// that has stopped reading the stream entirely, not ordinary slowness.
+	const controlSendTimeout = 30 * time.Second
+
 	// grpc client streams allow at most one concurrent Send; serialize.
+	//
+	// The deadline is not belt-and-braces. stream.Send blocks while the flow-control
+	// window is full, and the window stays full for as long as the controller is not
+	// reading this stream — so one slow server-side handler used to park a send here
+	// FOREVER while holding sendMu, and every later message (offer acks above all)
+	// queued behind it. The agent then looked alive while failing every session with
+	// "did not ack session offer within 5s". Bounding it turns that into a
+	// reconnect, which is recoverable and visible.
 	var sendMu sync.Mutex
 	send := func(m *genezav1.AgentMsg) error {
 		sendMu.Lock()
 		defer sendMu.Unlock()
-		return stream.Send(m)
+		done := make(chan error, 1)
+		go func() { done <- stream.Send(m) }()
+		t := time.NewTimer(controlSendTimeout)
+		defer t.Stop()
+		select {
+		case err := <-done:
+			return err
+		case <-t.C:
+			// Tear the stream down rather than wait: the in-flight Send unblocks when
+			// the transport dies, and the reconnect loop re-establishes a healthy one.
+			cancel()
+			return fmt.Errorf("control-stream send blocked for %s (controller not reading); reconnecting", controlSendTimeout)
+		}
 	}
 
 	hello := &genezav1.AgentMsg{Msg: &genezav1.AgentMsg_Hello{Hello: &genezav1.AgentHello{
@@ -1194,15 +1222,15 @@ func (w *Worker) handleClusterConfig(ctx context.Context, raw []byte) {
 // ANCHORS (the trust-class document), the routing fields from the ROUTINE MAP.
 func clusterViewFromFleetState(fs *types.FleetState) *types.ClusterConfig {
 	return &types.ClusterConfig{
-		ConfigVersion:    fs.Map.ConfigVersion,
-		CARootsPEM:       fs.Anchors.CARootsPEM,
-		GrantKeys:        fs.Anchors.GrantKeys,
-		AgentPolicy:      fs.Anchors.AgentPolicy,
-		RelayAddrs:       fs.Map.RelayAddrs,
-		Relays:           fs.Map.Relays,
+		ConfigVersion:       fs.Map.ConfigVersion,
+		CARootsPEM:          fs.Anchors.CARootsPEM,
+		GrantKeys:           fs.Anchors.GrantKeys,
+		AgentPolicy:         fs.Anchors.AgentPolicy,
+		RelayAddrs:          fs.Map.RelayAddrs,
+		Relays:              fs.Map.Relays,
 		ControllerEndpoints: fs.Map.ControllerEndpoints,
-		AuditRecipient:   fs.Anchors.AuditRecipient,
-		AuditRecipients:  fs.Anchors.AuditRecipients,
+		AuditRecipient:      fs.Anchors.AuditRecipient,
+		AuditRecipients:     fs.Anchors.AuditRecipients,
 	}
 }
 

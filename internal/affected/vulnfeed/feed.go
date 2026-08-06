@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"math"
+	"sort"
 	"strings"
 	"time"
 )
@@ -317,4 +318,51 @@ func (NoImageAdvisories) Name() string { return "none" }
 
 func (NoImageAdvisories) AdvisoriesForDigest(context.Context, string) ([]Vulnerability, error) {
 	return nil, nil
+}
+
+// ChangedPackages is the set of (ecosystem, package) pairs a Sync (re)wrote — the
+// unit of work the caller's post-sync re-match is keyed by.
+//
+// It is deliberately NOT the changed advisories. On a first full sync "changed" is
+// the entire feed, and retaining several hundred thousand parsed Vulnerability
+// values only to reduce them to their package names is a large, pointless memory
+// peak in a long-lived process. The pairs are also already on the AdvisoryRecords
+// the sync is writing anyway, so collecting them costs nothing.
+type ChangedPackages struct {
+	seen map[Package]struct{}
+}
+
+// Add records one changed package. Empty ecosystem or name is ignored: neither
+// resolves to anything on the match side.
+func (c *ChangedPackages) Add(ecosystem, name string) {
+	if ecosystem == "" || name == "" {
+		return
+	}
+	if c.seen == nil {
+		c.seen = map[Package]struct{}{}
+	}
+	c.seen[Package{Ecosystem: ecosystem, Name: name}] = struct{}{}
+}
+
+// AddRecords records the packages named by a batch of advisory records.
+func (c *ChangedPackages) AddRecords(recs []AdvisoryRecord) {
+	for _, r := range recs {
+		c.Add(r.Ecosystem, r.PackageName)
+	}
+}
+
+// List returns the set in a stable order, so a resumed re-match covers the same
+// ground in the same sequence and tests see a deterministic result.
+func (c *ChangedPackages) List() []Package {
+	out := make([]Package, 0, len(c.seen))
+	for p := range c.seen {
+		out = append(out, p)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Ecosystem != out[j].Ecosystem {
+			return out[i].Ecosystem < out[j].Ecosystem
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out
 }

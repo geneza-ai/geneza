@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS recordings (
     size_bytes   BIGINT,
     sha256       VARCHAR(255) CHARACTER SET ascii   COLLATE ascii_bin,
     node_sig     LONGBLOB,
+    node_spki    LONGBLOB,
     audit_key_id VARCHAR(255) CHARACTER SET ascii   COLLATE ascii_bin,
     blob_ref     VARCHAR(512) CHARACTER SET ascii   COLLATE ascii_bin,
     truncated    BOOLEAN,
@@ -95,8 +96,16 @@ CREATE TABLE IF NOT EXISTS node_components (
     purl         VARCHAR(512) CHARACTER SET ascii   COLLATE ascii_bin   NOT NULL,
     source       VARCHAR(128) CHARACTER SET ascii   COLLATE ascii_bin   NOT NULL,
     ecosystem    VARCHAR(64)  CHARACTER SET ascii   COLLATE ascii_bin,
+    -- Normalized (family:release) join key. The verbatim ecosystem above is kept
+    -- for display and for the version comparator; this is what the matcher joins on,
+    -- because an advisory's ecosystem string and a component's are routinely
+    -- different spellings of the same release.
+    ecosystem_key VARCHAR(64) CHARACTER SET ascii   COLLATE ascii_bin,
     name         VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin,
     version      VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin,
+    -- The SOURCE package a binary OS package was built from; distro advisories are
+    -- filed against it, so the by-package lookup resolves on either name.
+    source_name  VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin,
     distro       VARCHAR(128) CHARACTER SET ascii   COLLATE ascii_bin,
     PRIMARY KEY (workspace_id, node_id, purl, source),
     KEY node_components_pkg  (ecosystem, name),
@@ -132,6 +141,11 @@ CREATE TABLE IF NOT EXISTS advisories (
     id            VARCHAR(255) CHARACTER SET ascii   COLLATE ascii_bin   PRIMARY KEY,
     source        VARCHAR(64)  CHARACTER SET ascii   COLLATE ascii_bin,
     ecosystem     VARCHAR(64)  CHARACTER SET ascii   COLLATE ascii_bin,
+    -- Normalized (family:release) join key. The verbatim ecosystem above is kept
+    -- for display and for the version comparator; this is what the matcher joins on,
+    -- because an advisory's ecosystem string and a component's are routinely
+    -- different spellings of the same release.
+    ecosystem_key VARCHAR(64) CHARACTER SET ascii   COLLATE ascii_bin,
     package_name  VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin,
     doc           JSON NOT NULL,
     modified_unix BIGINT,
@@ -149,8 +163,14 @@ CREATE TABLE IF NOT EXISTS image_components (
     purl      VARCHAR(512) CHARACTER SET ascii   COLLATE ascii_bin   NOT NULL,
     source    VARCHAR(255) CHARACTER SET ascii   COLLATE ascii_bin   NOT NULL,
     ecosystem VARCHAR(64)  CHARACTER SET ascii   COLLATE ascii_bin,
+    -- Normalized (family:release) join key. The verbatim ecosystem above is kept
+    -- for display and for the version comparator; this is what the matcher joins on,
+    -- because an advisory's ecosystem string and a component's are routinely
+    -- different spellings of the same release.
+    ecosystem_key VARCHAR(64) CHARACTER SET ascii   COLLATE ascii_bin,
     name      VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin,
     version   VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin,
+    source_name VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin,
     distro    VARCHAR(128) CHARACTER SET ascii   COLLATE ascii_bin,
     PRIMARY KEY (digest, purl, source),
     KEY image_components_pkg (ecosystem, name)

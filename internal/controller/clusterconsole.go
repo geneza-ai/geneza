@@ -311,7 +311,7 @@ func (c *clusterConsoleAPI) handleControllers(w http.ResponseWriter, r *http.Req
 	for _, g := range rows {
 		seen[g.ControllerID] = true
 		out = append(out, map[string]any{
-			"controllerId":    g.ControllerID,
+			"controllerId": g.ControllerID,
 			"region":       g.RegionID,
 			"addrs":        orEmpty(g.Addrs),
 			"controlAddrs": orEmpty(g.ControlAddrs),
@@ -325,7 +325,7 @@ func (c *clusterConsoleAPI) handleControllers(w http.ResponseWriter, r *http.Req
 	// own endpoint when it is not already present from the discovery set.
 	if self := c.s.controllerEndpoint(); !seen[self.ControllerID] {
 		out = append(out, map[string]any{
-			"controllerId":    self.ControllerID,
+			"controllerId": self.ControllerID,
 			"region":       self.RegionID,
 			"addrs":        orEmpty(self.Addrs),
 			"controlAddrs": orEmpty(self.ControlAddrs),
@@ -365,7 +365,11 @@ func (c *clusterConsoleAPI) handleRelays(w http.ResponseWriter, r *http.Request)
 			// relay's per-relay drain progress, which reaches 0 once its sessions have
 			// migrated off and the binary is safe to swap.
 			"activeCount": rl.ActiveCount,
-			"static":      false,
+			// The serial `genezactl cert revoke` takes. It is on the record and was
+			// simply not emitted, so revoking a relay's identity meant going to the
+			// database for the one value the operator needs.
+			"certSerial": rl.CertSerial,
+			"static":     false,
 		})
 	}
 	// Statically configured relays (relay_addrs) that have not dynamically

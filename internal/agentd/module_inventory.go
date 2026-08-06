@@ -273,12 +273,14 @@ func inventoryComponentsProto(comps []sbom.Component) []*genezav1.InventoryCompo
 	out := make([]*genezav1.InventoryComponent, 0, len(comps))
 	for _, c := range comps {
 		out = append(out, &genezav1.InventoryComponent{
-			Purl:      c.Purl,
-			Name:      c.Name,
-			Version:   c.Version,
-			Ecosystem: c.Ecosystem,
-			Distro:    c.Distro,
-			Source:    c.Source,
+			Purl:          c.Purl,
+			Name:          c.Name,
+			Version:       c.Version,
+			Ecosystem:     c.Ecosystem,
+			Distro:        c.Distro,
+			Source:        c.Source,
+			SourceName:    c.SourceName,
+			SourceVersion: c.SourceVersion,
 		})
 	}
 	return out
@@ -475,16 +477,60 @@ func componentsFromPackages(pkgs []*extractor.Package, source string) []sbom.Com
 		if pu == nil {
 			continue
 		}
+		srcName, srcVer := sourceOf(p.Metadata)
 		out = append(out, sbom.Component{
-			Purl:      pu.String(),
-			Name:      p.Name,
-			Version:   p.Version,
-			Ecosystem: p.Ecosystem().String(),
-			Distro:    distroOf(p.Metadata),
-			Source:    source,
+			Purl:          pu.String(),
+			Name:          p.Name,
+			Version:       p.Version,
+			Ecosystem:     p.Ecosystem().String(),
+			Distro:        distroOf(p.Metadata),
+			Source:        source,
+			SourceName:    srcName,
+			SourceVersion: srcVer,
 		})
 	}
 	return out
+}
+
+// sourceOf extracts the SOURCE package a binary OS package was built from. Distro
+// advisories are filed against the source package, never the binary one: OSV has 0
+// advisories for "libssl3" and hundreds for "openssl", 0 for "libc6" and 158 for
+// "glibc". Without this every split package (lib*, -common, -dev, -bin) resolves no
+// advisory at all, which is most of a typical distro install.
+//
+// Each extractor spells it differently: dpkg keeps a real source name, apk calls it
+// the origin, and rpm carries only the source RPM's FILENAME, which has to be parsed
+// back to a package name.
+func sourceOf(meta any) (name, version string) {
+	switch md := meta.(type) {
+	case *dpkgmeta.Metadata:
+		return md.SourceName, md.SourceVersion
+	case *apkmeta.Metadata:
+		return md.OriginName, ""
+	case *rpmmeta.Metadata:
+		return sourceRPMName(md.SourceRPM), ""
+	}
+	return "", ""
+}
+
+// sourceRPMName reduces a source-RPM filename to its package name:
+// "openssl-3.0.7-24.el9.src.rpm" -> "openssl". The trailing two hyphen-separated
+// fields are the version and release, so the name is everything before them.
+func sourceRPMName(srpm string) string {
+	s := strings.TrimSuffix(strings.TrimSpace(srpm), ".src.rpm")
+	s = strings.TrimSuffix(s, ".rpm")
+	if s == "" {
+		return ""
+	}
+	i := strings.LastIndexByte(s, '-')
+	if i <= 0 {
+		return ""
+	}
+	j := strings.LastIndexByte(s[:i], '-')
+	if j <= 0 {
+		return ""
+	}
+	return s[:j]
 }
 
 // distroOf builds the distro identifier ("ubuntu:22.04") from a package's metadata.

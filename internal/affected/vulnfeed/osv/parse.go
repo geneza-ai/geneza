@@ -78,6 +78,11 @@ func advisoryID(osvID, ecosystem, name string) string {
 // parseVulnerability maps an OSV JSON document onto the seam's Vulnerability,
 // keeping the raw bytes so no source field (including the per-source license) is
 // dropped.
+//
+// This is the READ path only. The sync path deliberately does NOT parse: the
+// packages it needs to report as changed are already on the AdvisoryRecords it is
+// writing, so a full OSV refresh no longer builds a Vulnerability per advisory at
+// all — which is what used to make a first sync a multi-gigabyte heap spike.
 func parseVulnerability(doc json.RawMessage) (vulnfeed.Vulnerability, error) {
 	var v vulnfeed.Vulnerability
 	if len(doc) == 0 {

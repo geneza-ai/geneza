@@ -1,6 +1,8 @@
 package controller
 
 import (
+	"encoding/json"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -99,5 +101,61 @@ func TestConsoleVulnRoutes(t *testing.T) {
 	// A missing node is a 404, never a leak.
 	if code, _ := doJSON(t, h, "GET", "/api/v1/nodes/ghost/cves", member, ""); code != 404 {
 		t.Fatalf("missing node: want 404, got %d", code)
+	}
+}
+
+// The console must be able to tell "this fleet is clean" apart from "no feed has
+// ever run". Without this the vulnerability views render a green, reassuring empty
+// state for a deployment whose CVE pipeline is entirely dark — which is exactly
+// what a controller with no vuln_feed block looks like.
+func TestVulnFeedStatusDistinguishesOffFromClean(t *testing.T) {
+	srv, api, _ := buildLaunchServer(t, EmbedConfig{})
+	tok := mintConsoleSession(t, srv, defaultWorkspace, "admin", roleWSAdmin)
+
+	get := func() map[string]any {
+		t.Helper()
+		r := httptest.NewRequest("GET", "/api/v1/vuln/feed", nil)
+		r.Header.Set("Authorization", "Bearer "+tok)
+		w := httptest.NewRecorder()
+		api.handler().ServeHTTP(w, r)
+		if w.Code != 200 {
+			t.Fatalf("vuln feed status: %d %s", w.Code, w.Body.String())
+		}
+		var body map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		return body
+	}
+
+	// No feed configured: the console must be told so explicitly.
+	body := get()
+	if body["enabled"] != false {
+		t.Fatalf("with no vuln_feed the status must report enabled=false, got %v", body)
+	}
+
+	// Configured but never synced: still not a clean bill of health, because no
+	// advisory exists to have matched anything against.
+	srv.cfg.VulnFeed.Source = "osv_bulk"
+	srv.inventoryFeed = srv.buildVulnFeed()
+	body = get()
+	if body["enabled"] != true {
+		t.Fatalf("a configured feed must report enabled=true, got %v", body)
+	}
+	if n, _ := body["advisoryCount"].(float64); n != 0 {
+		t.Fatalf("advisoryCount must be 0 before any sync, got %v", body["advisoryCount"])
+	}
+
+	// After advisories land, the count is non-zero and an empty rollup finally does
+	// mean the fleet is clean.
+	if err := srv.store.PutAdvisories([]AdvisoryRecord{{
+		ID: "OSV-1", Source: "osv", Ecosystem: "Debian:12", PackageName: "openssl",
+		Doc: []byte(`{"id":"OSV-1"}`), ModifiedUnix: 1,
+	}}); err != nil {
+		t.Fatalf("seed advisory: %v", err)
+	}
+	body = get()
+	if n, _ := body["advisoryCount"].(float64); n != 1 {
+		t.Fatalf("advisoryCount = %v, want 1", body["advisoryCount"])
 	}
 }

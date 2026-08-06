@@ -45,21 +45,9 @@ export interface DesktopSession {
   workspace: string
 }
 
-export interface DesktopNode {
-  id: string
-  name: string
-  online: boolean
-  os: string
-  arch: string
-  version: string
-  approved: boolean
-  labels: Record<string, string>
-}
-
 export const desktop = {
   connect: (profile = "default") =>
     svc().Connect(profile) as Promise<DesktopSession>,
-  nodes: () => svc().Nodes() as Promise<DesktopNode[]>,
 
   // --- native shell over the direct tunnel ---
   openShell: (node: string, cols: number, rows: number) =>

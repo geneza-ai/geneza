@@ -3,6 +3,7 @@ package controller
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"time"
 
@@ -50,6 +51,57 @@ func putStoredWorkspacePolicy(store Store, ws string, rec workspacePolicyRecord)
 		return err
 	}
 	return store.SetSetting(workspacePolicyKey(ws), b)
+}
+
+// workspacePolicyHistoryKey holds the previous revisions of a workspace's policy.
+func workspacePolicyHistoryKey(ws string) string {
+	return workspacePolicySettingPrefix + "history/" + ws
+}
+
+// policyHistoryDepth bounds retained revisions. The store overwrites one settings
+// key, so before this an edit was unrecoverable: there was no diff, no rollback,
+// and no way to answer "what did this say yesterday" — for the document that
+// decides who may reach what.
+const policyHistoryDepth = 20
+
+// getWorkspacePolicyHistory returns the retained revisions, newest first.
+func getWorkspacePolicyHistory(store Store, ws string) ([]workspacePolicyRecord, error) {
+	b, err := store.GetSetting(workspacePolicyHistoryKey(ws))
+	if err != nil || len(b) == 0 {
+		return nil, err
+	}
+	var out []workspacePolicyRecord
+	if err := json.Unmarshal(b, &out); err != nil {
+		return nil, fmt.Errorf("decode policy history for %q: %w", ws, err)
+	}
+	return out, nil
+}
+
+// pushWorkspacePolicyHistory records the CURRENT document as a revision before it
+// is replaced. A failure here must not block the edit itself — losing a history
+// entry is strictly better than refusing a policy change.
+func pushWorkspacePolicyHistory(store Store, ws string, prev workspacePolicyRecord) error {
+	if prev.Doc == "" {
+		return nil
+	}
+	hist, err := getWorkspacePolicyHistory(store, ws)
+	if err != nil {
+		return err
+	}
+	// Guard against an identical adjacent entry as well (two controllers racing the
+	// same edit), so the retained list is a sequence of distinct documents.
+	if len(hist) > 0 && hist[0].Doc == prev.Doc {
+		return nil
+	}
+	hist = append([]workspacePolicyRecord{prev}, hist...)
+	if len(hist) > policyHistoryDepth {
+		hist = hist[:policyHistoryDepth]
+	}
+	b, err := json.Marshal(hist)
+	if err != nil {
+		return err
+	}
+	return store.SetSetting(workspacePolicyHistoryKey(ws), b)
 }
 
 // loadOrSeedWorkspacePolicyDoc returns a workspace's policy document, seeding it
@@ -141,6 +193,15 @@ func (s *Server) SetWorkspacePolicy(ws string, doc []byte, actor string) error {
 	eng, err := policy.Parse(doc)
 	if err != nil {
 		return err
+	}
+	// Retain what is being REPLACED before overwriting it, so an edit is
+	// recoverable. A save that changes nothing replaces nothing, so it must not
+	// push a revision — otherwise repeatedly hitting Save evicts the real history.
+	// Best-effort: a history write must never block a policy change.
+	if prev, ok, herr := getStoredWorkspacePolicy(s.store, ws); herr == nil && ok && prev.Doc != string(doc) {
+		if perr := pushWorkspacePolicyHistory(s.store, ws, prev); perr != nil {
+			slog.Warn("policy history not retained", "workspace", ws, "err", perr)
+		}
 	}
 	rec := workspacePolicyRecord{Doc: string(doc), UpdatedBy: actor, UpdatedUnix: time.Now().Unix()}
 	if err := putStoredWorkspacePolicy(s.store, ws, rec); err != nil {

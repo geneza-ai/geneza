@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS recordings (
     size_bytes   bigint,
     sha256       text,
     node_sig     bytea,
+    node_spki    bytea,
     audit_key_id text,
     blob_ref     text,
     truncated    boolean,
@@ -96,8 +97,16 @@ CREATE TABLE IF NOT EXISTS node_components (
     purl         text NOT NULL,
     source       text NOT NULL,
     ecosystem    text,
+    -- The normalized (family:release) join key. The verbatim ecosystem above is
+    -- kept for display and for the version comparator; this is what the matcher
+    -- joins on, because an advisory's ecosystem string and a component's are
+    -- routinely different spellings of the same release.
+    ecosystem_key text,
     name         text,
     version      text,
+    -- The SOURCE package a binary OS package was built from. Distro advisories are
+    -- filed against the source, so the by-package lookup resolves on either name.
+    source_name  text,
     distro       text,
     PRIMARY KEY (workspace_id, node_id, purl, source)
 );
@@ -135,6 +144,8 @@ CREATE TABLE IF NOT EXISTS advisories (
     id            text PRIMARY KEY,
     source        text,
     ecosystem     text,
+    -- Normalized (family:release) join key; see node_components.ecosystem_key.
+    ecosystem_key text,
     package_name  text,
     doc           jsonb NOT NULL,
     modified_unix bigint
@@ -152,8 +163,11 @@ CREATE TABLE IF NOT EXISTS image_components (
     purl      text NOT NULL,
     source    text NOT NULL,
     ecosystem text,
+    -- Normalized (family:release) join key; see node_components.ecosystem_key.
+    ecosystem_key text,
     name      text,
     version   text,
+    source_name text,
     distro    text,
     PRIMARY KEY (digest, purl, source)
 );

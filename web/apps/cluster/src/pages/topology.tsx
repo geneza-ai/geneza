@@ -147,7 +147,22 @@ function RelaysCard() {
                     {r.static ? "—" : relativeTime(r.lastSeenUnix)}
                   </TableCell>
                   <TableCell>
-                    <OnlineBadge online={r.online} />
+                    {/* A draining relay is online but shedding: showing it as plain
+                        "Online" hides the one state a binary swap needs to see. */}
+                    {r.draining ? (
+                      <span
+                        className="rounded-[5px] border border-warning/35 px-1.5 py-0.5 font-mono text-[11px] text-warning"
+                        title={
+                          r.certSerial
+                            ? `draining · cert ${r.certSerial}`
+                            : "draining"
+                        }
+                      >
+                        draining · {r.activeCount ?? 0} active
+                      </span>
+                    ) : (
+                      <OnlineBadge online={r.online} />
+                    )}
                   </TableCell>
                 </TableRow>
               ))}

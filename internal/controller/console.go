@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -108,14 +109,21 @@ func (c *consoleAPI) handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/session/launch", c.handleSessionLaunch)
 	mux.Handle("GET /api/v1/overview", c.auth(c.handleOverview))
 	mux.Handle("GET /api/v1/nodes", c.auth(c.handleNodes))
+	mux.Handle("GET /api/v1/nodes/{id}", c.auth(c.handleNode))
 	mux.Handle("GET /api/v1/sessions", c.auth(c.handleSessions))
 	mux.Handle("GET /api/v1/fleet", c.auth(c.handleFleet))
 	mux.Handle("GET /api/v1/policy", c.auth(c.handlePolicy))
 	mux.Handle("PUT /api/v1/policy", c.authAdmin(c.handleSetPolicy))
 	mux.Handle("POST /api/v1/policy/validate", c.auth(c.handleValidatePolicy))
+	mux.Handle("GET /api/v1/policy/history", c.authAdmin(c.handlePolicyHistory))
+	mux.Handle("POST /api/v1/policy/render", c.auth(c.handleRenderPolicy))
 	mux.Handle("GET /api/v1/audit", c.auth(c.handleAudit))
 	mux.Handle("POST /api/v1/tokens", c.authAdmin(c.handleMintToken))
 	// Per-workspace membership (ws-admin), scoped to the session's tenant.
+	mux.Handle("GET /api/v1/suspensions", c.authAdmin(c.handleListSuspensions))
+	mux.Handle("POST /api/v1/suspensions", c.authAdmin(c.handleSuspendPrincipal))
+	mux.Handle("DELETE /api/v1/suspensions/{provider}/{subject}", c.authAdmin(c.handleLiftSuspension))
+	mux.Handle("POST /api/v1/sessions/revoke-user", c.authAdmin(c.handleRevokeUserSessions))
 	mux.Handle("GET /api/v1/members", c.authAdmin(c.handleListMembers))
 	mux.Handle("POST /api/v1/members", c.authAdmin(c.handlePutMember))
 	mux.Handle("DELETE /api/v1/members/{provider}/{subject}", c.authAdmin(c.handleDeleteMember))
@@ -140,6 +148,7 @@ func (c *consoleAPI) handler() http.Handler {
 	// Vulnerability surface (read, ws-member-gated in the handlers).
 	mux.Handle("GET /api/v1/nodes/{id}/cves", c.auth(c.handleNodeCVEs))
 	mux.Handle("GET /api/v1/nodes/{id}/components", c.auth(c.handleNodeComponents))
+	mux.Handle("GET /api/v1/vuln/feed", c.auth(c.handleVulnFeedStatus))
 	mux.Handle("GET /api/v1/cves", c.auth(c.handleWorkspaceCVEs))
 	mux.Handle("GET /api/v1/cves/{cve}/nodes", c.auth(c.handleNodesAffectedByCVE))
 	// Open SBOM/findings edges: export a node's inventory as CycloneDX and its
@@ -158,6 +167,16 @@ func (c *consoleAPI) handler() http.Handler {
 	// server-side as client_path=web.
 	mux.Handle("POST /api/v1/nodes/{id}/shell-ticket", c.authScoped(c.handleShellTicket))
 	mux.HandleFunc("GET /api/v1/nodes/{id}/shell", c.handleShell)
+
+	// Mirror the installer onto the console listener. The one-liner this
+	// controller hands out points at the CONSOLE's public origin (that is the
+	// front with publicly-trusted TLS, so curl on a bare host trusts it), and
+	// without these the SPA catch-all below answers /install.sh with index.html
+	// and HTTP 200 — HTML piped into `sudo sh`, and a status-code check still
+	// reads healthy. Everything here is public material whose trust derives from
+	// the pinned fingerprint and the signed update chain, not from the channel.
+	c.s.registerInstallerRoutes(mux)
+
 	mux.HandleFunc("/", c.serveSPA)
 	return secHeaders(mux)
 }
@@ -399,6 +418,7 @@ func (c *consoleAPI) certHandler() http.Handler {
 	mux.Handle("GET /api/v1/session", c.certAuth(c.handleSession))
 	mux.Handle("GET /api/v1/overview", c.certAuth(c.handleOverview))
 	mux.Handle("GET /api/v1/nodes", c.certAuth(c.handleNodes))
+	mux.Handle("GET /api/v1/nodes/{id}", c.certAuth(c.handleNode))
 	mux.Handle("GET /api/v1/sessions", c.certAuth(c.handleSessions))
 	mux.Handle("GET /api/v1/fleet", c.certAuth(c.handleFleet))
 	mux.Handle("GET /api/v1/policy", c.certAuth(c.handlePolicy))
@@ -408,6 +428,7 @@ func (c *consoleAPI) certHandler() http.Handler {
 	mux.Handle("GET /api/v1/nodes/{id}/modules", c.certAuth(c.handleGetNodeModules))
 	mux.Handle("GET /api/v1/nodes/{id}/cves", c.certAuth(c.handleNodeCVEs))
 	mux.Handle("GET /api/v1/nodes/{id}/components", c.certAuth(c.handleNodeComponents))
+	mux.Handle("GET /api/v1/vuln/feed", c.certAuth(c.handleVulnFeedStatus))
 	mux.Handle("GET /api/v1/cves", c.certAuth(c.handleWorkspaceCVEs))
 	mux.Handle("GET /api/v1/cves/{cve}/nodes", c.certAuth(c.handleNodesAffectedByCVE))
 	mux.Handle("GET /api/v1/nodes/{id}/sbom", c.certAuth(c.handleNodeSBOMExport))
@@ -475,24 +496,160 @@ func (c *consoleAPI) nodeJSON(ws string) []map[string]any {
 	return out
 }
 
+// handleNodes lists the workspace's nodes. Filtering and sorting happen HERE,
+// before paging — not in the browser over whatever page happened to arrive.
+//
+// The store orders nodes by id, so the first page is the 100 lowest ids, which
+// correlates with nothing an operator cares about. With the filter applied client
+// side, a fleet above one page could show an empty "Pending" tab while nodes were
+// genuinely waiting for approval — and approval is the main thing that page is for.
 func (c *consoleAPI) handleNodes(w http.ResponseWriter, r *http.Request, u *consoleUser) {
+	q := r.URL.Query()
 	pg := pageParams(r)
 	all := c.nodeJSON(u.Workspace)
+	all = filterNodes(all, q.Get("q"), q.Get("state"))
+	sortNodes(all, q.Get("sort"), q.Get("order"))
 	total := len(all)
 	lo, hi := pg.bounds(total)
 	writeJSON(w, pageEnvelope("nodes", all[lo:hi], total, pg))
 }
 
+// handleNode returns ONE node by id or name. The console used to resolve a node
+// detail page by fetching the node list and searching it, so node 101 rendered
+// "Node not found." for a node that plainly exists.
+func (c *consoleAPI) handleNode(w http.ResponseWriter, r *http.Request, u *consoleUser) {
+	id := r.PathValue("id")
+	for _, n := range c.nodeJSON(u.Workspace) {
+		if n["nodeId"] == id || n["name"] == id {
+			writeJSON(w, n)
+			return
+		}
+	}
+	writeErr(w, http.StatusNotFound, "node not found")
+}
+
+// filterNodes applies the free-text and state filters the nodes view offers.
+// search matches the name, id, and label values; state is one of
+// online/offline/pending/quarantined/approved ("" or "all" keeps everything).
+func filterNodes(nodes []map[string]any, search, state string) []map[string]any {
+	q := strings.ToLower(strings.TrimSpace(search))
+	state = strings.ToLower(strings.TrimSpace(state))
+	if q == "" && (state == "" || state == "all") {
+		return nodes
+	}
+	out := nodes[:0]
+	for _, n := range nodes {
+		if q != "" && !nodeMatchesSearch(n, q) {
+			continue
+		}
+		if !nodeMatchesState(n, state) {
+			continue
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
+func nodeMatchesSearch(n map[string]any, q string) bool {
+	for _, k := range []string{"name", "nodeId", "os", "osPretty", "distro"} {
+		if v, _ := n[k].(string); strings.Contains(strings.ToLower(v), q) {
+			return true
+		}
+	}
+	if labels, ok := n["labels"].(map[string]string); ok {
+		for k, v := range labels {
+			if strings.Contains(strings.ToLower(k), q) || strings.Contains(strings.ToLower(v), q) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func nodeMatchesState(n map[string]any, state string) bool {
+	online, _ := n["online"].(bool)
+	approved, _ := n["approved"].(bool)
+	quarantined, _ := n["quarantineReason"].(string)
+	switch state {
+	case "", "all":
+		return true
+	case "online":
+		return online
+	case "offline":
+		return !online
+	case "approved":
+		return approved
+	case "quarantined":
+		return !approved && quarantined != ""
+	case "pending":
+		// Pending means "awaiting a first approval", which is NOT the same as
+		// quarantined: QuarantineNode clears Approved too, so without excluding a
+		// recorded cause a drift-quarantined host would sit in the approval queue
+		// looking like a new arrival.
+		return !approved && quarantined == ""
+	default:
+		return true
+	}
+}
+
+// sortNodes orders the list. The default (name) is what an operator scanning a
+// fleet expects; the store's id order is an implementation detail.
+func sortNodes(nodes []map[string]any, sortKey, order string) {
+	desc := strings.EqualFold(order, "desc")
+	str := func(n map[string]any, k string) string {
+		v, _ := n[k].(string)
+		return strings.ToLower(v)
+	}
+	num := func(n map[string]any, k string) int64 {
+		switch v := n[k].(type) {
+		case int64:
+			return v
+		case int:
+			return int64(v)
+		case float64:
+			return int64(v)
+		}
+		return 0
+	}
+	less := func(i, j int) bool { return str(nodes[i], "name") < str(nodes[j], "name") }
+	switch strings.ToLower(strings.TrimSpace(sortKey)) {
+	case "lastseen":
+		less = func(i, j int) bool {
+			return num(nodes[i], "lastSeenUnix") < num(nodes[j], "lastSeenUnix")
+		}
+	case "os":
+		less = func(i, j int) bool { return str(nodes[i], "osPretty") < str(nodes[j], "osPretty") }
+	case "sessions":
+		less = func(i, j int) bool {
+			return num(nodes[i], "activeSessions") < num(nodes[j], "activeSessions")
+		}
+	}
+	sort.SliceStable(nodes, func(i, j int) bool {
+		if desc {
+			return less(j, i)
+		}
+		return less(i, j)
+	})
+}
+
 func (c *consoleAPI) handleSessions(w http.ResponseWriter, r *http.Request, u *consoleUser) {
 	q := r.URL.Query()
 	pg := pageParams(r)
-	all, total, err := c.s.store.QuerySessions(u.Workspace, SessionQuery{
+	sq := SessionQuery{
 		State:  q.Get("state"),
 		Search: q.Get("q"),
 		Sort:   q.Get("sort"),
 		Order:  q.Get("order"),
 		Page:   pg,
-	})
+	}
+	// Match the CLI: a workspace admin sees the whole workspace, everyone else sees
+	// only their own sessions. This applied no user filter at all, so a ws-viewer —
+	// a role that cannot even read the vulnerability views — could enumerate every
+	// session in the workspace, including who was on which host and when.
+	if !u.Admin {
+		sq.User = u.Name
+	}
+	all, total, err := c.s.store.QuerySessions(u.Workspace, sq)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "list sessions")
 		return
@@ -530,7 +687,9 @@ func (c *consoleAPI) handleOverview(w http.ResponseWriter, r *http.Request, u *c
 	stable, _ := c.s.store.StableVersion()
 	canary, _ := c.s.store.CanaryVersion()
 	count, chainOK := 0, true
-	if n, err := c.s.audit.Verify(); err == nil {
+	// Cached: this handler is polled every 10s by any open dashboard, and an
+	// uncached verify is a full-file HMAC rescan holding the audit append mutex.
+	if n, err := c.s.audit.VerifyCached(); err == nil {
 		count = n
 	} else {
 		chainOK = false
@@ -575,6 +734,10 @@ func (c *consoleAPI) handlePolicy(w http.ResponseWriter, r *http.Request, u *con
 // (ws-admin only) and hot-swaps the live engine. The body is validated against
 // the real policy parser; a parse error returns 400 with the message so the
 // editor can surface it, and neither the store nor the live engine changes.
+// policyMaxBytes caps a submitted policy document, matching the 64 KiB the other
+// console writes use.
+const policyMaxBytes = 1 << 16
+
 func (c *consoleAPI) handleSetPolicy(w http.ResponseWriter, r *http.Request, u *consoleUser) {
 	ws := u.Workspace
 	if ws == "" {
@@ -583,7 +746,10 @@ func (c *consoleAPI) handleSetPolicy(w http.ResponseWriter, r *http.Request, u *
 	var req struct {
 		Yaml string `json:"yaml"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	// Cap the body like every sibling write does (/members, /nodes/{id}/modules).
+	// A policy document is a few KiB; an uncapped decode is an unauthenticated-size
+	// allocation on an authenticated route, which is a needless asymmetry.
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, policyMaxBytes)).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "bad request body")
 		return
 	}
@@ -598,6 +764,29 @@ func (c *consoleAPI) handleSetPolicy(w http.ResponseWriter, r *http.Request, u *
 	writeJSON(w, map[string]any{"ok": true, "workspace": ws})
 }
 
+// handlePolicyHistory returns the retained previous revisions of the workspace's
+// policy, newest first, so an admin can diff against what is live and restore a
+// known-good document. The store overwrites a single settings key, so without this
+// an edit to the document that decides who may reach what was unrecoverable.
+func (c *consoleAPI) handlePolicyHistory(w http.ResponseWriter, r *http.Request, u *consoleUser) {
+	ws := u.Workspace
+	if ws == "" {
+		ws = defaultWorkspace
+	}
+	hist, err := getWorkspacePolicyHistory(c.s.store, ws)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "read policy history")
+		return
+	}
+	out := make([]map[string]any, 0, len(hist))
+	for _, h := range hist {
+		out = append(out, map[string]any{
+			"yaml": h.Doc, "updatedBy": h.UpdatedBy, "updatedUnix": h.UpdatedUnix,
+		})
+	}
+	writeJSON(w, map[string]any{"revisions": out})
+}
+
 // handleValidatePolicy parses a candidate policy document without persisting it,
 // so the editor can validate live. Always 200; {valid, error} is in the body
 // (an invalid policy is a normal editor state, not an HTTP error).
@@ -605,7 +794,9 @@ func (c *consoleAPI) handleValidatePolicy(w http.ResponseWriter, r *http.Request
 	var req struct {
 		Yaml string `json:"yaml"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	// The validate endpoint is only c.auth-gated (any member may lint a document),
+	// so its cap matters more than the writer's, not less.
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, policyMaxBytes)).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "bad request body")
 		return
 	}
@@ -620,25 +811,96 @@ func (c *consoleAPI) handleValidatePolicy(w http.ResponseWriter, r *http.Request
 	writeJSON(w, map[string]any{"valid": true, "policy": normalizeYAML(parsed)})
 }
 
+// handleRenderPolicy is the inverse of handleValidatePolicy: it takes the policy
+// STRUCTURE the visual editor produced and returns the canonical YAML document,
+// validated through the same authoritative parser that will store it.
+//
+// Both directions live on the server on purpose. The console ships no YAML parser
+// or emitter, so a visual editor that serialized in the browser would be a second,
+// subtly-different implementation of the policy schema — and the one place that
+// must never drift is the document that decides who may reach what.
+func (c *consoleAPI) handleRenderPolicy(w http.ResponseWriter, r *http.Request, _ *consoleUser) {
+	var req struct {
+		Policy map[string]any `json:"policy"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, policyMaxBytes)).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad request body")
+		return
+	}
+	if len(req.Policy) == 0 {
+		writeErr(w, http.StatusBadRequest, "policy is empty")
+		return
+	}
+	doc, err := yaml.Marshal(req.Policy)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "render policy: "+err.Error())
+		return
+	}
+	// Round-trip through the real parser. An invalid structure is a normal editor
+	// state, so it comes back as {valid:false} with the rendering, not as an error:
+	// the operator still needs to see (and fix) what they built.
+	if _, perr := policy.Parse(doc); perr != nil {
+		writeJSON(w, map[string]any{"valid": false, "error": perr.Error(), "yaml": string(doc)})
+		return
+	}
+	writeJSON(w, map[string]any{"valid": true, "yaml": string(doc)})
+}
+
+// handleAudit serves a page of the workspace's audit records.
+//
+// It takes until + offset as well as since, and returns the matched total, so the
+// log is actually walkable. Before this the query kept the TAIL of the matches
+// with no cursor, which meant the newest N records counting back from now were
+// all a console user could ever reach: narrowing `since` could not move the window
+// backwards, because the tail of a longer window is the same tail.
 func (c *consoleAPI) handleAudit(w http.ResponseWriter, r *http.Request, u *consoleUser) {
 	q := r.URL.Query()
 	since, _ := strconv.ParseInt(q.Get("since"), 10, 64)
-	limit, _ := strconv.Atoi(q.Get("limit"))
-	if limit <= 0 {
-		limit = 100
-	}
+	until, _ := strconv.ParseInt(q.Get("until"), 10, 64)
+	pg := pageParams(r)
+	limit, offset := pg.normalize()
+
 	// Force-filter to the caller's workspace: a tenant admin sees only their own
 	// tenant's events, never another tenant's or cluster-scoped ones.
-	lines, chainOK, err := c.s.audit.Query(since, q.Get("type"), u.Workspace, limit)
+	page, err := c.s.audit.QueryPage(AuditQuery{
+		SinceUnix: since,
+		UntilUnix: until,
+		Type:      q.Get("type"),
+		Actor:     q.Get("actor"),
+		Node:      q.Get("node"),
+		Workspace: u.Workspace,
+		Limit:     limit,
+		Offset:    offset,
+	})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "query audit")
 		return
 	}
-	recs := make([]json.RawMessage, 0, len(lines))
-	for _, l := range lines {
+
+	// ?format=jsonl streams the matched window as newline-delimited JSON, which is
+	// what an operator hands to a SIEM or keeps as evidence. The records are the
+	// verbatim chain lines, so their HMACs still verify outside this console.
+	if strings.EqualFold(q.Get("format"), "jsonl") {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.Header().Set("Content-Disposition", `attachment; filename="audit.jsonl"`)
+		for _, l := range page.Lines {
+			_, _ = w.Write(l)
+			_, _ = w.Write([]byte("\n"))
+		}
+		return
+	}
+
+	recs := make([]json.RawMessage, 0, len(page.Lines))
+	for _, l := range page.Lines {
 		recs = append(recs, json.RawMessage(l))
 	}
-	writeJSON(w, map[string]any{"records": recs, "chainOk": chainOK})
+	writeJSON(w, map[string]any{
+		"records": recs,
+		"chainOk": page.ChainOK,
+		"total":   page.Total,
+		"limit":   limit,
+		"offset":  offset,
+	})
 }
 
 func (c *consoleAPI) handleMintToken(w http.ResponseWriter, r *http.Request, u *consoleUser) {
@@ -675,7 +937,7 @@ func (c *consoleAPI) handleMintToken(w http.ResponseWriter, r *http.Request, u *
 		"auto_approve": boolStr(req.AutoApprove),
 	})
 
-	out := map[string]any{"token": token, "expiresUnix": expires}
+	out := map[string]any{"token": token, "expiresUnix": expires, "autoApprove": req.AutoApprove}
 	// The raw token is NOT what install.sh takes. Hand back the encoded
 	// enrollment code and the finished one-liner as well, or a console user
 	// pastes the token, gets "unknown argument", and has no way to discover the
@@ -684,16 +946,29 @@ func (c *consoleAPI) handleMintToken(w http.ResponseWriter, r *http.Request, u *
 	// the runtime endpoints, which is what makes curl|sh verifiable rather than
 	// blind.
 	if fp := c.s.rootFingerprint(); fp != "" {
+		// The fetch base is the public front (publicly-trusted TLS, so curl on a
+		// bare host trusts it); an unset console.external_url leaves it empty, and
+		// emitting "curl -fsSL /install.sh" would be worse than emitting nothing —
+		// so fall back to the controller's own runtime base like the CLI does.
 		base := c.s.consoleExternalURL()
-		code := enrollcode.Encode(enrollcode.Fields{
+		if base == "" {
+			base = c.s.controllerRuntimeBase()
+		}
+		out["enrollCode"] = enrollcode.Encode(enrollcode.Fields{
 			Token:   token,
 			RootFP:  fp,
 			HTTP:    base,
 			Runtime: c.s.controllerRuntimeBase(),
 			GRPC:    c.s.controllerGRPCEndpoint(),
 		})
-		out["enrollCode"] = code
-		out["installCommand"] = fmt.Sprintf("curl -fsSL %s/install.sh | sudo sh -s -- %s", base, code)
+		// Only advertise the one-liner when this controller actually serves
+		// /install.sh. rootFingerprint() is non-empty for every release build (it
+		// falls back to the compiled-in root), so it alone does not imply an
+		// installer: with install_dir unset the URL 404s, or worse, an SPA catch-all
+		// answers it with index.html and HTTP 200 — HTML piped into sudo sh.
+		if c.s.cfg.InstallDir != "" && base != "" {
+			out["installCommand"] = fmt.Sprintf("curl -fsSL %s/install.sh | sudo sh -s -- %s", base, out["enrollCode"])
+		}
 	}
 	writeJSON(w, out)
 }

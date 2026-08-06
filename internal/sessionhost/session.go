@@ -157,6 +157,32 @@ func ackFrame(seq uint64) *genezav1.HostToClient {
 // the virtual terminal and the recorder, and is delivered to the attached
 // client without ever blocking: a slow client is dropped from live delivery
 // and must resync from the ring/snapshot on reattach.
+// emitNotice injects one line of controller-originated text into the session's
+// output stream, as if the child had written it.
+//
+// It goes into the OUTPUT path, never into the pty master: writing to the master
+// is writing the user's input, so the shell would try to execute the notice.
+// Recording it along with everything else is correct — the transcript should show
+// that the person was told.
+func (s *session) emitNotice(text string) {
+	if text == "" {
+		return
+	}
+	data := []byte(text)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.seq++
+	seq := s.seq
+	s.ring.add(seq, false, data)
+	if s.vt != nil {
+		_, _ = s.vt.Write(data)
+	}
+	if s.rec != nil {
+		s.rec.output(data)
+	}
+	s.deliverLocked(chunkFrame(seq, false, data))
+}
+
 func (s *session) pump(r io.Reader, isStderr bool) {
 	defer s.pumps.Done()
 	buf := make([]byte, pumpBufSize)

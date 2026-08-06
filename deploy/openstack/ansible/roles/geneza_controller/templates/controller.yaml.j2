@@ -33,7 +33,31 @@ advertise:
 store: postgres
 store_dsn: "{{ geneza_postgres_dsn }}"
 
+# The cross-controller router. THIS FLEET IS MULTI-CONTROLLER, so it must not be
+# the in-process default: that router's RouteNetcfg/RouteModcfg/PublishSuspend are
+# no-ops, so a module or network change made on a controller that does not hold the
+# agent's stream is committed and then dropped, and the agent converges only on its
+# next reconnect. `pg` routes through the shared database's LISTEN/NOTIFY.
+router: {{ geneza_router }}
+
 metrics_url: "{{ geneza_metrics_url }}"
+
+# CVE affectedness. WITHOUT THIS BLOCK the inventory module still collects SBOMs
+# and node_components still fills up, but no advisories are synced and no verdict
+# is ever written — the console's vulnerability views render a green "clean"
+# badge for every node and nothing anywhere says the feed is off.
+{% if geneza_vuln_feed_source %}
+vuln_feed:
+  source: {{ geneza_vuln_feed_source }}
+{% if geneza_vuln_feed_ecosystems %}
+  ecosystems:
+{% for e in geneza_vuln_feed_ecosystems %}
+    - "{{ e }}"
+{% endfor %}
+{% endif %}
+  kev_url: "{{ geneza_vuln_feed_kev_url }}"
+  epss_url: "{{ geneza_vuln_feed_epss_url }}"
+{% endif %}
 
 # Relay fleet. Peers are told to find relays at these addresses, so they are the
 # relays' FLOATING IPs, not their private ones.

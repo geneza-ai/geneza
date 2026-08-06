@@ -42,6 +42,16 @@ const propDistro = "geneza:os:distro"
 // store so the same purl from two origins does not collide.
 const propSource = "geneza:source"
 
+// propSourceName / propSourceVersion carry the SOURCE package a binary OS package
+// was built from ("openssl" for "libssl3"). Distro advisories are filed against the
+// source package, so the matcher resolves OS packages by this name as well as by the
+// binary one — without it every split package resolves nothing.
+//
+// Note the deliberate spelling: propSource above is the COLLECTOR ORIGIN and is
+// already part of a component's store identity, so this cannot reuse that name.
+const propSourceName = "geneza:os:source_name"
+const propSourceVersion = "geneza:os:source_version"
+
 // Component is one package the collector found: a PURL plus the OSV ecosystem and
 // distro the matcher needs. Ecosystem is the OSV ecosystem string; Distro is set
 // only for OS packages. Source is the collection origin.
@@ -52,6 +62,11 @@ type Component struct {
 	Ecosystem string
 	Distro    string
 	Source    string
+	// SourceName is the source package a binary OS package was built from
+	// ("openssl" for "libssl3"), empty when the package is its own source or is a
+	// language dependency. SourceVersion is its version when it differs.
+	SourceName    string
+	SourceVersion string
 }
 
 // Encode renders the components into a CycloneDX 1.5 JSON document. nodeID names
@@ -82,6 +97,12 @@ func Encode(nodeID string, comps []Component) ([]byte, error) {
 		}
 		if c.Source != "" {
 			props = append(props, cdx.Property{Name: propSource, Value: c.Source})
+		}
+		if c.SourceName != "" {
+			props = append(props, cdx.Property{Name: propSourceName, Value: c.SourceName})
+		}
+		if c.SourceVersion != "" {
+			props = append(props, cdx.Property{Name: propSourceVersion, Value: c.SourceVersion})
 		}
 		if len(props) > 0 {
 			comp.Properties = &props
@@ -186,12 +207,14 @@ func componentFrom(c cdx.Component) (Component, bool) {
 	}
 	props := propMap(c.Properties)
 	pc := Component{
-		Purl:      c.PackageURL,
-		Name:      c.Name,
-		Version:   c.Version,
-		Ecosystem: props[propEcosystem],
-		Distro:    props[propDistro],
-		Source:    props[propSource],
+		Purl:          c.PackageURL,
+		Name:          c.Name,
+		Version:       c.Version,
+		Ecosystem:     props[propEcosystem],
+		Distro:        props[propDistro],
+		Source:        props[propSource],
+		SourceName:    props[propSourceName],
+		SourceVersion: props[propSourceVersion],
 	}
 	pu, err := purl.Parse(c.PackageURL)
 	if err == nil {
@@ -206,6 +229,12 @@ func componentFrom(c cdx.Component) (Component, bool) {
 		}
 		if pc.Distro == "" {
 			pc.Distro = pu.Distro
+		}
+		// A foreign SBOM (trivy, syft, a registry scanner) carries no geneza
+		// properties, but it does put the source package in the PURL's own
+		// qualifier — that is where scalibr writes it too.
+		if pc.SourceName == "" {
+			pc.SourceName = pu.SourceName
 		}
 	}
 	if pc.Source == "" {

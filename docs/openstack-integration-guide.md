@@ -31,10 +31,13 @@ clouds:
     role_map: { admin: ws-admin, member: ws-user, reader: ws-viewer }
 ```
 
-Apply it the way you manage the rest of the controller config (with the compose
-installer, edit `config/controller.yaml` and re-render with `docker compose up -d`;
-don't hand-edit a rendered `generated/controller.yaml` that an installer run will
-overwrite).
+Apply it the way you manage the rest of the controller config. With the compose
+installer that means editing `config/controller.yaml` and **re-running
+`install.sh`** — the container mounts `generated/controller.yaml`, which only an
+installer run re-derives, so `docker compose up -d` on its own applies nothing.
+The installer keeps a `config/controller.yaml` you have edited and drops its own
+newer template next to it as `config/controller.yaml.new` for you to merge; don't
+hand-edit `generated/controller.yaml`, which is overwritten every run.
 
 > `auto_provision: true` is the lab default — the first VM in an unbound project
 > creates and binds a workspace automatically. In production set it to `false`
@@ -44,14 +47,27 @@ overwrite).
 
 ## 2. Point Nova at the vendordata endpoint
 
-On the cloud's controllers, set Nova's dynamic vendordata target to the controller's
-endpoint for this slug, then restart `nova-api`:
+Set Nova's dynamic vendordata target to the controller's endpoint for this slug.
+**Put this in `nova.conf` on the compute nodes**, not just the controllers: step 3
+boots with a config drive, and the config drive is built by `nova-compute`, so a
+target configured anywhere else is never consulted. (Configure it on
+`nova-metadata` as well if you also want the `169.254.169.254` metadata service to
+serve it — that path needs DHCP isolated-metadata or a router.)
 
 ```ini
-# nova.conf
+# nova.conf — on the compute nodes
 [api]
 vendordata_providers = StaticJSON, DynamicJSON
 vendordata_dynamic_targets = cloud-init@https://<controller>/openstack/vendordata/mycloud
+
+[vendordata_dynamic_auth]
+# Nova signs the callback with its own service token; the controller requires it
+# when the cloud sets require_nova_service_token.
+auth_type = password
+auth_url = https://identity.example.com/v3
+username = nova
+project_name = service
+# password / user_domain_name / project_domain_name as for your other Nova credentials
 ```
 
 `<controller>` is the control plane's public name on `:443` (e.g.
@@ -61,8 +77,9 @@ endpoint is reached over `7402` behind the TLS front; Nova must be able to
 resolve and reach it over system-trusted TLS.
 
 ```sh
-# kolla-ansible example; for a manual deploy, restart your nova-api service.
-systemctl restart nova-api    # or: kolla-ansible -i inventory reconfigure -t nova
+# kolla-ansible example; for a manual deploy, restart nova-compute (and
+# nova-metadata if you configured it there too).
+systemctl restart nova-compute    # or: kolla-ansible -i inventory reconfigure -t nova
 ```
 
 ## 3. Boot VMs with a config drive

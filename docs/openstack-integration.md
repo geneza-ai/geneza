@@ -396,9 +396,12 @@ workspace with `auto_provision: false`.
 
 ## 10. Geneza vendordata endpoint (the contract)
 
-A plain-HTTP listener (`controller.yaml: vendordata_listen: ":7407"`), reachable from
-Nova; PoC uses HTTP (no CA trust needed), productize to mTLS / Nova-source
-allowlist. `POST /openstack/vendordata/<service-uid>`:
+Served on the controller's own HTTPS listener (`controller.yaml: http_listen`,
+default `:7402`) — it has no listener of its own. TLS is not optional here: the
+request carries Nova's Keystone token and the response carries the VM's one-time
+join token, so neither may cross the wire in cleartext. Nova must be able to reach
+that port, directly or through the TLS front. Hardening beyond this (mTLS or a
+Nova-source allowlist) is still open. `POST /openstack/vendordata/<service-uid>`:
 
 ```
 1. ROUTE: look up <service-uid> in the clouds registry (§7). Unknown → 404, log.
@@ -629,7 +632,7 @@ Ranked by severity; duplicates across review lenses are merged.
   the existing kolla1 federation); a project under it for the test VM.
 - **P2 — Geneza:** gophercloud client + clouds registry + vendordata endpoint
   (§6–§11); platform-admin `bind` command; auto-provision.
-- **P3 — Nova:** `vendordata_dynamic_targets = cloud-init@http://<geneza>:7407/openstack/vendordata/kolla1`
+- **P3 — Nova:** `vendordata_dynamic_targets = cloud-init@https://<geneza>:7402/openstack/vendordata/kolla1`
   + `[vendordata_dynamic_auth]` in **nova-compute** (config-drive path);
   `kolla-ansible reconfigure -t nova`.
 - **P4 — prove:** boot Ubuntu 24.04 `--config-drive true` under the geneza domain's

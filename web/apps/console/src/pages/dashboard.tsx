@@ -12,6 +12,7 @@ import { StatusDot } from "@/components/status-dot"
 import { relativeTime } from "@/lib/format"
 import type {
   AuditRecord,
+  Fleet,
   NodesResponse,
   Overview,
   SessionsResponse,
@@ -59,10 +60,18 @@ export function DashboardPage() {
     10000
   )
   const recent = usePolling((s) => api.getAudit({ limit: 8 }, s), 15000)
+  // The canary RING, not just the canary version. It only changes when an operator
+  // runs `genezactl release`, so it polls slowly. Without it the card can show a
+  // canary version that reaches nobody and looks like a rollout in progress.
+  const fleetRing = usePolling<Fleet>((s) => api.getFleet(s), 60000)
 
   const o = overview.data
   const { counts, perNode, atRisk } = cves
-  const openCves = cves.loaded ? cves.open.length : null
+  // Count the same rows the breakdown beneath the tile counts. openCves used to be
+  // every affected row while the sub-line showed only crit/high/med, so any low or
+  // unknown-severity finding made the headline number disagree with its own
+  // breakdown — and there is no way for a reader to tell which one is wrong.
+  const openCves = cves.loaded ? counts.crit + counts.high + counts.med : null
   const fleet = (nodes.data?.nodes ?? []).slice(0, 6)
   const liveSession = live.data?.sessions[0]
 
@@ -166,6 +175,7 @@ export function DashboardPage() {
                 <div className="flex justify-end sm:justify-start">
                   <NodeCvePills
                     counts={perNode.get(n.nodeId) ?? perNode.get(n.name)}
+                    scanned={cves.loaded && cves.scanned}
                   />
                 </div>
               </Link>
@@ -238,6 +248,24 @@ export function DashboardPage() {
                     {o.versions.canary || "none"}
                   </span>
                 </div>
+                {o.versions.canary && fleetRing.data && (
+                  <div className="flex justify-between">
+                    <span className="text-faint">canary ring</span>
+                    {fleetRing.data.canaryNodes.length === 0 ? (
+                      <span
+                        className="text-warning"
+                        title="A canary version is set but no node is in the ring, so every node stays on stable. Add nodes with: genezactl release --canary-nodes"
+                      >
+                        empty — reaches no node
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground">
+                        {fleetRing.data.canaryNodes.length}{" "}
+                        {fleetRing.data.canaryNodes.length === 1 ? "node" : "nodes"}
+                      </span>
+                    )}
+                  </div>
+                )}
                 <div className="flex justify-between">
                   <span className="text-faint">audit chain</span>
                   <span className={o.audit.chainOk ? "text-success" : "text-destructive"}>

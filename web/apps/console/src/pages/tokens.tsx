@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { Check, Copy, KeyRound, Plus, Trash2 } from "lucide-react"
+import { Check, ChevronDown, Copy, KeyRound, Plus, Terminal, Trash2 } from "lucide-react"
 import { toast } from "sonner"
 
 import { api, ApiError } from "@/api"
@@ -32,13 +32,44 @@ interface LabelPair {
   value: string
 }
 
+// The artifact the operator should actually copy, in descending order of
+// usefulness. The raw token is last on purpose: install.sh rejects it outright
+// ("unknown argument"), so leading with it sends people down a dead end.
+function primaryArtifact(r: TokenResponse): {
+  value: string
+  title: string
+  hint: string
+} {
+  if (r.installCommand) {
+    return {
+      value: r.installCommand,
+      title: "Run this on the new node",
+      hint: "Installs the agent and enrolls it. The code pins this controller's root key, so the download verifies itself.",
+    }
+  }
+  if (r.enrollCode) {
+    return {
+      value: r.enrollCode,
+      title: "Enrollment code",
+      hint: "This controller does not serve an installer (set install_dir to enable the curl one-liner). Pass this code to install-agent.sh on the node.",
+    }
+  }
+  return {
+    value: r.token,
+    title: "Join token",
+    hint: "This controller serves no root pubkey, so there is no verifiable install code. Enroll with: geneza-agent enroll --token <token> --controller <host:7401>",
+  }
+}
+
 export function TokensPage() {
   const [ttl, setTtl] = useState(3600)
   const [maxUses, setMaxUses] = useState(1)
+  const [autoApprove, setAutoApprove] = useState(false)
   const [labels, setLabels] = useState<LabelPair[]>([{ key: "", value: "" }])
   const [submitting, setSubmitting] = useState(false)
   const [result, setResult] = useState<TokenResponse | null>(null)
   const [copied, setCopied] = useState(false)
+  const [showRaw, setShowRaw] = useState(false)
 
   const setLabel = (i: number, field: keyof LabelPair, val: string) => {
     setLabels((prev) =>
@@ -54,6 +85,7 @@ export function TokensPage() {
     e.preventDefault()
     setSubmitting(true)
     setResult(null)
+    setShowRaw(false)
 
     const labelMap: Record<string, string> = {}
     for (const { key, value } of labels) {
@@ -66,9 +98,10 @@ export function TokensPage() {
         ttlSeconds: ttl,
         labels: labelMap,
         maxUses: Math.max(1, maxUses),
+        autoApprove,
       })
       setResult(res)
-      toast.success("Join token created")
+      toast.success("Enrollment code created")
     } catch (err) {
       const msg =
         err instanceof ApiError ? err.message : "Failed to create token"
@@ -78,9 +111,11 @@ export function TokensPage() {
     }
   }
 
-  const copyToken = async () => {
-    if (!result) return
-    await copyToClipboard(result.token, "Token copied")
+  const artifact = result ? primaryArtifact(result) : null
+
+  const copyArtifact = async () => {
+    if (!artifact) return
+    await copyToClipboard(artifact.value, "Copied")
     setCopied(true)
     setTimeout(() => setCopied(false), 1500)
   }
@@ -91,11 +126,11 @@ export function TokensPage() {
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-sm">
             <KeyRound className="size-4 text-muted-foreground" />
-            Mint a join token
+            Enroll a node
           </CardTitle>
           <p className="text-sm text-muted-foreground">
-            Generate a single-use or limited-use enrollment token for a new
-            agent node.
+            Generate a single-use or limited-use enrollment code, then run the
+            install one-liner on the new machine.
           </p>
         </CardHeader>
         <CardContent>
@@ -135,9 +170,30 @@ export function TokensPage() {
             </div>
 
             <div className="space-y-2">
+              <Label className="flex items-start gap-2.5 font-normal">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 size-4 shrink-0 accent-primary"
+                  checked={autoApprove}
+                  onChange={(e) => setAutoApprove(e.target.checked)}
+                />
+                <span className="space-y-1">
+                  <span className="block text-sm font-medium">
+                    Approve enrolled nodes automatically
+                  </span>
+                  <span className="block text-xs text-muted-foreground">
+                    Skips the admin approval gate — a node that enrols is
+                    immediately usable. Anyone who obtains this code gets a
+                    working node with no human check.
+                  </span>
+                </span>
+              </Label>
+            </div>
+
+            <div className="space-y-2">
               <Label>Labels</Label>
               <p className="text-xs text-muted-foreground">
-                Applied to every node enrolled with this token.
+                Applied to every node enrolled with this code.
               </p>
               <div className="space-y-2">
                 {labels.map((pair, i) => (
@@ -183,32 +239,32 @@ export function TokensPage() {
 
             <Button type="submit" disabled={submitting}>
               <KeyRound className="size-4" />
-              {submitting ? "Creating…" : "Create token"}
+              {submitting ? "Creating…" : "Create enrollment code"}
             </Button>
           </form>
         </CardContent>
       </Card>
 
-      {result && (
+      {result && artifact && (
         <Card className="border-success/30">
           <CardHeader className="pb-3">
-            <CardTitle className="text-sm">Token created</CardTitle>
-            <p className="text-sm text-muted-foreground">
-              Copy it now — it won’t be shown again. Expires{" "}
-              {absoluteTime(result.expiresUnix)}.
-            </p>
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <Terminal className="size-4 text-muted-foreground" />
+              {artifact.title}
+            </CardTitle>
+            <p className="text-sm text-muted-foreground">{artifact.hint}</p>
           </CardHeader>
-          <CardContent>
+          <CardContent className="space-y-3">
             <div className="flex items-stretch gap-2">
               <code className="flex-1 overflow-x-auto rounded-md border bg-muted/40 px-3 py-2.5 font-mono text-xs">
-                {result.token}
+                {artifact.value}
               </code>
               <Button
                 variant="outline"
                 size="icon"
-                onClick={copyToken}
+                onClick={copyArtifact}
                 className="shrink-0"
-                title="Copy token"
+                title="Copy"
               >
                 {copied ? (
                   <Check className="size-4 text-success" />
@@ -217,6 +273,73 @@ export function TokensPage() {
                 )}
               </Button>
             </div>
+
+            <dl className="grid gap-1 text-xs text-muted-foreground">
+              <div className="flex gap-2">
+                <dt className="w-20 shrink-0">Expires</dt>
+                <dd>{absoluteTime(result.expiresUnix)}</dd>
+              </div>
+              <div className="flex gap-2">
+                <dt className="w-20 shrink-0">Approval</dt>
+                <dd>
+                  {result.autoApprove ? (
+                    <span className="text-warning">
+                      AUTO — enrolled nodes are usable immediately
+                    </span>
+                  ) : (
+                    <>
+                      PENDING — approve the node under Nodes after it arrives
+                    </>
+                  )}
+                </dd>
+              </div>
+            </dl>
+
+            <p className="text-xs text-muted-foreground">
+              Copy it now — it won’t be shown again.
+            </p>
+
+            {artifact.value !== result.token && (
+              <>
+                <Separator />
+                <button
+                  type="button"
+                  onClick={() => setShowRaw((v) => !v)}
+                  className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                >
+                  <ChevronDown
+                    className={`size-3.5 transition-transform ${showRaw ? "rotate-180" : ""}`}
+                  />
+                  Advanced — raw join token
+                </button>
+                {showRaw && (
+                  <div className="space-y-2">
+                    <p className="text-xs text-muted-foreground">
+                      For <code className="font-mono">geneza-agent enroll
+                      --token</code> on a host that already has the binary and
+                      the CA roots. <strong>install.sh does not accept this</strong> —
+                      it takes the code above.
+                    </p>
+                    <div className="flex items-stretch gap-2">
+                      <code className="flex-1 overflow-x-auto rounded-md border bg-muted/40 px-3 py-2 font-mono text-xs">
+                        {result.token}
+                      </code>
+                      <Button
+                        variant="outline"
+                        size="icon"
+                        onClick={() =>
+                          copyToClipboard(result.token, "Token copied")
+                        }
+                        className="shrink-0"
+                        title="Copy token"
+                      >
+                        <Copy className="size-4" />
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
           </CardContent>
         </Card>
       )}

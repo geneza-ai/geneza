@@ -30,6 +30,11 @@ type Parsed struct {
 	// Distro is the OS package's distro identifier ("ubuntu:22.04"), empty for a
 	// language dependency.
 	Distro string
+	// SourceName is the source package a binary OS package was built from, read
+	// from whichever qualifier the producing tool used: "source" (deb), "origin"
+	// (apk) or "upstream" (rpm). Distro advisories are filed against the source
+	// package, so this is what an OS-package advisory lookup keys on.
+	SourceName string
 }
 
 // Parse reads a PURL ("pkg:deb/ubuntu/openssl@1.1.1f-1ubuntu2.16?distro=ubuntu-22.04")
@@ -74,7 +79,24 @@ func Parse(s string) (Parsed, error) {
 
 	distroQual := qualifier(qualifiers, "distro")
 	p.Ecosystem, p.Distro = ecosystem(p.Type, p.Namespace, distroQual)
+	p.SourceName = sourceQualifier(qualifiers)
 	return p, nil
+}
+
+// sourceQualifier reads the source-package name from whichever qualifier the
+// producing tool used. The three OS extractors each spell it differently, and a
+// foreign SBOM may use any of them, so all three are accepted. A value carrying a
+// version ("openssl@3.0.7", as some tools emit) is trimmed back to the name.
+func sourceQualifier(qualifiers string) string {
+	for _, k := range []string{"source", "origin", "upstream"} {
+		if v := qualifier(qualifiers, k); v != "" {
+			if at := strings.IndexByte(v, '@'); at > 0 {
+				return v[:at]
+			}
+			return v
+		}
+	}
+	return ""
 }
 
 var errNotPurl = parseError("not a package url")
@@ -116,24 +138,70 @@ func osEcosystem(typ, namespace, distro string) (string, string) {
 }
 
 // distroVendorRelease resolves the lowercase vendor and release from the PURL.
-// The distro qualifier is the authority on both ("ubuntu-22.04" -> vendor "ubuntu",
-// release "22.04"); the namespace is the fallback vendor for a deb/rpm with no
-// qualifier. Alpine carries no namespace vendor, so apk defaults to alpine.
+// The distro qualifier is the PREFERRED authority on both ("ubuntu-22.04" -> vendor
+// "ubuntu", release "22.04"), but it is not the only spelling in the wild and it must
+// never be the last word: a qualifier that does not resolve to a known vendor falls
+// through to the namespace, so supplying MORE information cannot make a component
+// fare worse. It used to short-circuit here, which silently dropped every OS package
+// from a foreign CycloneDX document — scalibr's dpkg extractor writes the release
+// CODENAME ("bookworm", "jammy") and apk writes a bare version ("3.18.0"), neither of
+// which is a vendor, so the component ended up with no ecosystem and was discarded.
 func distroVendorRelease(typ, namespace, distro string) (vendor, release string) {
+	ns := distroVendorAlias(strings.ToLower(namespace))
 	if distro != "" {
 		d := strings.ToLower(distro)
 		if i := strings.IndexByte(d, '-'); i >= 0 {
-			return distroVendorAlias(d[:i]), d[i+1:]
+			if v := distroVendorAlias(d[:i]); distroOSVFamily[v] != "" {
+				return v, d[i+1:]
+			}
 		}
-		return distroVendorAlias(d), ""
+		// A bare qualifier is either the vendor ("debian"), a release codename
+		// ("bookworm") or a bare release ("3.18.0"). Only the first names a vendor.
+		if v := distroVendorAlias(d); distroOSVFamily[v] != "" {
+			return v, ""
+		}
+		if r, v := releaseFromCodename(d); r != "" && (ns == "" || ns == v) {
+			return v, r
+		}
+		// A bare release with no vendor of its own: take the vendor from the
+		// namespace (deb/rpm) or the type (apk), and keep the release.
+		if ns != "" && distroOSVFamily[ns] != "" {
+			return ns, d
+		}
+		if typ == "apk" {
+			return "alpine", d
+		}
 	}
-	if namespace != "" {
-		return distroVendorAlias(strings.ToLower(namespace)), ""
+	if ns != "" {
+		return ns, ""
 	}
 	if typ == "apk" {
 		return "alpine", ""
 	}
 	return "", ""
+}
+
+// releaseFromCodename maps a Debian/Ubuntu release codename to its vendor and
+// numeric release. Codenames are what dpkg's own metadata carries (VERSION_CODENAME
+// in os-release), so any SBOM built from it spells the distro this way.
+func releaseFromCodename(name string) (release, vendor string) {
+	if r, ok := debianCodenames[name]; ok {
+		return r, "debian"
+	}
+	if r, ok := ubuntuCodenames[name]; ok {
+		return r, "ubuntu"
+	}
+	return "", ""
+}
+
+var debianCodenames = map[string]string{
+	"jessie": "8", "stretch": "9", "buster": "10",
+	"bullseye": "11", "bookworm": "12", "trixie": "13", "forky": "14",
+}
+
+var ubuntuCodenames = map[string]string{
+	"xenial": "16.04", "bionic": "18.04", "focal": "20.04",
+	"jammy": "22.04", "noble": "24.04", "questing": "25.10",
 }
 
 // distroVendorAlias normalizes a vendor token to the canonical lowercase id the

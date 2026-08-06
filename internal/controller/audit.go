@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -70,6 +71,11 @@ type Audit struct {
 	sink    AuditSink
 	log     *slog.Logger
 	now     func() time.Time
+
+	// Cached whole-chain verification for polled surfaces; see VerifyCached.
+	verifiedAt    time.Time
+	verifiedCount int
+	verifiedErr   error
 }
 
 // OpenAudit opens (creating if needed) the keyed audit chain. keyPath holds the
@@ -167,6 +173,8 @@ func (a *Audit) Append(typ, actor, node, session string, detail map[string]strin
 func (a *Audit) AppendWS(ws, typ, actor, node, session string, detail map[string]string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	// A new record makes the cached verdict stale; the next cached read re-scans.
+	a.verifiedAt = time.Time{}
 	e := AuditEvent{
 		Seq:       a.seq + 1,
 		TS:        a.now().Unix(),
@@ -218,6 +226,10 @@ func (a *Audit) saveCheckpoint() error {
 func (a *Audit) Verify() (int, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	return a.verifyLocked()
+}
+
+func (a *Audit) verifyLocked() (int, error) {
 	_, seq, count, err := verifyAuditFile(a.path, a.key)
 	if err != nil {
 		return int(count), err
@@ -228,34 +240,104 @@ func (a *Audit) Verify() (int, error) {
 	return int(count), nil
 }
 
+// verifyCacheTTL bounds how often a polled surface re-verifies the whole chain.
+// Verification is a full-file HMAC rescan holding the same mutex Append needs, and
+// its cost grows without bound because nothing rotates the audit log. The console
+// dashboard polls /overview every 10s, so an idle open tab was stalling every audit
+// append fleet-wide — session requests, approvals, logins — on a whole-file scan.
+const verifyCacheTTL = 30 * time.Second
+
+// VerifyCached is Verify with a short TTL, for surfaces that poll. The uncached
+// Verify remains for the CLI and for anything that must see the current instant.
+func (a *Audit) VerifyCached() (int, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.verifiedAt.IsZero() && time.Since(a.verifiedAt) < verifyCacheTTL {
+		return a.verifiedCount, a.verifiedErr
+	}
+	n, err := a.verifyLocked()
+	a.verifiedAt, a.verifiedCount, a.verifiedErr = time.Now(), n, err
+	return n, err
+}
+
 // Query returns up to limit raw lines (chronological, most recent window)
 // matching the filters, plus whether the chain verified. A non-empty workspace
 // restricts the result to that tenant's events (the tenant console passes the
 // caller's workspace; the cluster console / break-glass admin passes "").
 func (a *Audit) Query(sinceUnix int64, typeFilter, workspace string, limit int) (lines [][]byte, chainOK bool, err error) {
+	res, err := a.QueryPage(AuditQuery{
+		SinceUnix: sinceUnix, Type: typeFilter, Workspace: workspace, Limit: limit,
+	})
+	return res.Lines, res.ChainOK, err
+}
+
+// AuditQuery is the filter/window for a paged audit read.
+type AuditQuery struct {
+	SinceUnix int64
+	// UntilUnix bounds the window's NEWER end. Without it a narrower `since` could
+	// not walk backwards: the query keeps the tail of the matches, so the newest
+	// N records counting from now were all a console user could ever reach.
+	UntilUnix int64
+	Type      string
+	Workspace string
+	// Actor and Node filter on the event's principal and subject node. Both fields
+	// have always been on AuditEvent and neither was queryable.
+	Actor  string
+	Node   string
+	Limit  int
+	Offset int
+}
+
+// AuditPage is one page of audit records plus the total the filter matched, so a
+// caller can render real pagination instead of a fixed tail.
+type AuditPage struct {
+	Lines   [][]byte
+	Total   int
+	ChainOK bool
+}
+
+// QueryPage returns a window of matching records, newest-first-bounded by Until,
+// with Offset counted back from the newest match.
+func (a *Audit) QueryPage(q AuditQuery) (AuditPage, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	limit := q.Limit
 	if limit <= 0 {
 		limit = 100
 	}
 	var matched [][]byte
 	_, _, _, verr := scanAuditFile(a.path, a.key, func(line []byte, e *AuditEvent) {
-		if sinceUnix > 0 && e.TS < sinceUnix {
+		if q.SinceUnix > 0 && e.TS < q.SinceUnix {
 			return
 		}
-		if typeFilter != "" && e.Type != typeFilter {
+		if q.UntilUnix > 0 && e.TS > q.UntilUnix {
 			return
 		}
-		if workspace != "" && e.Workspace != workspace {
+		if q.Type != "" && e.Type != q.Type {
+			return
+		}
+		if q.Workspace != "" && e.Workspace != q.Workspace {
+			return
+		}
+		if q.Actor != "" && !strings.EqualFold(e.Actor, q.Actor) {
+			return
+		}
+		if q.Node != "" && e.Node != q.Node {
 			return
 		}
 		matched = append(matched, append([]byte(nil), line...))
 	})
-	chainOK = verr == nil
-	if len(matched) > limit {
-		matched = matched[len(matched)-limit:]
+	total := len(matched)
+	// Page from the NEWEST match backwards: offset 0 is the most recent window.
+	end := total - q.Offset
+	if end < 0 {
+		end = 0
 	}
-	return matched, chainOK, nil
+	start := end - limit
+	if start < 0 {
+		start = 0
+	}
+	return AuditPage{Lines: matched[start:end], Total: total, ChainOK: verr == nil}, nil
 }
 
 // VerifyAuditFile verifies a chain without an open Audit (CLI audit-verify).

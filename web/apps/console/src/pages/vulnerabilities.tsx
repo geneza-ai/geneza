@@ -1,8 +1,8 @@
-import { useMemo, useState } from "react"
+import { useEffect, useState } from "react"
 import { useSearchParams } from "react-router-dom"
 import { ChevronDown, ChevronRight, Search, ShieldX } from "lucide-react"
 
-import { api } from "@/api"
+import { api, ApiError } from "@/api"
 import { usePolling } from "@/hooks/use-polling"
 import { Card, Skeleton, cn } from "@geneza/ui"
 import {
@@ -16,8 +16,14 @@ import {
 import { SeverityDot, StatusBadge } from "@/components/vuln-badges"
 import { severityKey } from "@/lib/severity"
 import { EmptyState, ErrorState } from "@/components/states"
+import { CVETable } from "@/components/cve-table"
 import { Pagination } from "@/components/data-pagination"
-import type { WorkspaceCVE, WorkspaceCVEsResponse } from "@/types"
+import type {
+  NodeCVE,
+  VulnFeedStatus,
+  WorkspaceCVE,
+  WorkspaceCVEsResponse,
+} from "@/types"
 
 const PAGE_SIZE = 50
 
@@ -48,21 +54,35 @@ export function VulnerabilitiesPage() {
     usePolling<WorkspaceCVEsResponse>(
       (s) =>
         api.getWorkspaceCVEs(
-          { cve: cve || undefined, limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE },
+          {
+            cve: cve || undefined,
+            severity: sev === "all" ? undefined : sev,
+            limit: PAGE_SIZE,
+            offset: (page - 1) * PAGE_SIZE,
+          },
           s
         ),
       15000,
-      [cve, page]
+      [cve, sev, page]
     )
 
-  const rows = useMemo(() => {
-    const all = data?.cves ?? []
-    if (sev === "all") return all
-    return all.filter((r) => {
-      const s = r.severity.toLowerCase()
-      return sev === "medium" ? s === "medium" || s === "moderate" : s === sev
-    })
-  }, [data, sev])
+  // The feed's own state decides what an empty rollup means.
+  const { data: feed } = usePolling<VulnFeedStatus>(
+    (s) => api.getVulnFeedStatus(s),
+    300000
+  )
+  const feedReady = !!feed?.enabled && feed.advisoryCount > 0
+  const feedMessage = !feed
+    ? "Checking the CVE feed…"
+    : !feed.enabled
+      ? "No CVE feed is configured on this controller, so no node has ever been matched against an advisory. Set vuln_feed.source in controller.yaml — SBOM collection works without it, which is why the fleet can look clean."
+      : feed.advisoryCount === 0
+        ? feed.lastError
+          ? `The ${feed.source} feed has not completed a sync: ${feed.lastError}`
+          : `The ${feed.source} feed is configured but has not finished its first sync yet, so nothing has been matched.`
+        : "No node in this workspace is currently matched against a CVE."
+
+  const rows = data?.cves ?? []
   const total = data?.total ?? 0
 
   function applyFilter(next: string) {
@@ -94,7 +114,11 @@ export function VulnerabilitiesPage() {
           {SEV_FILTERS.map((f) => (
             <button
               key={f.key}
-              onClick={() => setSev(f.key)}
+              onClick={() => {
+                setSev(f.key)
+                setPage(1)
+                setExpanded(null)
+              }}
               className={cn(
                 "rounded-[7px] border px-3 py-[7px] font-mono text-[11.5px] transition-colors",
                 sev === f.key
@@ -118,19 +142,24 @@ export function VulnerabilitiesPage() {
             ))}
           </div>
         ) : total === 0 ? (
+          // An empty rollup is only good news when a feed actually ran. Say which
+          // of the three situations this is, and name the config key — otherwise
+          // this page reassures an operator whose CVE pipeline is entirely dark.
           <EmptyState
             icon={<ShieldX className="size-8" />}
-            title={cve ? "No matching CVEs" : "No vulnerabilities"}
+            title={
+              cve
+                ? "No matching CVEs"
+                : !feedReady
+                  ? "No CVE feed data"
+                  : "No vulnerabilities"
+            }
             message={
               cve
                 ? `No CVE matching "${cve}" affects a node in this workspace.`
-                : "No node in this workspace is currently matched against a CVE."
+                : feedMessage
             }
           />
-        ) : rows.length === 0 ? (
-          <div className="p-10 text-center font-mono text-[13px] text-faint">
-            No vulnerabilities match your filters.
-          </div>
         ) : (
           <>
             <Table>
@@ -227,25 +256,74 @@ function CVERollupRow({
         <TableRow className="bg-muted/30 hover:bg-muted/30">
           <TableCell className="pl-5" />
           <TableCell colSpan={5} className="py-3">
-            <div className="flex flex-wrap gap-1.5">
-              {row.nodes.length === 0 ? (
-                <span className="font-mono text-[13px] text-faint">
-                  No nodes listed.
-                </span>
-              ) : (
-                row.nodes.map((n) => (
-                  <span
-                    key={n}
-                    className="rounded-full border bg-elev px-2.5 py-1 font-mono text-[11.5px] text-muted-foreground"
-                  >
-                    {n}
-                  </span>
-                ))
-              )}
-            </div>
+            <AffectedNodes key={row.cve} cve={row.cve} fallback={row.nodes} />
           </TableCell>
         </TableRow>
       )}
     </>
+  )
+}
+
+// AffectedNodes is the by-CVE drill-down: the per-node verdicts behind a rollup
+// row, fetched on expand. The rollup itself only carries node IDs, which is not
+// enough to act on — an operator needs the package, the installed version and the
+// fixing version per node. `GET /cves/{cve}/nodes` has always returned exactly
+// that, and CVETable has always had a `showNode` column for it; neither had a
+// caller until now.
+function AffectedNodes({ cve, fallback }: { cve: string; fallback: string[] }) {
+  // Keyed by cve at the call site, so a different CVE remounts this with fresh
+  // state rather than resetting it inside the effect.
+  const [rows, setRows] = useState<NodeCVE[] | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+
+  useEffect(() => {
+    let active = true
+    api
+      .getNodesAffectedByCVE(cve, { limit: 100 })
+      .then((r) => active && setRows(r.nodes))
+      .catch((e) => active && setErr(e instanceof ApiError ? e.message : String(e)))
+    return () => {
+      active = false
+    }
+  }, [cve])
+
+  if (err) {
+    // Fall back to the ids the rollup already carried rather than showing nothing.
+    return (
+      <div className="space-y-2">
+        <p className="font-mono text-[11.5px] text-warning">
+          Could not load per-node detail: {err}
+        </p>
+        <div className="flex flex-wrap gap-1.5">
+          {fallback.map((n) => (
+            <span
+              key={n}
+              className="rounded-full border bg-elev px-2.5 py-1 font-mono text-[11.5px] text-muted-foreground"
+            >
+              {n}
+            </span>
+          ))}
+        </div>
+      </div>
+    )
+  }
+  if (!rows) {
+    return (
+      <div className="space-y-1.5 py-1">
+        {Array.from({ length: Math.min(fallback.length || 1, 3) }).map((_, i) => (
+          <Skeleton key={i} className="h-7 w-full" />
+        ))}
+      </div>
+    )
+  }
+  if (rows.length === 0) {
+    return (
+      <span className="font-mono text-[13px] text-faint">No nodes listed.</span>
+    )
+  }
+  return (
+    <div className="-mx-3 overflow-x-auto">
+      <CVETable rows={rows} showNode />
+    </div>
   )
 }

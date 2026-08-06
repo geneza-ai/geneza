@@ -75,8 +75,11 @@ type ClusterConfig struct {
 	// AuditRecipient is the per-workspace age X25519 PUBLIC recipient that session
 	// recordings are encrypted to at the agent. Only the public half travels here;
 	// the private key lives with the auditor/custodian, never the controller. Empty
-	// means no audit key is configured, so recording-authorized sessions fail
-	// closed rather than spool plaintext.
+	// means no audit key is configured, in which case a recording-authorized session
+	// spools PLAINTEXT — it does not fail closed. That is deliberate (recording must
+	// not break access) but it is the opposite of what this comment used to claim,
+	// and it is why the session host announces the plaintext case to the user and
+	// the console badges such recordings.
 	AuditRecipient string `json:"audit_recipient,omitempty"`
 	// AuditRecipients is the full set a workspace may seal each recording to (e.g.
 	// the security team's key plus a break-glass escrow key), so losing one
@@ -173,8 +176,8 @@ type RelayNode struct {
 // trustworthy, so a spoofed DNS answer outside this set is refused.
 type ControllerEndpoint struct {
 	ControllerID string   `json:"controller_id"`
-	Addrs     []string `json:"addrs"` // dialable gRPC addresses (host:port) — the client/agent redirect target
-	RegionID  string   `json:"region_id,omitempty"`
+	Addrs        []string `json:"addrs"` // dialable gRPC addresses (host:port) — the client/agent redirect target
+	RegionID     string   `json:"region_id,omitempty"`
 	// ControlAddrs are the addresses serving the controller↔relay control plane (the
 	// relay registrar). They differ from Addrs only when an operator splits the
 	// cluster-control listener onto its own port; a relay dials these to register and

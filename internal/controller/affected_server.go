@@ -26,23 +26,10 @@ func (s *Server) affectedMatcher(vex engine.VEXSource) *affectedMatcher {
 	return m
 }
 
-// RematchChangedAdvisory is the post-sync hook: after a feed writes a changed
-// advisory, re-evaluate the (tiny) set of nodes carrying its package across every
-// workspace and update node_cve, AND re-match every image digest carrying the package
-// (once, digest-keyed) so image-sourced verdicts converge too — no node contact, no
-// fleet scan. Returns the number of verdict rows written across both.
-func (s *Server) RematchChangedAdvisory(ctx context.Context, vex engine.VEXSource, adv vulnfeed.Vulnerability) (int, error) {
-	m := s.affectedMatcher(vex)
-	n, err := m.MatchAdvisoryAllWorkspaces(ctx, adv)
-	if err != nil {
-		return n, err
-	}
-	if s.inventoryFeed == nil {
-		return n, nil
-	}
-	w, err := m.MatchAdvisoryImages(ctx, s.inventoryFeed, adv)
-	return n + w, err
-}
+// The post-sync hook is NOT here: a feed window's changes are folded into a
+// persisted queue keyed by (ecosystem, package) and drained incrementally, because
+// walking it per advisory re-scanned the same image digests once per advisory. See
+// vulnrematch.go.
 
 // RematchNode is the node-change hook: re-evaluate one node's stored host components
 // against the feed and update node_cve. Image-sourced verdicts are matched per digest

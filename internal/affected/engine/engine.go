@@ -70,17 +70,38 @@ func (e *Engine) MatchNode(ctx context.Context, feed vulnfeed.Feed, nodeID strin
 	var out []affected.Match
 	for i := range comps {
 		c := comps[i]
-		advs, err := feed.Advisories(c.Ecosystem, c.Name)
-		if err != nil {
-			return nil, err
-		}
-		for j := range advs {
-			if m, ok := e.matchOne(c, advs[j]); ok {
-				out = append(out, m)
+		// Resolve under the binary name AND the source package name. A distro files
+		// its advisories against the source ("openssl"), while the installed package
+		// is a binary split of it ("libssl3"), so looking up only c.Name finds
+		// nothing for most of a distro install. Dedupe by advisory id: a package
+		// that IS its own source would otherwise be evaluated twice.
+		seen := map[string]struct{}{}
+		for _, name := range lookupNames(c) {
+			advs, err := feed.Advisories(c.Ecosystem, name)
+			if err != nil {
+				return nil, err
+			}
+			for j := range advs {
+				if _, dup := seen[advs[j].ID]; dup {
+					continue
+				}
+				seen[advs[j].ID] = struct{}{}
+				if m, ok := e.matchOne(c, advs[j]); ok {
+					out = append(out, m)
+				}
 			}
 		}
 	}
 	return out, nil
+}
+
+// lookupNames are the package names a component may be filed under: its own, plus
+// the source package it was built from when that differs.
+func lookupNames(c affected.Component) []string {
+	if c.SourceName == "" || strings.EqualFold(c.SourceName, c.Name) {
+		return []string{c.Name}
+	}
+	return []string{c.Name, c.SourceName}
 }
 
 // matchOne is the per-(component, advisory) verdict. It returns ok=false when the
@@ -158,10 +179,15 @@ func selectAffected(c affected.Component, adv vulnfeed.Vulnerability) []vulnfeed
 	var all, distro []vulnfeed.Affected
 	for i := range adv.Affected {
 		a := adv.Affected[i]
-		if !strings.EqualFold(a.Package.Name, c.Name) {
+		if !nameMatches(a.Package.Name, c) {
 			continue
 		}
-		if baseEcosystem(a.Package.Ecosystem) != baseEcosystem(c.Ecosystem) {
+		// Family, release AND variant must all agree. Comparing families alone
+		// would let "Ubuntu:Pro:FIPS-updates:22.04:LTS" — whose ranges describe a
+		// product this host does not run — decide a verdict for a plain 22.04 box,
+		// and since affected outranks fixed in matchOne that lands as a false
+		// "affected" rather than a missed one.
+		if !affected.EcosystemApplies(a.Package.Ecosystem, c.Ecosystem) {
 			continue
 		}
 		all = append(all, a)
@@ -175,6 +201,29 @@ func selectAffected(c affected.Component, adv vulnfeed.Vulnerability) []vulnfeed
 	return all
 }
 
+// nameMatches reports whether an advisory entry's package name identifies this
+// component, under either the binary name or the source package it was built from.
+func nameMatches(advName string, c affected.Component) bool {
+	if strings.EqualFold(advName, c.Name) {
+		return true
+	}
+	return c.SourceName != "" && strings.EqualFold(advName, c.SourceName)
+}
+
+// compareVersion is the version to evaluate an entry's ranges against. When the
+// entry names the SOURCE package, its events are source versions — so compare the
+// source version if the extractor reported a distinct one. dpkg usually keeps them
+// equal (and then this is a no-op), but a binNMU or an epoch-only source bump makes
+// them diverge, and comparing a binary version against a source range there is
+// exactly the kind of quiet mis-verdict this matcher exists to avoid.
+func compareVersion(advName string, c affected.Component) string {
+	if c.SourceVersion != "" && !strings.EqualFold(advName, c.Name) &&
+		strings.EqualFold(advName, c.SourceName) {
+		return c.SourceVersion
+	}
+	return c.Version
+}
+
 // evalAffected decides the status for one component against one affected entry by
 // walking its ranges with the ecosystem's native comparator. The version compared
 // against a distro range's fixed event is the distro's OWN patched version — the
@@ -184,12 +233,14 @@ func evalAffected(c affected.Component, aff vulnfeed.Affected) (affected.Status,
 	if eco == "" {
 		eco = c.Ecosystem
 	}
+	// When this entry names the source package, its events are source versions.
+	ver := compareVersion(aff.Package.Name, c)
 
 	// An explicit version enumeration (OSV `versions`) is an exact-membership test.
 	// An enumeration carries no upper bound, so an affected verdict names no fix.
 	if len(aff.Ranges) == 0 && len(aff.Versions) > 0 {
 		for _, v := range aff.Versions {
-			if cmp(eco, c.Version, v) == 0 {
+			if cmp(eco, ver, v) == 0 {
 				return affected.StatusAffected, ""
 			}
 		}
@@ -207,7 +258,7 @@ func evalAffected(c affected.Component, aff vulnfeed.Affected) (affected.Status,
 		if strings.EqualFold(r.Type, "GIT") {
 			continue
 		}
-		st, fixedAt, unk := evalRange(eco, c.Version, r)
+		st, fixedAt, unk := evalRange(eco, ver, r)
 		switch st {
 		case inVulnWindow:
 			affectedAny = true
@@ -317,15 +368,6 @@ func cmp(ecosystem, a, b string) int {
 		return cmpErr
 	}
 	return r
-}
-
-// baseEcosystem strips a distro suffix so "Ubuntu:22.04" and "Ubuntu" compare as
-// the same family. It mirrors the suffix handling semantic.Parse applies.
-func baseEcosystem(eco string) string {
-	if i := strings.IndexByte(eco, ':'); i >= 0 {
-		return eco[:i]
-	}
-	return eco
 }
 
 // hasDistroSuffix reports whether an OSV ecosystem string is distro-scoped (e.g.

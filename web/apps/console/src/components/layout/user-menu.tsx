@@ -20,7 +20,9 @@ function initial(name: string): string {
 export function UserMenu() {
   const { me, signOut } = useSession()
   const { theme, setTheme } = useTheme()
-  const role = me.admin ? "admin" : (me.roles[0] ?? me.workspace)
+  // Never print the bare "admin" — that is the reserved cluster role a console
+  // session cannot hold, and showing it here implies authority the user lacks.
+  const role = me.roles[0] ?? (me.admin ? "ws-admin" : me.workspace)
 
   return (
     <DropdownMenu>

@@ -55,6 +55,23 @@ geneza_metrics_url: >-
      if (geneza_metrics_enabled | bool and groups['database'] | default([]) | length > 0)
      else "" }}
 
+# Cross-controller router. `pg` uses the shared Postgres for peer delivery and is
+# required whenever more than one controller runs; `inproc` is single-node only.
+geneza_router: pg
+
+# CVE affectedness feed. Unset means the matcher never runs: SBOMs still collect
+# and the console shows every node as "clean", which is indistinguishable from a
+# genuinely clean fleet. osv_bulk is the open OSV.dev database.
+#
+# The first sync fetches every ecosystem's all.zip (several GB uncompressed), so
+# trim `ecosystems` to what the fleet actually runs if the controllers are small.
+# Distro feeds carry the distro's OWN backported fixed versions, which is what the
+# matcher needs — dropping them leaves only language deps covered.
+geneza_vuln_feed_source: osv_bulk # "" off | osv_dir | osv_bulk | geneza-paid
+geneza_vuln_feed_ecosystems: [] # [] = the built-in distro + language set
+geneza_vuln_feed_kev_url: default # CISA known-exploited overlay; "" disables
+geneza_vuln_feed_epss_url: default # FIRST EPSS overlay; "" disables
+
 # VictoriaMetrics
 vm_image: victoriametrics/victoria-metrics:v1.111.0
 vm_data_dir: /var/lib/victoriametrics

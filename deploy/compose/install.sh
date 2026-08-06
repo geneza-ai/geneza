@@ -27,9 +27,23 @@ ACME_EMAIL=""                            # optional Let's Encrypt contact for Ca
 POSTGRES_DSN=""                          # external Postgres DSN (HA): omits the bundled postgres
 METRICS_URL=""                           # external VictoriaMetrics (HA): omits the bundled one
 CONTROLLER_ID=""                            # stable per-controller id (REQUIRED, unique, in HA)
-IMAGE_TAG="${GENEZA_IMAGE_TAG:-latest}"  # image tag for controller/relay
-AGENT_TAG="${GENEZA_AGENT_TAG:-}"        # signed geneza-node release the controller serves (empty = latest)
-VULN_FEED="${GENEZA_VULN_FEED:-osv_bulk}" # CVE feed: osv_bulk (open OSV.dev) | osv_dir | geneza-paid | "" off
+# Cross-controller router. inproc cannot reach a peer — its RouteNetcfg/RouteModcfg/
+# PublishSuspend are no-ops — so a module or network change made on a controller
+# that does not own the agent's stream is committed and then silently dropped. Set
+# pg as soon as a second controller runs against the same database.
+ROUTER=""                                # "" = controller default (inproc) | pg
+# These three come from the environment, not from flags, so the "non-empty means
+# the operator set it" heuristic used for _ANSWERS below cannot work — their
+# defaults are non-empty. Record whether the variable was PROVIDED (${x+1}) and
+# use the no-colon form (${x-default}) so that an explicitly empty value means
+# "off" rather than "unset, take the default". GENEZA_VULN_FEED= is the
+# documented way to disable the CVE feed and used to be silently ignored.
+IMAGE_TAG="${GENEZA_IMAGE_TAG-latest}"   # image tag for controller/relay
+_env_IMAGE_TAG="${GENEZA_IMAGE_TAG+1}"
+AGENT_TAG="${GENEZA_AGENT_TAG-}"         # signed geneza-node release the controller serves (empty = latest)
+_env_AGENT_TAG="${GENEZA_AGENT_TAG+1}"
+VULN_FEED="${GENEZA_VULN_FEED-osv_bulk}" # CVE feed: osv_bulk (open OSV.dev) | osv_dir | geneza-paid | "" off
+_env_VULN_FEED="${GENEZA_VULN_FEED+1}"
 REGISTRY="${GENEZA_REGISTRY:-ghcr.io/geneza-ai}"
 # relay-only:
 RELAY_ID=""                              # relay identity; MUST match issue-relay-cert --name (default: derived from the cert)
@@ -72,7 +86,7 @@ write_env() {
       # Single-quote every value: the bcrypt hash contains '$' (and a DSN might),
       # which both `. .env` (bash) and docker compose's .env interpolation would
       # otherwise expand/mangle. Single quotes are literal to both.
-      for _k in ROLE SITE PUBLIC_IP ACME_EMAIL POSTGRES_DSN METRICS_URL CONTROLLER_ID \
+      for _k in ROLE SITE PUBLIC_IP ACME_EMAIL POSTGRES_DSN METRICS_URL CONTROLLER_ID ROUTER \
                 IMAGE_TAG AGENT_TAG VULN_FEED CONTROLLER_ADDR RELAY_SECRET POSTGRES_PASSWORD ADMIN_BCRYPT; do
         printf "%s='%s'\n" "$_k" "${!_k:-}"
       done
@@ -102,6 +116,7 @@ usage: install.sh [--role controller|controller+relay|relay] [options]
     --postgres-dsn DSN    use an EXTERNAL Postgres (HA) instead of the bundled one
     --metrics-url URL     use an EXTERNAL VictoriaMetrics (HA) instead of the bundled one
     --controller-id ID       stable, globally-unique controller id (REQUIRED in HA)
+    --router inproc|pg       cross-controller router; pg is REQUIRED with >1 controller
 
   relay:
     --controller HOST:PORT   the controller's relay registrar (required for role=relay)
@@ -127,6 +142,7 @@ while [ $# -gt 0 ]; do
     --postgres-dsn)   POSTGRES_DSN="${2:-}"; shift 2 ;;
     --metrics-url)    METRICS_URL="${2:-}"; shift 2 ;;
     --controller-id)     CONTROLLER_ID="${2:-}"; shift 2 ;;
+    --router)            ROUTER="${2:-}"; shift 2 ;;
     --image-tag)      IMAGE_TAG="${2:-}"; shift 2 ;;
     --agent-tag)      AGENT_TAG="${2:-}"; shift 2 ;;
     --controller)        CONTROLLER_ADDR="${2:-}"; shift 2 ;;
@@ -187,11 +203,24 @@ ENVFILE="$DIR/.env"
 # to empty, so a non-empty value here means a flag explicitly set it. Stash them, source
 # .env for everything else, then re-apply — so a re-run can CHANGE role/hostname/IP/…
 # (e.g. add a relay), not merely reproduce the saved topology.
-_ANSWERS="ROLE SITE PUBLIC_IP ACME_EMAIL POSTGRES_DSN METRICS_URL CONTROLLER_ID CONTROLLER_ADDR RELAY_ID RELAY_SECRET_IN"
+_ANSWERS="ROLE SITE PUBLIC_IP ACME_EMAIL POSTGRES_DSN METRICS_URL CONTROLLER_ID ROUTER CONTROLLER_ADDR RELAY_ID RELAY_SECRET_IN"
 for _v in $_ANSWERS; do eval "_flag_$_v=\${$_v}"; done
+# The env-driven answers have non-empty defaults, so they carry an explicit
+# "was it provided" marker instead; without this the saved .env wins forever and
+# GENEZA_VULN_FEED / GENEZA_IMAGE_TAG / GENEZA_AGENT_TAG do nothing on upgrade.
+_ENVANSWERS="IMAGE_TAG AGENT_TAG VULN_FEED"
+for _v in $_ENVANSWERS; do eval "_pre_$_v=\${$_v}"; done
 # shellcheck source=/dev/null
 [ -f "$ENVFILE" ] && . "$ENVFILE"
 for _v in $_ANSWERS; do eval "if [ -n \"\${_flag_$_v}\" ]; then $_v=\${_flag_$_v}; fi"; done
+for _v in $_ENVANSWERS; do eval "if [ -n \"\${_env_$_v}\" ]; then $_v=\${_pre_$_v}; fi"; done
+# A STABLE controller id. Left unset, the controller falls back to os.Hostname(),
+# which inside a container is the random container id — and the installer
+# force-recreates the container on every run. Each upgrade therefore registered a
+# NEW controller: a phantom offline peer in the cluster console until it ages out,
+# an extra ClusterConfig re-sign, and affinity rows written under an id nothing
+# owns any more. Derive it once from the host and persist it in .env.
+: "${CONTROLLER_ID:=$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo controller)}"
 : "${RELAY_SECRET:=$(randhex)}"
 : "${POSTGRES_PASSWORD:=$(randpw)}"
 : "${ADMIN_BCRYPT:=}"
@@ -273,10 +302,23 @@ if [ "$IS_CONTROLLER" = 1 ]; then
   BUNDLE_VM=1; METRICS="http://victoriametrics:8428"
   if [ -n "$METRICS_URL" ]; then BUNDLE_VM=0; METRICS="$METRICS_URL"; fi
 
+  # This file is the operator's, not the installer's: an oidc:, clouds: or
+  # cluster_console: block can only be added by hand, and there is nowhere else to
+  # put it. Regenerating it unconditionally threw those edits away on every upgrade.
+  #
+  # So: render to .new, and keep the operator's copy only if they actually CHANGED
+  # it — compared against $CTRL_STAMP, a verbatim copy of what this installer last
+  # wrote. An untouched install still upgrades cleanly (GENEZA_VULN_FEED=… on a
+  # re-run keeps working); an edited one is never clobbered. No stamp means an
+  # install from before this guard existed, so assume it was edited.
   log "rendering controller config"
-  cat > "$DIR/config/controller.yaml" <<EOF
-# Geneza controller — rendered by deploy/compose/install.sh. Edit and re-run the
-# installer (it re-renders from your saved answers) or edit here and 'up -d'.
+  CTRL_STAMP="$DIR/config/.controller.yaml.installer"
+  CTRL_OUT="$DIR/config/controller.yaml.new"
+  cat > "$CTRL_OUT" <<EOF
+# Geneza controller — rendered by deploy/compose/install.sh. This file is yours to
+# edit; the installer keeps it and writes controller.yaml.new on later runs. To
+# apply an edit, re-run install.sh (it re-derives generated/controller.yaml, which
+# is what the container actually mounts) — 'docker compose up -d' alone does not.
 data_dir: /var/lib/geneza/controller
 grpc_listen: ":7401"
 http_listen: ":7402"
@@ -295,7 +337,8 @@ console:
 # invariants; it keeps no time-series itself.
 store: postgres
 store_dsn: "${STORE_DSN}"
-$( [ -n "$CONTROLLER_ID" ] && echo "controller_id: ${CONTROLLER_ID}" )
+controller_id: ${CONTROLLER_ID}
+$( [ -n "$ROUTER" ] && echo "router: ${ROUTER}" )
 
 # SANs stamped into the controller + relay server certs. localhost/127.0.0.1 are
 # always included; your public face is added so remote agents/clients verify.
@@ -351,7 +394,23 @@ agent_policy:
   detached_ttl_sec: 86400
   idle_reap_sec: 0
 EOF
+  if [ ! -f "$DIR/config/controller.yaml" ] || cmp -s "$DIR/config/controller.yaml" "$CTRL_STAMP"; then
+    mv "$CTRL_OUT" "$DIR/config/controller.yaml"
+    cp "$DIR/config/controller.yaml" "$CTRL_STAMP"
+  elif cmp -s "$CTRL_OUT" "$DIR/config/controller.yaml"; then
+    rm -f "$CTRL_OUT"
+    cp "$DIR/config/controller.yaml" "$CTRL_STAMP"
+  else
+    log "config/controller.yaml has local edits and was kept; the new template is at"
+    log "  config/controller.yaml.new — diff and merge, then re-run to apply"
+  fi
 
+  # The SEED policy only. On a re-run the operator's edits live in the STORE (the
+  # console's policy editor writes there and the store copy wins forever), but this
+  # file may also have been hand-edited before first boot — so do not clobber it.
+  if [ -f "$DIR/config/policy.yaml" ]; then
+    log "keeping existing config/policy.yaml (delete it to re-seed)"
+  else
   cat > "$DIR/config/policy.yaml" <<'EOF'
 # Minimal starting policy (policy-as-data): the geneza-admins group + the local
 # admin user get ws-admin — every action on this workspace's nodes. `roles` is a
@@ -369,8 +428,17 @@ bindings:
     users: [admin]
     groups: [geneza-admins]
 EOF
+  fi
 
-  cat > "$DIR/config/Caddyfile" <<EOF
+  # Caddy config is the most likely file an operator has customised by hand (extra
+  # routes, headers, a second site). Regenerating it unconditionally silently threw
+  # that away on every upgrade. Write a .new alongside instead and say so.
+  if [ -f "$DIR/config/Caddyfile" ]; then
+    CADDY_OUT="$DIR/config/Caddyfile.new"
+  else
+    CADDY_OUT="$DIR/config/Caddyfile"
+  fi
+  cat > "$CADDY_OUT" <<EOF
 # Public, browser-trusted TLS for the console + the public HTTPS endpoints. Caddy
 # terminates the real cert and reverse-proxies to the controller: the browser console
 # SPA on the plain-HTTP console listener (:7406), and the enroll/update/vendordata/
@@ -397,6 +465,13 @@ $( [ -z "$SITE" ] && echo "    tls internal" )
     }
 }
 EOF
+  if [ "$CADDY_OUT" != "$DIR/config/Caddyfile" ]; then
+    if cmp -s "$CADDY_OUT" "$DIR/config/Caddyfile"; then
+      rm -f "$CADDY_OUT"
+    else
+      log "config/Caddyfile kept; the new template is at config/Caddyfile.new — diff and merge if you customised it"
+    fi
+  fi
 fi
 
 ###############################################################################
@@ -710,6 +785,15 @@ if [ "$IS_CONTROLLER" = 1 ] && { [ "$UPGRADE" = 0 ] || [ "$GENERATED_PW" = 1 ]; 
      geneza --profile admin node enroll --ttl 1h     # -> an enrollment code + install one-liner
 EOF
   [ -n "$SITE" ] && echo "   Console: https://${SITE}/"
+  cat <<EOF
+
+   ! MOVE THE FLEET ROOT KEY OFF THIS HOST
+     $DIR/data/controller/ca/offline-root/root-ca.key
+     The running controller never reads it — it signs with the issuing CA — so it
+     is safe to move to an HSM/KMS/air-gapped media and delete here. Left in place,
+     the key that can mint ANY identity in this fleet sits on the internet-facing
+     machine. Keep a copy: without it the CA cannot be rotated.
+EOF
 fi
 if [ "$ROLE" = "relay" ]; then
   echo "   relay registered to ${CONTROLLER_ADDR}; it will appear in the controller's fleet map."

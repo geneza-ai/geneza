@@ -228,20 +228,17 @@ func (n *nodeControlService) Stream(stream grpc.BidiStreamingServer[genezav1.Age
 			n.s.ingestNodeMetrics(ident.Workspace, ident.Name, nodeName, m.Metrics)
 		case *genezav1.AgentMsg_Inventory:
 			// Bind the report to the AUTHENTICATED (workspace, node) of this stream,
-			// exactly like the recording upload — never the node-supplied node_id — then
-			// store the SBOM, re-index its components, and re-match. Errors are logged,
-			// not fatal: a bad report must not drop the control stream.
-			if _, err := n.s.ingestInventoryReport(stream.Context(), ident.Workspace, ident.Name, m.Inventory); err != nil {
-				// A delta whose base we no longer hold: ask the node for a full SBOM so
-				// both ends re-converge. Other errors are corruption/policy rejections.
-				if errors.Is(err, errInventoryNeedFull) {
-					if cerr := n.s.registry.SendInventoryControl(ident.Name, true); cerr != nil {
-						slog.Debug("inventory full-resend request not delivered", "node", ident.Name, "err", cerr)
-					}
-				} else {
-					slog.Warn("inventory report rejected", "node", ident.Name, "err", err)
-				}
-			}
+			// exactly like the recording upload — never the node-supplied node_id.
+			//
+			// Handing it to the pool rather than ingesting it here is load-bearing:
+			// the ingest re-indexes the SBOM and matches every component against the
+			// advisory store, which on a real fleet runs for minutes. Inline, this
+			// loop stopped calling Recv for that whole time, and the resulting
+			// backpressure wedged the agent's own send path — offer acks queued
+			// behind a blocked SendMsg and sessions failed with "did not ack session
+			// offer within 5s" on a node that looked online.
+			n.s.queueInventoryReport(context.WithoutCancel(stream.Context()),
+				ident.Workspace, ident.Name, m.Inventory)
 		case *genezav1.AgentMsg_NetworkEndpoints:
 			changed := false
 			for _, e := range m.NetworkEndpoints.GetEndpoints() {
@@ -532,10 +529,14 @@ func (n *nodeControlService) UploadRecording(stream grpc.ClientStreamingServer[g
 		SizeBytes:   total,
 		SHA256:      sha256Hex,
 		NodeSig:     man.GetNodeSig(),
-		AuditKeyID:  auditKeyID,
-		BlobRef:     ref,
-		Truncated:   man.GetTruncated(),
-		StoredUnix:  time.Now().Unix(),
+		// Keep the key the signature was just verified against. Node certs live 24h,
+		// so the current cert will not verify this signature tomorrow — without the
+		// key as it was here, the stored signature is unverifiable forever after.
+		NodeSPKI:   cert.RawSubjectPublicKeyInfo,
+		AuditKeyID: auditKeyID,
+		BlobRef:    ref,
+		Truncated:  man.GetTruncated(),
+		StoredUnix: time.Now().Unix(),
 	}); perr != nil {
 		// The blob is committed; a failed index write must not be acked, so the
 		// worker retries — the write-once guard then makes the retry idempotent.

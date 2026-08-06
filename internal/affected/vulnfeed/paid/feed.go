@@ -72,7 +72,7 @@ type Feed struct {
 	enrichment map[string]vulnfeed.Enrichment
 	// changed holds the advisories the most recent Sync (re)wrote, so the controller
 	// chore re-matches only those — one entry per advisory id.
-	changed []vulnfeed.Vulnerability
+	changed vulnfeed.ChangedPackages
 }
 
 var _ vulnfeed.Feed = (*Feed)(nil)
@@ -146,7 +146,7 @@ func (f *Feed) Sync(ctx context.Context, since time.Time) (int, error) {
 		// (with an advisory dropped) without tripping this, and cannot forge a higher
 		// version without the pinned key. Not an error: a re-served current bundle is
 		// a benign no-op the chore tolerates.
-		f.setChanged(nil)
+		f.setChanged(vulnfeed.ChangedPackages{})
 		return 0, nil
 	}
 
@@ -174,9 +174,9 @@ func (f *Feed) Sync(ctx context.Context, since time.Time) (int, error) {
 // emitted per (advisory, affected-package) pair so the by-package index resolves to
 // it, mirroring the open feed; the Doc is the curated record (or the canonical Vuln
 // JSON when the bundle omits an explicit Doc).
-func (f *Feed) ingest(b Bundle) ([]vulnfeed.AdvisoryRecord, []vulnfeed.Vulnerability, map[string]vulnfeed.Enrichment, error) {
+func (f *Feed) ingest(b Bundle) ([]vulnfeed.AdvisoryRecord, vulnfeed.ChangedPackages, map[string]vulnfeed.Enrichment, error) {
 	var recs []vulnfeed.AdvisoryRecord
-	changedByID := map[string]vulnfeed.Vulnerability{}
+	var changed vulnfeed.ChangedPackages
 	enrichment := map[string]vulnfeed.Enrichment{}
 	for _, ca := range b.Advisories {
 		v := ca.Vuln
@@ -187,7 +187,7 @@ func (f *Feed) ingest(b Bundle) ([]vulnfeed.AdvisoryRecord, []vulnfeed.Vulnerabi
 		if len(doc) == 0 {
 			canon, err := json.Marshal(v)
 			if err != nil {
-				return nil, nil, nil, fmt.Errorf("paid feed: marshal advisory %s: %w", v.ID, err)
+				return nil, changed, nil, fmt.Errorf("paid feed: marshal advisory %s: %w", v.ID, err)
 			}
 			doc = canon
 		}
@@ -205,6 +205,7 @@ func (f *Feed) ingest(b Bundle) ([]vulnfeed.AdvisoryRecord, []vulnfeed.Vulnerabi
 				continue
 			}
 			seen[key] = true
+			changed.Add(eco, name)
 			recs = append(recs, vulnfeed.AdvisoryRecord{
 				ID:           advisoryID(v.ID, eco, name),
 				Source:       FeedName,
@@ -214,7 +215,6 @@ func (f *Feed) ingest(b Bundle) ([]vulnfeed.AdvisoryRecord, []vulnfeed.Vulnerabi
 				ModifiedUnix: v.Modified.Unix(),
 			})
 		}
-		changedByID[v.ID] = v
 		if e := ca.Enrichment; e != (vulnfeed.Enrichment{}) {
 			// Index enrichment by the advisory id and every alias, so an Enrich keyed by
 			// the CVE alias (the matcher's identifier) resolves even when the advisory's
@@ -227,7 +227,7 @@ func (f *Feed) ingest(b Bundle) ([]vulnfeed.AdvisoryRecord, []vulnfeed.Vulnerabi
 			}
 		}
 	}
-	return recs, changedFromMap(changedByID), enrichment, nil
+	return recs, changed, enrichment, nil
 }
 
 // advisoryID keys an advisory row by its id plus the package it was filed against,
@@ -235,21 +235,6 @@ func (f *Feed) ingest(b Bundle) ([]vulnfeed.AdvisoryRecord, []vulnfeed.Vulnerabi
 // colliding on the bare id — the same scheme the open feed uses.
 func advisoryID(id, ecosystem, name string) string {
 	return id + "/" + ecosystem + "/" + name
-}
-
-// changedFromMap flattens a by-id changed set into a stable-ordered slice so the
-// caller's re-match and tests see a deterministic sequence.
-func changedFromMap(byID map[string]vulnfeed.Vulnerability) []vulnfeed.Vulnerability {
-	ids := make([]string, 0, len(byID))
-	for id := range byID {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	out := make([]vulnfeed.Vulnerability, 0, len(byID))
-	for _, id := range ids {
-		out = append(out, byID[id])
-	}
-	return out
 }
 
 // fetch GETs the bundle endpoint with the license key as a bearer token and returns
@@ -310,13 +295,13 @@ func (f *Feed) Enrich(ctx context.Context, cve string) (vulnfeed.Enrichment, err
 	return f.enrichment[cve], nil
 }
 
-// Changed returns the advisories whose records the most recent Sync (re)wrote, so
-// the controller chore re-matches only their packages' nodes. Empty after a sync that
+// ChangedPackages returns the (ecosystem, package) pairs the most recent Sync
+// (re)wrote, so the controller chore re-matches only those. Empty after a sync that
 // changed nothing (a re-served current bundle, or one rejected by the version guard).
-func (f *Feed) Changed() []vulnfeed.Vulnerability {
+func (f *Feed) ChangedPackages() []vulnfeed.Package {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.changed
+	return f.changed.List()
 }
 
 func (f *Feed) swapEnrichment(e map[string]vulnfeed.Enrichment) {
@@ -325,7 +310,7 @@ func (f *Feed) swapEnrichment(e map[string]vulnfeed.Enrichment) {
 	f.enrichment = e
 }
 
-func (f *Feed) setChanged(c []vulnfeed.Vulnerability) {
+func (f *Feed) setChanged(c vulnfeed.ChangedPackages) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.changed = c

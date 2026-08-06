@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -17,6 +19,7 @@ import (
 	"geneza.io/internal/client"
 
 	genezav1 "geneza.io/internal/pb/geneza/v1"
+	"geneza.io/internal/types"
 )
 
 // newAuditCmd groups workspace forensics: the hash-chained audit log, recorded
@@ -167,8 +170,9 @@ func newAuditRecPullCmd() *cobra.Command {
 		Long: "Pull the encrypted cast for a session. With -i <age-identity-file> the cast is\n" +
 			"decrypted locally (the private key never goes to the controller) and written to -o\n" +
 			"(or stdout, e.g. | asciinema play -). Without -i the raw .cast.age ciphertext is\n" +
-			"written. The manifest sha256 is verified over the fetched ciphertext before any\n" +
-			"decrypt.",
+			"written. Before any decrypt, the manifest sha256 is verified over the fetched\n" +
+			"ciphertext AND the node's signature over that manifest is verified against the\n" +
+			"node key the controller captured at upload.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			sessionID := args[0]
@@ -204,6 +208,17 @@ func newAuditRecPullCmd() *cobra.Command {
 				}
 			}
 
+			// Then the node's own attestation. sha256 alone only proves the bytes match
+			// a digest the controller served alongside them; the signature is the part
+			// the controller cannot forge, because it holds no node key.
+			if err := verifyRecordingManifestSig(sessionID, manifest); err != nil {
+				return err
+			}
+			if len(manifest.GetNodeSpki()) == 0 {
+				fmt.Fprintln(cmd.ErrOrStderr(),
+					"warning: no node key stored for this recording; only its sha256 was checked")
+			}
+
 			out := cipher
 			if identityFile != "" {
 				plain, derr := decryptRecording(cipher, identityFile)
@@ -218,6 +233,33 @@ func newAuditRecPullCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&identityFile, "identity", "i", "", "age identity file to decrypt the cast (omit to keep ciphertext)")
 	cmd.Flags().StringVarP(&outFile, "output", "o", "", "write to this file (default: stdout)")
 	return cmd
+}
+
+// verifyRecordingManifestSig checks the node's ECDSA attestation over the manifest
+// using the key the controller captured at upload. A recording stored before the
+// key was retained carries no key: that is reported to the caller as "unchecked"
+// (nil here, with the warning printed at the call site), never as verified.
+func verifyRecordingManifestSig(sessionID string, man *genezav1.RecordingManifest) error {
+	spki := man.GetNodeSpki()
+	sig := man.GetNodeSig()
+	if len(spki) == 0 || len(sig) == 0 {
+		return nil
+	}
+	pub, err := x509.ParsePKIXPublicKey(spki)
+	if err != nil {
+		return fmt.Errorf("recording node key is unreadable: %w", err)
+	}
+	ecPub, ok := pub.(*ecdsa.PublicKey)
+	if !ok {
+		return fmt.Errorf("recording node key is %T, want an ECDSA key", pub)
+	}
+	digest := types.RecordingManifestDigest(sessionID,
+		hex.EncodeToString(man.GetSha256()), man.GetSizeBytes(), man.GetEndedUnix())
+	if !ecdsa.VerifyASN1(ecPub, digest, sig) {
+		return fmt.Errorf("recording signature check failed: the node did not sign these bytes " +
+			"(the cast, or the manifest describing it, changed after the node signed it)")
+	}
+	return nil
 }
 
 // readRecordingStream drains the GetRecording stream into the full ciphertext plus

@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -111,15 +112,21 @@ func TestBulkSyncFetchesParsesAndServes(t *testing.T) {
 		t.Errorf("lodash resolve wrong: %+v", lod)
 	}
 
-	// Changed() lists exactly the two OSV ids written this sync, in stable order.
-	changed := f.Changed()
-	ids := make([]string, len(changed))
-	for i, v := range changed {
-		ids[i] = v.ID
+	// ChangedPackages() lists exactly the packages written this sync, in stable
+	// order — OSV-MULTI names two, OSV-SINGLE one.
+	var names []string
+	for _, p := range f.ChangedPackages() {
+		names = append(names, p.Ecosystem+"/"+p.Name)
 	}
-	sort.Strings(ids)
-	if len(ids) != 2 || ids[0] != "OSV-MULTI" || ids[1] != "OSV-SINGLE" {
-		t.Fatalf("Changed ids = %v, want [OSV-MULTI OSV-SINGLE]", ids)
+	sort.Strings(names)
+	want := []string{"Debian:12/libssl", "Debian:12/openssl", "npm/lodash"}
+	if len(names) != len(want) {
+		t.Fatalf("ChangedPackages = %v, want %v", names, want)
+	}
+	for i := range want {
+		if names[i] != want[i] {
+			t.Fatalf("ChangedPackages = %v, want %v", names, want)
+		}
 	}
 }
 
@@ -150,8 +157,8 @@ func TestBulkSyncSinceWatermark(t *testing.T) {
 	if b, _ := f.Advisories("npm", "b"); len(b) != 1 {
 		t.Errorf("new record not synced: %+v", b)
 	}
-	if c := f.Changed(); len(c) != 1 || c[0].ID != "NEW" {
-		t.Fatalf("Changed = %v, want only NEW", c)
+	if c := f.ChangedPackages(); len(c) != 1 || c[0].Name != "b" {
+		t.Fatalf("ChangedPackages = %+v, want only npm/b", c)
 	}
 }
 
@@ -181,5 +188,108 @@ func TestBulkDefaults(t *testing.T) {
 	// "Red Hat" must URL-encode its space in the bucket path.
 	if got := ecosystemPath("Red Hat"); got != "Red%20Hat" {
 		t.Errorf("ecosystemPath(Red Hat) = %q", got)
+	}
+}
+
+// A failure partway through a multi-ecosystem sync must keep what already
+// committed. This used to accumulate every record across every ecosystem and call
+// PutAdvisories exactly once at the very end, so ANY failure — a 404 for one
+// ecosystem, a stalled connection, the OOM killer arriving somewhere in the seven
+// gigabytes the default set expands to — left the store with ZERO advisories. The
+// controller then re-ran the whole thing on the next tick and failed the same way,
+// which is indistinguishable from "the CVE feature does not work".
+func TestBulkSyncKeepsCommittedEcosystemsWhenALaterOneFails(t *testing.T) {
+	debianZip := zipOf(t, map[string]string{
+		"OSV-DEB.json": `{"id":"OSV-DEB","modified":"2024-03-01T00:00:00Z","aliases":["CVE-2024-9"],
+			"affected":[{"package":{"ecosystem":"Debian:12","name":"openssl"},
+				"ranges":[{"type":"ECOSYSTEM","events":[{"introduced":"0"},{"fixed":"3.0.9-1"}]}]}]}`,
+	})
+	// Only Debian is served; "npm" 404s.
+	srv, _ := fixtureServer(t, map[string][]byte{"Debian": debianZip})
+
+	st := newMemStore()
+	f := NewBulk(srv.URL, []string{"Debian", "npm"}, st, srv.Client())
+
+	n, err := f.Sync(context.Background(), time.Time{})
+	if err == nil {
+		t.Fatalf("a failing ecosystem must still surface an error so the caller does not advance its watermark")
+	}
+	if n == 0 {
+		t.Fatalf("Sync must report the rows it did commit, got 0")
+	}
+	// The load-bearing assertion: Debian's advisory is queryable despite npm failing.
+	got, err := f.Advisories("Debian:12", "openssl")
+	if err != nil {
+		t.Fatalf("Advisories: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "OSV-DEB" {
+		t.Fatalf("the ecosystem that succeeded must be committed and readable, got %+v", got)
+	}
+}
+
+// The batch commit must not lose or duplicate rows at the boundary: a zip holding
+// more records than advisoryBatchSize has to end up with exactly one row per
+// (advisory, package).
+func TestBulkSyncCommitsEveryRecordAcrossBatchBoundaries(t *testing.T) {
+	const count = advisoryBatchSize + 37
+	files := map[string]string{}
+	for i := 0; i < count; i++ {
+		id := fmt.Sprintf("OSV-%05d", i)
+		files[id+".json"] = fmt.Sprintf(
+			`{"id":%q,"modified":"2024-01-01T00:00:00Z","affected":[{"package":{"ecosystem":"npm","name":"pkg%05d"},`+
+				`"ranges":[{"type":"ECOSYSTEM","events":[{"introduced":"0"},{"fixed":"1.0.0"}]}]}]}`, id, i)
+	}
+	srv, _ := fixtureServer(t, map[string][]byte{"npm": zipOf(t, files)})
+
+	st := newMemStore()
+	f := NewBulk(srv.URL, []string{"npm"}, st, srv.Client())
+	n, err := f.Sync(context.Background(), time.Time{})
+	if err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if n != count {
+		t.Fatalf("rows written = %d, want %d (a batch boundary dropped or duplicated rows)", n, count)
+	}
+	// Spot-check both sides of a boundary.
+	for _, i := range []int{0, advisoryBatchSize - 1, advisoryBatchSize, count - 1} {
+		got, err := f.Advisories("npm", fmt.Sprintf("pkg%05d", i))
+		if err != nil || len(got) != 1 {
+			t.Fatalf("record %d not committed: %d rows (err %v)", i, len(got), err)
+		}
+	}
+	// One distinct package per record, so the changed set must cover them all —
+	// a batch boundary that dropped a record would show up here too.
+	if len(f.ChangedPackages()) != count {
+		t.Fatalf("changed set = %d, want %d", len(f.ChangedPackages()), count)
+	}
+}
+
+// The changed set must stay proportional to DISTINCT PACKAGES, not to advisories.
+// It used to hold one parsed Vulnerability per changed advisory, and on a first
+// full OSV refresh "changed" is the whole feed — several hundred thousand records
+// retained in a long-lived process, only to be reduced to their package names by
+// the one consumer. A thousand advisories against one package is the shape that
+// makes the difference visible.
+func TestBulkSyncChangedSetScalesWithPackagesNotAdvisories(t *testing.T) {
+	const advisories = 1000
+	files := map[string]string{}
+	for i := range advisories {
+		id := fmt.Sprintf("OSV-%05d", i)
+		files[id+".json"] = fmt.Sprintf(
+			`{"id":%q,"modified":"2024-01-01T00:00:00Z","affected":[{"package":{"ecosystem":"npm","name":"lodash"},`+
+				`"ranges":[{"type":"ECOSYSTEM","events":[{"introduced":"0"},{"fixed":"1.0.0"}]}]}]}`, id)
+	}
+	srv, _ := fixtureServer(t, map[string][]byte{"npm": zipOf(t, files)})
+	f := NewBulk(srv.URL, []string{"npm"}, newMemStore(), srv.Client())
+	if _, err := f.Sync(context.Background(), time.Time{}); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	changed := f.ChangedPackages()
+	if len(changed) != 1 {
+		t.Fatalf("%d advisories against one package produced a changed set of %d; "+
+			"it must be keyed by package", advisories, len(changed))
+	}
+	if changed[0].Ecosystem != "npm" || changed[0].Name != "lodash" {
+		t.Fatalf("changed set = %+v", changed)
 	}
 }

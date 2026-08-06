@@ -203,7 +203,7 @@ func passwdShell(username string) string {
 // minimalEnv builds the deliberately small child environment: PATH, HOME,
 // USER, LANG inherited, TERM from the request, and GENEZA_SESSION for audit
 // correlation. Nothing else from the host process leaks into sessions.
-func minimalEnv(u *user.User, term, sessionID string) []string {
+func minimalEnv(u *user.User, term, sessionID string, recorded, encrypted bool) []string {
 	path := os.Getenv("PATH")
 	if path == "" {
 		path = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -213,6 +213,16 @@ func minimalEnv(u *user.User, term, sessionID string) []string {
 		"HOME=" + u.HomeDir,
 		"USER=" + u.Username,
 		"GENEZA_SESSION=" + sessionID,
+	}
+	// Tell the recorded principal that they are being recorded. Recording is ON by
+	// default in every shipped policy, so without this the default posture is a
+	// covert one — and when no audit recipient is configured the transcript is
+	// stored as readable plaintext, which is a fact the person typing deserves.
+	if recorded {
+		env = append(env, "GENEZA_SESSION_RECORDED=1")
+		if !encrypted {
+			env = append(env, "GENEZA_SESSION_RECORDED_PLAINTEXT=1")
+		}
 	}
 	if lang := os.Getenv("LANG"); lang != "" {
 		env = append(env, "LANG="+lang)
@@ -304,7 +314,10 @@ func (h *host) startSession(req *genezav1.HostCreateRequest, u *user.User, pol *
 	if term == "" && req.Pty {
 		term = "xterm-256color" // a pty session without TERM breaks every app
 	}
-	cmd.Env = minimalEnv(u, term, req.SessionId)
+	// Whether the transcript will be encrypted is decided by the recipient set the
+	// controller pushed; an empty set means the cast is spooled in the clear.
+	recEncrypted := len(req.GetAuditRecipients()) > 0 || req.GetAuditRecipient() != ""
+	cmd.Env = minimalEnv(u, term, req.SessionId, req.Record, recEncrypted)
 	if st, err := os.Stat(u.HomeDir); err == nil && st.IsDir() {
 		cmd.Dir = u.HomeDir
 	} else {
@@ -434,6 +447,16 @@ func (h *host) startSession(req *genezav1.HostCreateRequest, u *user.User, pol *
 
 	if req.Pty {
 		go s.pump(s.ptmx, false)
+		// Tell the person at the keyboard, per docs/session-recording-spec.md.
+		// Recording is on by default in every shipped policy, so staying silent
+		// makes covert capture the default posture rather than a deliberate one.
+		if req.Record {
+			if recEncrypted {
+				s.emitNotice("\x1b[2m• This session is being recorded (encrypted at rest).\x1b[0m\r\n")
+			} else {
+				s.emitNotice("\x1b[33m• This session is being recorded as PLAINTEXT (no audit recipient configured).\x1b[0m\r\n")
+			}
+		}
 	} else {
 		go s.pump(s.outR, false)
 		go s.pump(s.errR, true)

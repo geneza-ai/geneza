@@ -3,7 +3,6 @@ import type {
   ControllersResponse,
   RelaysResponse,
   RiskResponse,
-  WorkspacesResponse,
 } from "@/types"
 import { getToken } from "@/auth"
 
@@ -75,6 +74,4 @@ export const api = {
     get<AgentsResponse>("/agents", signal, { outdated }),
   risk: (signal: AbortSignal, outdatedOnly?: boolean) =>
     get<RiskResponse>("/agents/risk", signal, { outdated_only: outdatedOnly }),
-  workspaces: (signal: AbortSignal) =>
-    get<WorkspacesResponse>("/workspaces", signal),
 }

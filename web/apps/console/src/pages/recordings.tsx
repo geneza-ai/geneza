@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react"
-import { Play, Search, Video } from "lucide-react"
+import { Play, Search, User, Video, X } from "lucide-react"
 
 import { api } from "@/api"
 import { usePolling } from "@/hooks/use-polling"
@@ -53,6 +53,18 @@ function RecordingCard({
               truncated
             </span>
           )}
+          {/* An empty auditKeyId means no age recipient was configured when this
+              session was recorded, so the cast was spooled and stored as READABLE
+              terminal transcript. That is a materially different artifact from an
+              encrypted one and the operator has no other way to notice. */}
+          {!rec.auditKeyId && (
+            <span
+              className="shrink-0 rounded border border-destructive/40 px-1.5 py-px font-mono text-[9.5px] text-destructive"
+              title="Recorded without an audit recipient: stored as readable plaintext, not encrypted at rest."
+            >
+              plaintext
+            </span>
+          )}
         </div>
         <div className="truncate font-mono text-[11px] text-muted-foreground">
           {rec.principal || "—"} → {rec.nodeId}
@@ -76,17 +88,27 @@ function RecordingCard({
 export function RecordingsPage() {
   const [page, setPage] = useState(1)
   const [query, setQuery] = useState("")
+  // The server filters by principal with an EXACT match, which is a different
+  // (and much sharper) tool than the free-text box below — that one only ever
+  // searched the rows already on screen. Both exist now: pick a principal to
+  // scope the whole result set, type to narrow the visible page.
+  const [principal, setPrincipal] = useState("")
+  const [principalTerm, setPrincipalTerm] = useState("")
   const [target, setTarget] = useState<RecordingInfo | null>(null)
 
   const { data, error, initialLoading, loading, refresh } =
     usePolling<RecordingsResponse>(
       (s) =>
         api.getRecordings(
-          { limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE },
+          {
+            principal: principal || undefined,
+            limit: PAGE_SIZE,
+            offset: (page - 1) * PAGE_SIZE,
+          },
           s
         ),
       15000,
-      [page]
+      [principal, page]
     )
 
   const total = data?.total ?? 0
@@ -117,14 +139,49 @@ export function RecordingsPage() {
 
   return (
     <div className="space-y-5">
-      <div className="flex max-w-md items-center gap-2.5 rounded-[9px] border bg-card px-3.5 py-[9px]">
-        <Search className="size-[15px] shrink-0 text-faint" />
-        <input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search by user, node, or id…"
-          className="w-full border-none bg-transparent font-mono text-[12.5px] text-foreground outline-none placeholder:text-faint"
-        />
+      <div className="flex flex-wrap items-center gap-2.5">
+        <div className="flex min-w-60 flex-1 items-center gap-2.5 rounded-[9px] border bg-card px-3.5 py-[9px]">
+          <Search className="size-[15px] shrink-0 text-faint" />
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search this page by user, node, or id…"
+            className="w-full border-none bg-transparent font-mono text-[12.5px] text-foreground outline-none placeholder:text-faint"
+          />
+        </div>
+        {/* Scopes the whole result set server-side, so paging and the total stay
+            correct — unlike the box on the left, which only ever narrowed the rows
+            already fetched. */}
+        <form
+          className="flex min-w-52 items-center gap-2.5 rounded-[9px] border bg-card px-3.5 py-[9px]"
+          onSubmit={(e) => {
+            e.preventDefault()
+            setPrincipal(principalTerm.trim())
+            setPage(1)
+          }}
+        >
+          <User className="size-[15px] shrink-0 text-faint" />
+          <input
+            value={principalTerm}
+            onChange={(e) => setPrincipalTerm(e.target.value)}
+            placeholder="Filter by principal…"
+            className="w-full border-none bg-transparent font-mono text-[12.5px] text-foreground outline-none placeholder:text-faint"
+          />
+          {principal && (
+            <button
+              type="button"
+              onClick={() => {
+                setPrincipal("")
+                setPrincipalTerm("")
+                setPage(1)
+              }}
+              className="shrink-0 text-faint hover:text-foreground"
+              title="Clear principal filter"
+            >
+              <X className="size-3.5" />
+            </button>
+          )}
+        </form>
       </div>
 
       {error && !data ? (

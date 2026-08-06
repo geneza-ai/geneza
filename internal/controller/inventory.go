@@ -165,6 +165,7 @@ func (s *Server) commitInventory(ctx context.Context, ws, nodeID string, rep *ge
 			Ecosystem:   c.Ecosystem,
 			Name:        c.Name,
 			Version:     c.Version,
+			SourceName:  c.SourceName,
 			Distro:      c.Distro,
 		})
 	}
@@ -245,13 +246,14 @@ func (s *Server) storeImageDigests(byDigest map[string][]ComponentRecord) ([]str
 		recs := make([]ImageComponentRecord, 0, len(comps))
 		for _, c := range comps {
 			recs = append(recs, ImageComponentRecord{
-				Digest:    digest,
-				Purl:      c.Purl,
-				Source:    c.Source,
-				Ecosystem: c.Ecosystem,
-				Name:      c.Name,
-				Version:   c.Version,
-				Distro:    c.Distro,
+				Digest:     digest,
+				Purl:       c.Purl,
+				Source:     c.Source,
+				Ecosystem:  c.Ecosystem,
+				Name:       c.Name,
+				Version:    c.Version,
+				SourceName: c.SourceName,
+				Distro:     c.Distro,
 			})
 		}
 		if err := s.store.PutImageComponents(digest, recs); err != nil {
@@ -312,12 +314,14 @@ func componentsFromProto(in []*genezav1.InventoryComponent) []sbom.Component {
 	out := make([]sbom.Component, 0, len(in))
 	for _, c := range in {
 		out = append(out, sbom.Component{
-			Purl:      c.GetPurl(),
-			Name:      c.GetName(),
-			Version:   c.GetVersion(),
-			Ecosystem: c.GetEcosystem(),
-			Distro:    c.GetDistro(),
-			Source:    c.GetSource(),
+			Purl:          c.GetPurl(),
+			Name:          c.GetName(),
+			Version:       c.GetVersion(),
+			Ecosystem:     c.GetEcosystem(),
+			Distro:        c.GetDistro(),
+			Source:        c.GetSource(),
+			SourceName:    c.GetSourceName(),
+			SourceVersion: c.GetSourceVersion(),
 		})
 	}
 	return out

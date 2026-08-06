@@ -5,11 +5,15 @@ import {
   ScrollText,
   ShieldAlert,
   ShieldCheck,
+  ShieldQuestion,
+  Download,
 } from "lucide-react"
 
-import { api } from "@/api"
+import { toast } from "sonner"
+
+import { api, ApiError } from "@/api"
 import { usePolling } from "@/hooks/use-polling"
-import { Card } from "@geneza/ui"
+import { Button, Card } from "@geneza/ui"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@geneza/ui"
@@ -30,6 +34,9 @@ import {
 } from "@/components/ui/table"
 import { EmptyState, ErrorState } from "@/components/states"
 import { PageToolbar } from "@/components/page-toolbar"
+import { Pagination } from "@/components/data-pagination"
+import { useDebounced } from "@/hooks/use-debounced"
+import { saveBlob } from "@/lib/format"
 import { CopyId } from "@/components/copy-id"
 import { AuditTag } from "@/components/audit-type-badge"
 import { absoluteTime, relativeTime } from "@/lib/format"
@@ -56,26 +63,48 @@ const LIMITS = [50, 100, 250, 500]
 
 export function AuditPage() {
   const [type, setType] = useState("")
+  const [actor, setActor] = useState("")
   const [sinceSeconds, setSinceSeconds] = useState(86400)
   const [limit, setLimit] = useState(100)
+  const [page, setPage] = useState(1)
+  // The filter inputs are query dependencies, and every audit read takes the same
+  // mutex Append needs while scanning the whole file — so an undebounced keystroke
+  // stalled audit writes fleet-wide. Debounce what the query actually sees.
+  const debouncedType = useDebounced(type, 300)
+  const debouncedActor = useDebounced(actor, 300)
+
+  // The window is resolved when the request is MADE, not during render: reading
+  // the clock in the render body makes it impure and the value stale by the time
+  // it is used anyway.
+  const buildQuery = () => ({
+    type: debouncedType || undefined,
+    actor: debouncedActor || undefined,
+    since: sinceSeconds ? Math.floor(Date.now() / 1000) - sinceSeconds : undefined,
+    limit,
+    offset: (page - 1) * limit,
+  })
 
   const { data, error, initialLoading, loading, refresh } = usePolling(
-    (s) =>
-      api.getAudit(
-        {
-          type: type || undefined,
-          since: sinceSeconds
-            ? Math.floor(Date.now() / 1000) - sinceSeconds
-            : undefined,
-          limit,
-        },
-        s
-      ),
+    (s) => api.getAudit(buildQuery(), s),
     0,
-    [type, sinceSeconds, limit]
+    [debouncedType, debouncedActor, sinceSeconds, limit, page]
   )
 
   const records = data?.records ?? []
+  const total = data?.total ?? records.length
+
+  async function exportJSONL() {
+    try {
+      saveBlob(
+        await api.downloadAuditJSONL({ ...buildQuery(), limit: 5000, offset: 0 }),
+        "audit.jsonl"
+      )
+    } catch (err) {
+      toast.error("Export failed", {
+        description: err instanceof ApiError ? err.message : String(err),
+      })
+    }
+  }
 
   return (
     <div className="space-y-4">
@@ -84,7 +113,10 @@ export function AuditPage() {
       <PageToolbar onRefresh={refresh} refreshing={loading}>
         <Input
           value={type}
-          onChange={(e) => setType(e.target.value)}
+          onChange={(e) => {
+            setType(e.target.value)
+            setPage(1)
+          }}
           placeholder="Filter by type…"
           list="audit-types"
           className="w-44"
@@ -97,7 +129,10 @@ export function AuditPage() {
 
         <Select
           value={String(sinceSeconds)}
-          onValueChange={(v) => setSinceSeconds(Number(v))}
+          onValueChange={(v) => {
+            setSinceSeconds(Number(v))
+            setPage(1)
+          }}
         >
           <SelectTrigger className="w-36">
             <SelectValue />
@@ -111,7 +146,23 @@ export function AuditPage() {
           </SelectContent>
         </Select>
 
-        <Select value={String(limit)} onValueChange={(v) => setLimit(Number(v))}>
+        <Input
+          value={actor}
+          onChange={(e) => {
+            setActor(e.target.value)
+            setPage(1)
+          }}
+          placeholder="Filter by actor…"
+          className="w-40"
+        />
+
+        <Select
+          value={String(limit)}
+          onValueChange={(v) => {
+            setLimit(Number(v))
+            setPage(1)
+          }}
+        >
           <SelectTrigger className="w-24">
             <SelectValue />
           </SelectTrigger>
@@ -123,6 +174,11 @@ export function AuditPage() {
             ))}
           </SelectContent>
         </Select>
+
+        <Button variant="outline" size="sm" onClick={exportJSONL}>
+          <Download className="size-4" />
+          Export
+        </Button>
       </PageToolbar>
 
       <Card className="overflow-hidden p-0">
@@ -157,11 +213,20 @@ export function AuditPage() {
             </TableBody>
           </Table>
         )}
+        {total > 0 && (
+          <Pagination
+            total={total}
+            pageSize={limit}
+            page={page}
+            onPage={setPage}
+            loading={loading}
+          />
+        )}
       </Card>
 
       {records.length > 0 && (
         <p className="text-xs text-muted-foreground">
-          {records.length} record{records.length === 1 ? "" : "s"}
+          {records.length} of {total} record{total === 1 ? "" : "s"} matching
         </p>
       )}
     </div>
@@ -247,6 +312,10 @@ function AuditRow({ rec }: { rec: AuditRecord }) {
   )
 }
 
+// Three states, not two. `chainOk` is undefined whenever the fetch failed or has
+// not returned — and claiming "Audit chain verified" on the strength of no data
+// is the worst thing this page can do, because it is the console's single most
+// security-load-bearing assertion and nobody investigates a green badge.
 function ChainBanner({
   chainOk,
   loading,
@@ -256,36 +325,54 @@ function ChainBanner({
 }) {
   if (loading) return <Skeleton className="h-14 w-full rounded-[14px]" />
 
-  const ok = chainOk !== false
+  const state = chainOk === true ? "ok" : chainOk === false ? "broken" : "unknown"
+  const style = {
+    ok: "border-success/30 bg-success/5",
+    broken: "border-destructive/40 bg-destructive/10",
+    unknown: "border-border bg-muted/30",
+  }[state]
+  const icon = {
+    ok: <ShieldCheck className="size-5 shrink-0 text-success" />,
+    broken: <ShieldAlert className="size-5 shrink-0 text-destructive" />,
+    unknown: <ShieldQuestion className="size-5 shrink-0 text-muted-foreground" />,
+  }[state]
+  const title = {
+    ok: "Audit chain verified",
+    broken: "Audit chain BROKEN",
+    unknown: "Audit chain not verified",
+  }[state]
+  const detail = {
+    ok: "Each record’s hash links to its predecessor; the log is tamper-evident.",
+    broken:
+      "Hash chain integrity check failed — records may have been altered or dropped.",
+    unknown:
+      "The integrity check did not run — the controller did not return a verdict. This is not an assertion that the log is intact.",
+  }[state]
+  const badge = { ok: "OK", broken: "FAILED", unknown: "UNKNOWN" }[state]
+
   return (
     <div
       className={cn(
         "flex items-center gap-3 rounded-[14px] border px-4 py-3",
-        ok
-          ? "border-success/30 bg-success/5"
-          : "border-destructive/40 bg-destructive/10"
+        style
       )}
     >
-      {ok ? (
-        <ShieldCheck className="size-5 shrink-0 text-success" />
-      ) : (
-        <ShieldAlert className="size-5 shrink-0 text-destructive" />
-      )}
+      {icon}
       <div>
-        <p className="text-sm font-medium">
-          {ok ? "Audit chain verified" : "Audit chain BROKEN"}
-        </p>
-        <p className="text-xs text-muted-foreground">
-          {ok
-            ? "Each record’s hash links to its predecessor; the log is tamper-evident."
-            : "Hash chain integrity check failed — records may have been altered or dropped."}
-        </p>
+        <p className="text-sm font-medium">{title}</p>
+        <p className="text-xs text-muted-foreground">{detail}</p>
       </div>
       <Badge
-        variant={ok ? "success" : "destructive"}
+        variant={
+          state === "ok"
+            ? "success"
+            : state === "broken"
+              ? "destructive"
+              : "outline"
+        }
         className="ml-auto"
       >
-        {ok ? "OK" : "FAILED"}
+        {badge}
       </Badge>
     </div>
   )

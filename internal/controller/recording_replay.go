@@ -175,13 +175,15 @@ func (u *workspaceAPIService) auditRecordingAccess(event, actor, node, session s
 }
 
 // recordingManifestFor rebuilds the node-signed manifest from the stored index row
-// so the auditor can verify integrity (and later the node signature) client-side.
+// so the auditor can verify BOTH integrity and the node signature client-side —
+// the latter needs node_spki, since the node's cert has rotated since.
 func recordingManifestFor(rec *RecordingRecord) *genezav1.RecordingManifest {
 	sum, _ := hex.DecodeString(rec.SHA256)
 	return &genezav1.RecordingManifest{
 		Sha256:      sum,
 		SizeBytes:   rec.SizeBytes,
 		NodeSig:     rec.NodeSig,
+		NodeSpki:    rec.NodeSPKI,
 		AuditKeyId:  rec.AuditKeyID,
 		StartedUnix: rec.StartedUnix,
 		EndedUnix:   rec.EndedUnix,

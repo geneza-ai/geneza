@@ -182,9 +182,14 @@ func TestSyncVerifiesIngestsAndServes(t *testing.T) {
 		t.Errorf("Enrich(uncurated) = %+v, want zero", e)
 	}
 
-	// Changed lists exactly the two advisory ids this sync wrote.
-	if c := f.Changed(); len(c) != 2 || c[0].ID != "GENEZA-1" || c[1].ID != "GENEZA-2" {
-		t.Fatalf("Changed = %+v, want [GENEZA-1 GENEZA-2]", c)
+	// ChangedPackages lists exactly the packages this sync wrote, in stable order:
+	// GENEZA-1 names openssl + its libssl binary split, GENEZA-2 names lodash.
+	c := f.ChangedPackages()
+	if len(c) != 3 ||
+		c[0] != (vulnfeed.Package{Ecosystem: "Debian:12", Name: "libssl"}) ||
+		c[1] != (vulnfeed.Package{Ecosystem: "Debian:12", Name: "openssl"}) ||
+		c[2] != (vulnfeed.Package{Ecosystem: "npm", Name: "lodash"}) {
+		t.Fatalf("ChangedPackages = %+v", c)
 	}
 }
 
@@ -257,8 +262,8 @@ func TestSyncRejectsRollback(t *testing.T) {
 	if n, err := f2.Sync(context.Background(), time.Time{}); err != nil || n != 0 {
 		t.Fatalf("replay v2: n=%d err=%v, want 0/nil", n, err)
 	}
-	if len(f2.Changed()) != 0 {
-		t.Errorf("replay re-matched %d advisories, want 0", len(f2.Changed()))
+	if len(f2.ChangedPackages()) != 0 {
+		t.Errorf("replay re-matched %d packages, want 0", len(f2.ChangedPackages()))
 	}
 
 	// A rollback to version 1 (a captured older bundle) is refused: zero rows, no

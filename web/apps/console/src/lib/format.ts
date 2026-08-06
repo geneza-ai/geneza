@@ -74,3 +74,13 @@ export async function copyToClipboard(value: string, label = "Copied to clipboar
     }
   }
 }
+
+/** Saves a blob to disk under the given filename. */
+export function saveBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement("a")
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
+}

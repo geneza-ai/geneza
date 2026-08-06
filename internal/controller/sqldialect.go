@@ -103,6 +103,23 @@ type dialect interface {
 	// valid (single-use redeem). The whole operation runs inside the caller's
 	// serializable txn.
 	deleteReturningDoc(ctx context.Context, tx *sql.Tx, table, keyCol, key string) ([]byte, error)
+
+	// columnExistsSQL / indexExistsSQL take ($1 table, $2 name) and return one row
+	// per match, scoped to the connection's own schema. They back the additive
+	// migration in ensureSchemaAdditions: the DDL blob is all CREATE ... IF NOT
+	// EXISTS, which is a no-op against a table that already exists, so a column
+	// added after a deployment shipped needs an explicit ALTER guarded by these.
+	columnExistsSQL() string
+	indexExistsSQL() string
+	// addColumnSQL renders "ALTER TABLE t ADD COLUMN c <type>" with this engine's
+	// spelling of the column type.
+	addColumnSQL(table, column string) string
+	// addBinaryColumnSQL is the byte-array form: a DER key or signature does not
+	// fit the short text column addColumnSQL creates.
+	addBinaryColumnSQL(table, column string) string
+	// createIndexSQL renders a plain CREATE INDEX (the caller has already checked
+	// it is absent, so no IF NOT EXISTS is needed — MySQL has no such form).
+	createIndexSQL(name, table, cols string) string
 }
 
 // --- Postgres ---
@@ -115,6 +132,27 @@ func (pgDialect) rewrite(q string) string                   { return q }
 func (pgDialect) bind(q string, args []any) (string, []any) { return q, args }
 func (pgDialect) jsonField(col, field string) string        { return col + "->>'" + field + "'" }
 func (pgDialect) schema() string                     { return sqlSchemaPG }
+
+func (pgDialect) columnExistsSQL() string {
+	return `SELECT 1 FROM information_schema.columns
+	        WHERE table_schema = current_schema() AND table_name = $1 AND column_name = $2`
+}
+
+func (pgDialect) indexExistsSQL() string {
+	return `SELECT 1 FROM pg_indexes WHERE schemaname = current_schema() AND tablename = $1 AND indexname = $2`
+}
+
+func (pgDialect) addColumnSQL(table, column string) string {
+	return `ALTER TABLE ` + table + ` ADD COLUMN ` + column + ` text`
+}
+
+func (pgDialect) addBinaryColumnSQL(table, column string) string {
+	return `ALTER TABLE ` + table + ` ADD COLUMN ` + column + ` bytea`
+}
+
+func (pgDialect) createIndexSQL(name, table, cols string) string {
+	return `CREATE INDEX ` + name + ` ON ` + table + ` (` + cols + `)`
+}
 
 func (pgDialect) isSerializationFailure(err error) bool {
 	var pgErr *pgconn.PgError
@@ -186,6 +224,32 @@ func (myDialect) schema() string { return sqlSchemaMySQL }
 
 func (myDialect) jsonField(col, field string) string {
 	return "JSON_UNQUOTE(JSON_EXTRACT(" + col + ",'$." + field + "'))"
+}
+
+func (myDialect) columnExistsSQL() string {
+	return `SELECT 1 FROM information_schema.columns
+	        WHERE table_schema = DATABASE() AND table_name = $1 AND column_name = $2`
+}
+
+func (myDialect) indexExistsSQL() string {
+	return `SELECT 1 FROM information_schema.statistics
+	        WHERE table_schema = DATABASE() AND table_name = $1 AND index_name = $2 LIMIT 1`
+}
+
+// The ecosystem key is an ASCII OSV label, matching the ecosystem column it is
+// derived from — the collation must agree or the index comparison silently falls
+// back to a conversion.
+func (myDialect) addColumnSQL(table, column string) string {
+	return "ALTER TABLE " + table + " ADD COLUMN " + column +
+		" VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin"
+}
+
+func (myDialect) addBinaryColumnSQL(table, column string) string {
+	return "ALTER TABLE " + table + " ADD COLUMN " + column + " LONGBLOB"
+}
+
+func (myDialect) createIndexSQL(name, table, cols string) string {
+	return "CREATE INDEX " + name + " ON " + table + " (" + cols + ")"
 }
 
 // rewrite turns the canonical Postgres query into a MySQL one: positional $N

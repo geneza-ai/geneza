@@ -19,7 +19,6 @@ const PENDING_OIDC_KEY = "geneza-pending-oidc" // stashed id_token while choosin
 interface DiscoveryDoc {
   authorization_endpoint: string
   token_endpoint: string
-  end_session_endpoint?: string
 }
 
 let inMemoryToken: string | null = sessionStorage.getItem(SESSION_KEY)

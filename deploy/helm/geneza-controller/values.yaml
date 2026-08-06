@@ -114,7 +114,7 @@ gateway:
   # MUST also appear in the controller cert SANs (see config.advertise).
   grpcHostname: "" # e.g. controller.example.com (7401)
   httpsApiHostname: "" # e.g. controller.example.com (7402); often same as grpc
-  clusterConsoleHostname: "" # 7407, only if clusterConsole.enabled
+  clusterConsoleHostname: "" # 7407, only if config.cluster_console.listen is set
   # TLS for the terminating console listener: a cert-manager-issued cert.
   consoleTLS:
     # certManager creates a Certificate CR for consoleHostname.
@@ -124,14 +124,6 @@ gateway:
       issuerKind: ClusterIssuer
     # Or reference a pre-existing TLS Secret instead of cert-manager.
     secretName: "" # defaults to <fullname>-console-tls
-
-# --- Audit sink (recommended) -------------------------------------------------
-# The hash-chained audit log is per-replica on local disk; point this at a SIEM
-# (or S3 Object-Lock intake) for the durable, tamper-evident copy.
-audit:
-  sink:
-    type: "" # "" disables; "http" posts each record
-    url: ""
 
 # --- The controller config skeleton (non-secret fields only) ------------------
 # Rendered verbatim into a ConfigMap as controller.yaml. The chart appends the
@@ -144,6 +136,17 @@ config:
   # data_dir is fixed by the chart to a writable path that does not collide with
   # the image's baked console/install assets; do not change it here.
   data_dir: /var/lib/geneza/data
+  # Stage-1 binaries served at /install.sh and /v1/install/bin/<name>. The image
+  # bakes an agent+bootstrap pair for both Linux arches here; without this key
+  # /install.sh 404s and the enrolment one-liner the console hands out is dead.
+  install_dir: /var/lib/geneza/install
+  # The hash-chained audit log is per-replica on local disk. Point this at a SIEM
+  # (or an S3 Object-Lock intake) for the durable, tamper-evident copy.
+  # type: "" disables | "file" writes to path | "http" posts each record to url.
+  audit_sink:
+    type: ""
+    path: ""
+    url: ""
   advertise:
     dns_names: [] # MUST include the Gateway hostnames clients use
     ips: []
@@ -151,6 +154,20 @@ config:
   relay_data_addrs: [] # e.g. ["controller.example.com:7404"]
   relay_realm: geneza
   session_p2p: true
+  # Metrics backend the agents' node-exporter samples are pushed to and the
+  # console queries. Empty = every console metrics panel reads "metrics store
+  # disabled"; the controller holds no series state of its own.
+  metrics_url: "" # e.g. http://victoria-metrics:8428
+  # CVE affectedness. WITHOUT THIS BLOCK inventory still collects SBOMs and the
+  # console still renders a green "clean" badge per node, but no advisories are
+  # ever synced and no verdict is ever written — the vulnerability views are
+  # structurally empty. osv_bulk is the open OSV.dev feed; the first sync fetches
+  # several GB, so give the controller memory headroom or pin `ecosystems` to the
+  # ones your fleet actually runs.
+  vuln_feed:
+    source: osv_bulk # "" off | osv_dir | osv_bulk | geneza-paid
+    kev_url: default # CISA known-exploited overlay; "" disables
+    epss_url: default # FIRST EPSS overlay; "" disables
   cert_ttl:
     node: 24h
     user: 8h

@@ -109,3 +109,54 @@ func TestParseNotAPurl(t *testing.T) {
 		}
 	}
 }
+
+// A foreign CycloneDX document (trivy, syft, a registry scanner) spells the distro
+// however its producer did. The qualifier used to be treated as the sole authority
+// on the vendor, so any spelling that was not "<vendor>-<release>" resolved to no
+// ecosystem at all — and sbom.Extract discards a component with no ecosystem. The
+// result was that supplying MORE information made a component fare worse.
+func TestDistroQualifierSpellingsFromRealScanners(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		purl      string
+		ecosystem string
+	}{
+		{"vendor-release", "pkg:deb/ubuntu/openssl@1.1.1?distro=ubuntu-22.04", "Ubuntu:22.04"},
+		{"debian codename", "pkg:deb/debian/openssl@3.0.8?distro=bookworm", "Debian:12"},
+		{"ubuntu codename", "pkg:deb/ubuntu/openssl@1.1.1?distro=jammy", "Ubuntu:22.04"},
+		{"apk bare version", "pkg:apk/alpine/openssl@3.1.4?distro=3.18.0", "Alpine:3.18.0"},
+		{"bare release with namespace vendor", "pkg:deb/debian/openssl@3.0.8?distro=12", "Debian:12"},
+		{"no qualifier falls back to namespace", "pkg:deb/debian/openssl@3.0.8", "Debian"},
+		{"language deps are unaffected", "pkg:npm/lodash@4.17.20", "npm"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := Parse(tc.purl)
+			if err != nil {
+				t.Fatalf("Parse(%q): %v", tc.purl, err)
+			}
+			if p.Ecosystem != tc.ecosystem {
+				t.Fatalf("Parse(%q).Ecosystem = %q, want %q", tc.purl, p.Ecosystem, tc.ecosystem)
+			}
+		})
+	}
+}
+
+// The source package must be read from whichever qualifier the producer used: deb
+// says source=, apk says origin=, rpm says upstream=.
+func TestSourceQualifierSpellings(t *testing.T) {
+	for _, tc := range []struct{ purl, want string }{
+		{"pkg:deb/debian/libssl3@3.0.8?distro=bookworm&source=openssl", "openssl"},
+		{"pkg:apk/alpine/libcrypto3@3.1.4?distro=3.18.0&origin=openssl", "openssl"},
+		{"pkg:rpm/redhat/openssl-libs@3.0.7?distro=rhel-9&upstream=openssl", "openssl"},
+		{"pkg:deb/debian/openssl@3.0.8?distro=bookworm", ""},
+		{"pkg:deb/debian/libssl3@3.0.8?source=openssl@3.0.8", "openssl"},
+	} {
+		p, err := Parse(tc.purl)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", tc.purl, err)
+		}
+		if p.SourceName != tc.want {
+			t.Errorf("Parse(%q).SourceName = %q, want %q", tc.purl, p.SourceName, tc.want)
+		}
+	}
+}

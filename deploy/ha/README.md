@@ -56,10 +56,26 @@ sudo ./deploy/compose/install.sh --role controller \
   --yes
 ```
 
-Run the same on `gw2` with `--controller-id gw2` and its own `--public-ip`. They
-share the CA and grant key — generate them once and copy `data/controller/ca` +
-`data/controller/keys` to each controller before first start (a flat-HA controller set is
-**one** trust anchor, not per-controller intermediates).
+Run the same on `gw2` with `--controller-id gw2`, its own `--public-ip`, and
+`--router pg`. They share the CA and grant key — generate them once and copy
+`data/controller/ca` + `data/controller/keys` to each controller before first start
+(a flat-HA controller set is **one** trust anchor, not per-controller
+intermediates).
+
+> **Do not copy `ca/offline-root/`.** That directory holds the fleet ROOT private
+> key, which the running controller never reads — it signs with the issuing CA.
+> Copying it replicates the key that can mint any identity in the fleet onto every
+> internet-facing machine. Move it once to an HSM/KMS/air-gapped media, keep a
+> copy (the CA cannot be rotated without it), and delete it from the hosts:
+>
+> ```sh
+> rsync -a --exclude 'offline-root/' data/controller/ca/ gw2:/opt/geneza/data/controller/ca/
+> ```
+
+`--router pg` is required, not optional, once a second controller runs: the
+default in-process router cannot reach a peer, so a module or network change made
+on a controller that does not hold an agent's stream is committed and then
+silently dropped.
 
 On **each relay host**, run `role=relay` pointing at the controller LB (see the
 [compose README](../compose/README.md#relay-join-rolerelay)).
@@ -101,6 +117,12 @@ hand for production hardening.
   `vmcluster`. Controllers only push/query, they never scrape.
 - **Load balancer** — a plain TCP/L4 balancer over the controllers' `:7401` (mTLS
   gRPC) and `:7402` (HTTPS). No session affinity required.
+- **Shared blob storage** — set `storage:` on every controller. Session recordings
+  and managed-domain TLS bundles default to LOCAL DISK, and the recording metadata
+  lives in the shared Postgres — so every controller *lists* every recording while
+  only the one that ingested it holds the bytes. Playback then succeeds or 404s
+  ("recording blob missing") depending on which controller the browser landed on.
+  Point all of them at the same S3-compatible bucket.
 
 ## What this directory is not
 

@@ -233,6 +233,13 @@ message InventoryComponent {
   string ecosystem = 4;              // OSV ecosystem (e.g. "Ubuntu:22.04", "npm")
   string distro = 5;                 // distro identifier for OS packages (e.g. "ubuntu:22.04")
   string source = 6;                 // collection origin ("os", "kernel", "lang", ...)
+  // The SOURCE package this binary package was built from ("openssl" for
+  // "libssl3"), empty for language deps and for OS packages that are their own
+  // source. Distro advisories are filed against the source package, so without
+  // this every split package — every lib*, -common, -dev, -bin — resolves no
+  // advisory at all and the node looks clean.
+  string source_name = 7;
+  string source_version = 8;         // the source package's version, when it differs
 }
 
 // DiscoMsg carries magicsock NAT-traversal coordination over the (dial-out, mTLS,
@@ -686,6 +693,12 @@ message RecordingManifest {
   string node_id = 8;
   string action = 9;
   bool   truncated = 10;    // the cast was capped mid-session but is still valid
+  // node_spki is set only on the REPLAY direction: the DER SubjectPublicKeyInfo of
+  // the node cert that produced node_sig, as captured at upload. Node certs rotate
+  // daily, so without it an auditor pulling a recording later has no key to check
+  // the signature against. Ignored on upload (the controller reads the key from the
+  // cert authenticating the stream, never from the node's own claim).
+  bytes  node_spki = 11;
 }
 
 message UploadAck {

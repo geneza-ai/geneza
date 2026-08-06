@@ -16,6 +16,7 @@ import { VulnerabilitiesPage } from "@/pages/vulnerabilities"
 import { PolicyPage } from "@/pages/policy"
 import { AuditPage } from "@/pages/audit"
 import { TokensPage } from "@/pages/tokens"
+import { MembersPage } from "@/pages/members"
 import { ActivatePage } from "@/pages/activate"
 import { EmbedShellPage } from "@/pages/embed-shell"
 import { NotFound } from "@/pages/not-found"
@@ -39,6 +40,14 @@ function ConsoleRoutes() {
           element={
             <RequireAdmin>
               <TokensPage />
+            </RequireAdmin>
+          }
+        />
+        <Route
+          path="members"
+          element={
+            <RequireAdmin>
+              <MembersPage />
             </RequireAdmin>
           }
         />
