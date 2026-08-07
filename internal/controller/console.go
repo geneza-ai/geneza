@@ -1188,14 +1188,44 @@ func (s *Server) consoleServer() (*http.Server, error) {
 // over. They differ on purpose: the fetch rides the ACME proxy so a bare `curl`
 // trusts it, while the agent afterwards talks to this controller's own listeners
 // and verifies them against the pinned Geneza CA roots — a different authority.
-// Both prefer the first advertised DNS name, which is what the certificate
-// covers; an IP-only advertise falls back to the first IP.
+// Both prefer the first routable advertised DNS name, which is what the
+// certificate covers; an IP-only advertise falls back to the first routable IP.
+//
+// Loopback entries are skipped while any routable one remains. This host is
+// handed to REMOTE parties — it is embedded in every enrollment code the console
+// mints — so "localhost" resolves on the wrong machine and enrollment fails with
+// a connection refused that looks like the controller is down. `advertise`
+// conventionally lists localhost for on-host use, so preferring the routable
+// entry (rather than trusting the order) is what callers actually mean.
 func (s *Server) advertisedHost() string {
+	if h := firstRoutableHost(s.cfg.Advertise.DNSNames); h != "" {
+		return h
+	}
+	if h := firstRoutableHost(s.cfg.Advertise.IPs); h != "" {
+		return h
+	}
+	// Nothing routable advertised (a purely local lab): fall back to the declared
+	// order rather than returning nothing, so on-host flows still work.
 	if len(s.cfg.Advertise.DNSNames) > 0 {
 		return s.cfg.Advertise.DNSNames[0]
 	}
 	if len(s.cfg.Advertise.IPs) > 0 {
 		return s.cfg.Advertise.IPs[0]
+	}
+	return ""
+}
+
+// firstRoutableHost returns the first entry that a remote host could actually
+// reach — i.e. not "localhost" and not a loopback literal.
+func firstRoutableHost(hosts []string) string {
+	for _, h := range hosts {
+		if h == "" || strings.EqualFold(h, "localhost") {
+			continue
+		}
+		if ip := net.ParseIP(h); ip != nil && ip.IsLoopback() {
+			continue
+		}
+		return h
 	}
 	return ""
 }
