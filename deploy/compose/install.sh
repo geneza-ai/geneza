@@ -749,11 +749,17 @@ EOF
         --name admin --roles admin,platform-admin --ttl 168h --out-dir /out )
     # `geneza node enroll` embeds THESE endpoints verbatim into the enrollment code
     # it prints, so loopback here hands every remote node an endpoint that resolves
-    # to itself. Prefer the public face; the installer-fetch base is the TLS front
-    # (publicly-trusted, so curl on a bare host trusts it without a CA bundle).
+    # to itself. Use the public face instead.
+    #
+    # controller_http MUST stay the controller's OWN :7402 listener, never the ACME
+    # front: it becomes the code's RUNTIME endpoint, which the agent and bootstrap
+    # verify against the pinned Geneza CA roots. Pointed at the public front, every
+    # update poll fails with "x509: certificate signed by unknown authority" and the
+    # node can never self-update. The installer FETCH base is a separate field the
+    # controller supplies (installer_url, its console external URL).
     PROFILE_GRPC="127.0.0.1:7401"; PROFILE_HTTP="https://127.0.0.1:7402"
     if [ -n "$SITE" ]; then
-      PROFILE_GRPC="${SITE}:7401"; PROFILE_HTTP="https://${SITE}"
+      PROFILE_GRPC="${SITE}:7401"; PROFILE_HTTP="https://${SITE}:7402"
     elif [ "$PUBLIC_IP" != "127.0.0.1" ]; then
       PROFILE_GRPC="${PUBLIC_IP}:7401"; PROFILE_HTTP="https://${PUBLIC_IP}:7402"
     fi
