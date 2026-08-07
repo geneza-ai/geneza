@@ -150,6 +150,12 @@ func (e *enrollmentService) Enroll(ctx context.Context, req *genezav1.EnrollRequ
 			status.Error(codes.PermissionDenied, "enrollment evidence does not match this machine"))
 	}
 	labels := mergeEnrollLabels(req.GetLabels(), provLabels)
+	// One live node per OpenStack instance: these labels are what routes a launch,
+	// so two nodes wearing the same one is an ambiguity resolved by store order.
+	if err := s.enforceInstanceUniqueness(ws, labels); err != nil {
+		return deny("duplicate instance: "+err.Error(),
+			status.Error(codes.AlreadyExists, err.Error()))
+	}
 
 	certPEM, err := s.ca.IssueFromCSR(req.GetCsrPem(), ca.Profile{
 		Kind:      ca.KindNode,
@@ -304,6 +310,53 @@ func crossCheckInstanceClaim(agent, provider map[string]string) error {
 	}
 	if pinned != claimed {
 		return fmt.Errorf("evidence pins instance %s but the machine reports %s", pinned, claimed)
+	}
+	return nil
+}
+
+// osCloudLabel qualifies the instance id by which cloud it came from. Instance
+// UUIDs are unique only within one Nova, so an unqualified match would let a
+// second cloud's identical UUID collide with this one (residual risk #22).
+const osCloudLabel = "os:cloud"
+
+// enforceInstanceUniqueness refuses a second live node for the same OpenStack
+// instance, which docs/openstack-integration.md §10 step 5 requires and residual
+// risk #15 restates as "single-node-per-UUID as a unique-active-cert constraint".
+//
+// Without it the labels are not an identity at all: resolveLaunchNode returns the
+// FIRST node whose os:instance matches, in store order, so a second node wearing
+// the same instance silently competes for that VM's shell sessions and which one
+// wins is not something the operator chose.
+//
+// Refusing is deliberate over silently dropping the label. A duplicate means either
+// a stale record the operator has not retired — in which case the message says so
+// and retiring fixes it — or an attempt to take over an enrolled VM's identity,
+// which should be loud. The legitimate re-enrollment flow retires first, so it
+// never reaches here.
+func (s *Server) enforceInstanceUniqueness(ws string, labels map[string]string) error {
+	instance := labels[launchInstanceLabel]
+	if instance == "" {
+		return nil // not an OpenStack-identified node; nothing to keep unique
+	}
+	nodes, err := s.store.ListNodes(ws)
+	if err != nil {
+		// Cannot prove uniqueness, so do not grant the identity — but let the node
+		// enroll. Dropping the label costs a launch target; refusing would make a
+		// store hiccup block enrollment entirely.
+		slog.Warn("cannot verify instance uniqueness; enrolling without the OpenStack identity",
+			"workspace", ws, "instance", instance, "err", err)
+		delete(labels, launchInstanceLabel)
+		return nil
+	}
+	for _, n := range nodes {
+		if n.Labels[launchInstanceLabel] != instance {
+			continue
+		}
+		if n.Labels[osCloudLabel] != labels[osCloudLabel] {
+			continue // same UUID on a different cloud is a different instance
+		}
+		return fmt.Errorf("instance %s is already enrolled as node %q (%s); retire it before re-enrolling",
+			instance, n.Name, n.ID)
 	}
 	return nil
 }
