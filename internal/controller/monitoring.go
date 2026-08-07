@@ -11,10 +11,21 @@ import (
 )
 
 // defaultNodeModules are enabled on every node unless a stored entry overrides
-// them. Inventory (SBOM collection — the source of the CVE/vuln surface) is on by
-// default so a freshly enrolled node reports its software set out of the box; an
-// admin can turn it off with an explicit disabled entry.
-var defaultNodeModules = []NodeModule{{Name: "inventory", Enabled: true}}
+// them. Inventory (SBOM collection — the source of the CVE/vuln surface) and
+// node-exporter (host metrics) are both on by default, so a freshly enrolled node
+// reports its software set and its health out of the box; an admin turns either
+// off per node from the console's node Settings tab, which writes an explicit
+// disabled entry.
+//
+// node-exporter defaults on even when no metrics_url is configured: the agent
+// scrapes and pushes, and ingestNodeMetrics drops it. That costs the node a local
+// scrape rather than leaving an operator who later configures a backend with a
+// fleet that silently collects nothing — the same trade inventory already makes
+// against vuln_feed.
+var defaultNodeModules = []NodeModule{
+	{Name: "inventory", Enabled: true},
+	{Name: "node-exporter", Enabled: true},
+}
 
 // effectiveNodeModules merges a node's stored module set over the defaults: a
 // stored entry (enabled OR disabled) wins, defaults fill in the rest. This is

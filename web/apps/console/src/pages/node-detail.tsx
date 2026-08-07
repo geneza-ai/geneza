@@ -101,7 +101,11 @@ export function NodeDetailPage() {
   usePageHeader(node?.name ?? null, node ? `Nodes / ${node.name}` : undefined)
 
   const [rangeSec, setRangeSec] = useState(RANGES[1].sec)
-  const [monOn, setMonOn] = useState<boolean | null>(null)
+  // Desired module set for this node, name -> enabled. null until the fetch
+  // resolves. The server already merges the fleet defaults over the stored
+  // record, so what lands here is what the agent is actually told to run.
+  const [modules, setModules] = useState<Record<string, boolean> | null>(null)
+  const monOn = modules ? (modules["node-exporter"] ?? false) : null
   const [busy, setBusy] = useState(false)
   const navigate = useNavigate()
   const [reapprove, setReapprove] = useState(false)
@@ -114,31 +118,34 @@ export function NodeDetailPage() {
     let active = true
     api
       .getNodeModules(node.nodeId)
-      .then((r) =>
-        active &&
-        // modules is null when none are configured yet — guard before .some so
-        // the fetch resolves (otherwise monOn stays null and the toggle is
-        // permanently disabled).
-        setMonOn((r.modules ?? []).some((m) => m.name === "node-exporter" && m.enabled))
-      )
-      .catch(() => active && setMonOn(null))
+      .then((r) => {
+        if (!active) return
+        const next: Record<string, boolean> = {}
+        // modules is null when none are configured yet — guard before iterating
+        // so the fetch resolves rather than leaving the toggles disabled forever.
+        for (const m of r.modules ?? []) next[m.name] = m.enabled
+        setModules(next)
+      })
+      .catch(() => active && setModules(null))
     return () => {
       active = false
     }
   }, [node])
 
-  async function toggleMonitoring() {
+  // setModule flips one agent module for this node. It goes through
+  // setNodeModuleMerged (read-patch-write) because the API replaces the whole
+  // set: writing just this one would wipe the other modules' settings.
+  async function setModule(name: string, label: string, next: boolean) {
     if (!node) return
     setBusy(true)
-    const next = !monOn
     try {
-      await setNodeModuleMerged(node.nodeId, "node-exporter", next)
-      setMonOn(next)
-      toast.success(next ? "Monitoring enabled" : "Monitoring disabled", {
+      await setNodeModuleMerged(node.nodeId, name, next)
+      setModules((m) => ({ ...(m ?? {}), [name]: next }))
+      toast.success(next ? `${label} enabled` : `${label} disabled`, {
         description: node.name,
       })
     } catch (err) {
-      toast.error("Failed to update monitoring", {
+      toast.error(`Failed to update ${label.toLowerCase()}`, {
         description: err instanceof ApiError ? err.message : String(err),
       })
     } finally {
@@ -364,14 +371,6 @@ export function NodeDetailPage() {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={toggleMonitoring}
-                disabled={busy || monOn === null}
-              >
-                {monOn ? "Disable monitoring" : "Enable monitoring"}
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
                 onClick={() => setRetire(true)}
                 disabled={busy}
               >
@@ -397,6 +396,7 @@ export function NodeDetailPage() {
           </TabsTrigger>
           <TabsTrigger value="inventory">Inventory</TabsTrigger>
           {node.online && <TabsTrigger value="shell">Shell</TabsTrigger>}
+          <TabsTrigger value="settings">Settings</TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview">
@@ -423,7 +423,16 @@ export function NodeDetailPage() {
                   </Field>
                   <Field label="last seen">{relativeTime(node.lastSeenUnix)}</Field>
                   <Field label="monitoring">
-                    {monOn === null ? "—" : monOn ? "enabled" : "disabled"}
+                    {monOn === null ? (
+                      "—"
+                    ) : (
+                      <button
+                        className="underline decoration-dotted underline-offset-2 hover:text-foreground"
+                        onClick={() => setTab("settings")}
+                      >
+                        {monOn ? "enabled" : "disabled"}
+                      </button>
+                    )}
                   </Field>
                   <Field label="admission">
                     {node.approved ? (
@@ -587,6 +596,40 @@ export function NodeDetailPage() {
           <NodeMetricsGrid node={node.name} rangeSec={rangeSec} />
         </TabsContent>
 
+        <TabsContent value="settings">
+          <Card className="max-w-2xl p-5">
+            <CardLabel className="mb-1">Agent modules</CardLabel>
+            <p className="mb-4 text-xs text-muted-foreground">
+              Both are on for every node by default. Unchecking one records an
+              explicit opt-out for this node and pushes it to the agent
+              immediately — it is not re-enabled by the fleet default.
+            </p>
+            <div className="flex flex-col gap-4">
+              <ModuleToggle
+                label="Monitoring"
+                hint="Runs node-exporter on the host and streams CPU, memory, disk and network metrics to the controller. Off means the Metrics tab stays empty for this node."
+                checked={modules?.["node-exporter"] ?? false}
+                loading={modules === null}
+                disabled={busy || !me.admin}
+                onChange={(v) => setModule("node-exporter", "Monitoring", v)}
+              />
+              <ModuleToggle
+                label="Software inventory"
+                hint="Collects the host's package set as a CycloneDX SBOM. This is what the Vulnerabilities tab matches against the CVE feed — off means no verdicts for this node."
+                checked={modules?.["inventory"] ?? false}
+                loading={modules === null}
+                disabled={busy || !me.admin}
+                onChange={(v) => setModule("inventory", "Software inventory", v)}
+              />
+            </div>
+            {!me.admin && (
+              <p className="mt-4 text-xs text-faint">
+                Changing these needs the ws-admin role.
+              </p>
+            )}
+          </Card>
+        </TabsContent>
+
         <TabsContent value="sessions">
           <NodeSessions nodeId={node.nodeId} admin={me.admin} />
         </TabsContent>
@@ -709,5 +752,44 @@ function NodeSessions({ nodeId, admin }: { nodeId: string; admin: boolean }) {
         </TableBody>
       </Table>
     </Card>
+  )
+}
+
+// ModuleToggle is one agent-module checkbox in the node Settings tab. It renders
+// the pending state explicitly rather than defaulting to unchecked: an unchecked
+// box that is really "still loading" reads as "monitoring is off", which is the
+// one thing this control must never say wrongly.
+function ModuleToggle({
+  label,
+  hint,
+  checked,
+  loading,
+  disabled,
+  onChange,
+}: {
+  label: string
+  hint: string
+  checked: boolean
+  loading: boolean
+  disabled: boolean
+  onChange: (v: boolean) => void
+}) {
+  return (
+    <label className="flex items-start gap-2.5">
+      <input
+        type="checkbox"
+        className="mt-0.5 size-4 shrink-0 accent-primary"
+        checked={checked}
+        disabled={loading || disabled}
+        onChange={(e) => onChange(e.target.checked)}
+      />
+      <span className="flex flex-col gap-0.5">
+        <span className="text-sm font-medium">
+          {label}
+          {loading && <span className="ml-2 text-xs text-faint">loading…</span>}
+        </span>
+        <span className="text-xs leading-relaxed text-muted-foreground">{hint}</span>
+      </span>
+    </label>
   )
 }
