@@ -144,6 +144,9 @@ func (c *consoleAPI) handler() http.Handler {
 	mux.Handle("DELETE /api/v1/sessions/{id}", c.authAdmin(c.handleRevokeSession))
 	mux.Handle("POST /api/v1/nodes/{id}/approve", c.authAdmin(c.handleApproveNode))
 	mux.Handle("POST /api/v1/nodes/{id}/rebaseline", c.authAdmin(c.handleRebaselineNode))
+	// Operator pairing: promote a node self-reported OpenStack identity to the
+	// trusted one, so a VM predating Geneza becomes launchable.
+	mux.Handle("POST /api/v1/nodes/{id}/pair-instance", c.authAdmin(c.handlePairInstance))
 	mux.Handle("DELETE /api/v1/nodes/{id}", c.authAdmin(c.handleRemoveNode))
 	// Monitoring: Prometheus-shaped query API (any role) + per-node module toggle (admin).
 	mux.Handle("GET /api/v1/metrics/query", c.auth(c.handleMetricsQuery))

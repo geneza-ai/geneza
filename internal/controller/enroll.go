@@ -379,3 +379,8 @@ func reservedLabelIn(labels map[string]string) string {
 	sort.Strings(keys)
 	return keys[0]
 }
+
+// claimedProjectLabel is the agent's untrusted view of its own project, the
+// companion to claimedInstanceLabel. Checked for agreement during operator
+// pairing; never a source of the trusted os:project.
+const claimedProjectLabel = "os.claim:project"
