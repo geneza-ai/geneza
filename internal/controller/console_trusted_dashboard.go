@@ -91,7 +91,7 @@ func (c *consoleAPI) handleTrustedDashboard(w http.ResponseWriter, r *http.Reque
 		CookieHash: hashToken(cookieSecret),
 		Session: sessionInput{
 			Provider: providerKeystone, Source: svcUID,
-			User: caller.UserName, Subject: join.Subject,
+			User: caller.displayName(), Subject: join.Subject,
 			Workspace: join.Workspace, Roles: join.Roles,
 			UpstreamExp: caller.ExpiresAt.Unix(), KSTokenHash: hashToken(caller.TokenID),
 			UserAgent: r.UserAgent(),
@@ -102,7 +102,7 @@ func (c *consoleAPI) handleTrustedDashboard(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	_ = c.s.audit.AppendWS(join.Workspace, "access_join", caller.UserName, "", "", map[string]string{
+	_ = c.s.audit.AppendWS(join.Workspace, "access_join", caller.displayName(), "", "", map[string]string{
 		"provider": providerKeystone, "cloud": svcUID, "project": caller.ProjectID,
 		"workspace": join.Workspace, "path": "trusted_dashboard",
 		"first_admin": boolStr(join.FirstAdmin), "provisioned": boolStr(join.Provisioned),

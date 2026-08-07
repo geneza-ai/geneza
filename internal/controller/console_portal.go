@@ -128,7 +128,7 @@ func (c *consoleAPI) handlePortalConsoleMint(w http.ResponseWriter, r *http.Requ
 		CodeHash: hashToken(code),
 		Session: sessionInput{
 			Provider: providerKeystone, Source: svcUID,
-			User: caller.UserName, Subject: join.Subject,
+			User: caller.displayName(), Subject: join.Subject,
 			Workspace: join.Workspace, Roles: join.Roles,
 			UpstreamExp: caller.ExpiresAt.Unix(), KSTokenHash: hashToken(caller.TokenID),
 			Scope: &SessionScope{Cloud: svcUID},
@@ -138,7 +138,7 @@ func (c *consoleAPI) handlePortalConsoleMint(w http.ResponseWriter, r *http.Requ
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	_ = c.s.audit.AppendWS(join.Workspace, "portal_console_mint", caller.UserName, "", "", map[string]string{
+	_ = c.s.audit.AppendWS(join.Workspace, "portal_console_mint", caller.displayName(), "", "", map[string]string{
 		"cloud": svcUID, "project": caller.ProjectID, "workspace": join.Workspace,
 		"first_admin": boolStr(join.FirstAdmin), "provisioned": boolStr(join.Provisioned),
 		"portal_ip": remoteIP(r),

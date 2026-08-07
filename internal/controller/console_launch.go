@@ -145,7 +145,7 @@ func (c *consoleAPI) handleLaunchMint(w http.ResponseWriter, r *http.Request) {
 
 	node, err := c.s.resolveLaunchNode(join.Workspace, caller.ProjectID, req.InstanceID)
 	if err != nil {
-		_ = c.s.audit.AppendWS(join.Workspace, "launch_denied", caller.UserName, "", "", map[string]string{
+		_ = c.s.audit.AppendWS(join.Workspace, "launch_denied", caller.displayName(), "", "", map[string]string{
 			"cloud": svcUID, "project": caller.ProjectID, "instance": req.InstanceID, "reason": err.Error(),
 		})
 		writeErr(w, http.StatusNotFound, "no Geneza node for that instance in your project")
@@ -158,7 +158,7 @@ func (c *consoleAPI) handleLaunchMint(w http.ResponseWriter, r *http.Request) {
 	// creation and the AGENT when it honors the session — so a rule, a
 	// quarantine, or a suspension landing between mint and redeem still denies.
 	decision := c.s.policyFor(join.Workspace).Evaluate(policy.Input{
-		User:       caller.UserName,
+		User:       caller.displayName(),
 		Roles:      join.Roles,
 		NodeID:     node.ID,
 		NodeName:   node.Name,
@@ -168,7 +168,7 @@ func (c *consoleAPI) handleLaunchMint(w http.ResponseWriter, r *http.Request) {
 		Now:        time.Now(),
 	})
 	if !decision.Allow {
-		_ = c.s.audit.AppendWS(join.Workspace, "launch_denied", caller.UserName, node.ID, "", map[string]string{
+		_ = c.s.audit.AppendWS(join.Workspace, "launch_denied", caller.displayName(), node.ID, "", map[string]string{
 			"cloud": svcUID, "instance": req.InstanceID, "action": action, "reason": decision.Reason,
 		})
 		writeErr(w, http.StatusForbidden, decision.Reason)
@@ -190,7 +190,7 @@ func (c *consoleAPI) handleLaunchMint(w http.ResponseWriter, r *http.Request) {
 		CodeHash: hashToken(code),
 		Session: sessionInput{
 			Provider: providerKeystone, Source: svcUID,
-			User: caller.UserName, Subject: join.Subject,
+			User: caller.displayName(), Subject: join.Subject,
 			Workspace: join.Workspace, Roles: join.Roles,
 			UpstreamExp: caller.ExpiresAt.Unix(), KSTokenHash: hashToken(caller.TokenID),
 			MaxTTL: cl.launchSessionTTL(), AbsoluteTTL: cl.launchAbsoluteTTL(),
@@ -206,7 +206,7 @@ func (c *consoleAPI) handleLaunchMint(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	_ = c.s.audit.AppendWS(join.Workspace, "launch_mint", caller.UserName, node.ID, "", map[string]string{
+	_ = c.s.audit.AppendWS(join.Workspace, "launch_mint", caller.displayName(), node.ID, "", map[string]string{
 		"cloud": svcUID, "project": caller.ProjectID, "instance": req.InstanceID,
 		"action": action, "embed": boolStr(req.Embed), "portal_ip": remoteIP(r),
 		"expires_unix": fmt.Sprint(expires.Unix()),

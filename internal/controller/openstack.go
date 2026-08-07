@@ -17,6 +17,7 @@ import (
 	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/servers"
 	"github.com/gophercloud/gophercloud/v2/openstack/identity/v3/projects"
 	"github.com/gophercloud/gophercloud/v2/openstack/identity/v3/tokens"
+	"github.com/gophercloud/gophercloud/v2/openstack/identity/v3/users"
 )
 
 // serviceUserDenylist are Keystone service-account usernames the ACCESS plane
@@ -65,7 +66,11 @@ func validateHumanKeystoneToken(caller osCaller, cl CloudConfig) error {
 
 // osCaller is the validated identity behind a presented Keystone token.
 type osCaller struct {
-	UserName    string
+	UserName string
+	// Email is DISPLAY ONLY, and empty when Keystone has none or will not share it.
+	// It never replaces UserName: the service-account denylist matches on that, and
+	// an address is not what "is this nova?" is asking.
+	Email       string
 	UserID      string // STABLE keystone user id — the member/session subject
 	ProjectID   string
 	ProjectName string
@@ -264,6 +269,7 @@ func (c *openstackClient) Validate(ctx context.Context, token string) (cloudSess
 	if user != nil {
 		caller.UserName = user.Name
 		caller.UserID = user.ID
+		caller.Email = lookupUserEmail(ctx, ic, user.ID)
 	}
 	for _, r := range roles {
 		caller.Roles = append(caller.Roles, r.Name)
@@ -382,6 +388,10 @@ func (c *openstackClient) createToken(ctx context.Context, opts tokens.AuthOptio
 	if user, _ := res.ExtractUser(); user != nil {
 		caller.UserName = user.Name
 		caller.UserID = user.ID
+		// sc was built pre-auth for tokens.Create; give it the token it just
+		// obtained so the user lookup goes out authenticated as this caller.
+		p.SetToken(tok.ID)
+		caller.Email = lookupUserEmail(ctx, sc, user.ID)
 	}
 	if roles, _ := res.ExtractRoles(); roles != nil {
 		for _, r := range roles {
@@ -427,4 +437,45 @@ func (s *osLiveSession) ResolveProject(ctx context.Context, projectID string) (o
 		return osProject{}, fmt.Errorf("get project: %w", err)
 	}
 	return osProject{Name: p.Name, DomainID: p.DomainID}, nil
+}
+
+// lookupUserEmail fetches the caller's own Keystone user record for a human-readable
+// address, and returns "" whenever that is not possible.
+//
+// Worth the extra round trip because of how the name usually reads. A portal that
+// provisions Keystone users per customer commonly names them by its own subject id —
+// Cloudify uses the Keycloak sub — so the console, the member list and every audit
+// row would otherwise identify people by a UUID. The token body cannot help: it
+// carries only id, name, domain and password_expires_at.
+//
+// Best-effort by design. Keystone's default policy lets a user read their own record,
+// but a deployment may forbid it, and the address may simply be unset; neither is a
+// reason to fail a login that has already been authenticated. One call per login, not
+// per request.
+func lookupUserEmail(ctx context.Context, ic *gophercloud.ServiceClient, userID string) string {
+	if ic == nil || userID == "" {
+		return ""
+	}
+	u, err := users.Get(ctx, ic, userID).Extract()
+	if err != nil || u == nil {
+		return ""
+	}
+	// Keystone treats email as an extension attribute rather than a core field, so
+	// gophercloud surfaces it in Extra rather than on the struct.
+	email, _ := u.Extra["email"].(string)
+	return strings.TrimSpace(email)
+}
+
+// displayName is what a human should see for this caller: the email when Keystone
+// has one, otherwise the Keystone username.
+//
+// A portal that provisions Keystone users per customer commonly names them by its
+// own subject id, so the username is frequently a UUID that identifies nobody. This
+// is DISPLAY only — authorization is keyed on UserID (stable), and the
+// service-account guards match on UserName, so neither changes with it.
+func (c osCaller) displayName() string {
+	if c.Email != "" {
+		return c.Email
+	}
+	return c.UserName
 }

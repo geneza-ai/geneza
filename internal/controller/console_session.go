@@ -154,14 +154,14 @@ func (c *consoleAPI) handleSessionKeystone(w http.ResponseWriter, r *http.Reques
 		writeErr(w, http.StatusInternalServerError, "could not resolve workspace")
 		return
 	}
-	_ = c.s.audit.AppendWS(join.Workspace, "access_join", caller.UserName, "", "", map[string]string{
+	_ = c.s.audit.AppendWS(join.Workspace, "access_join", caller.displayName(), "", "", map[string]string{
 		"provider": providerKeystone, "cloud": req.Cloud, "project": caller.ProjectID,
 		"workspace": join.Workspace, "roles": strings.Join(join.Roles, ","),
 		"first_admin": boolStr(join.FirstAdmin), "provisioned": boolStr(join.Provisioned),
 	})
 	c.establishSession(w, r, authnResult{
 		provider: providerKeystone, source: req.Cloud,
-		user: caller.UserName, subject: join.Subject, groups: nil,
+		user: caller.displayName(), subject: join.Subject, groups: nil,
 		upstreamExp: caller.ExpiresAt.Unix(), ksTokenHash: hashToken(caller.TokenID),
 	}, join.Workspace)
 }

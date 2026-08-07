@@ -73,7 +73,7 @@ func (s *Server) resolveAccessWorkspace(ctx context.Context, svcUID string, cl C
 	subject := keystoneSubject(caller)
 	rec := &MemberRecord{
 		Provider:    providerKeystone,
-		Username:    caller.UserName,
+		Username:    caller.displayName(),
 		Subject:     subject,
 		SourceUID:   svcUID,
 		Roles:       cl.mapKeystoneRoles(caller.Roles),
