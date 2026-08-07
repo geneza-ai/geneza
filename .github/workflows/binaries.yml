@@ -103,6 +103,47 @@ jobs:
           cp deploy/release/root-keys.json dist/root-keys.json
           rm -f /tmp/signer.key
           echo "signed SHA256SUMS:"; ls -la dist/SHA256SUMS.sig dist/root-keys.json
+
+      # Per-arch signed agent manifests — the artifact an EXISTING node's bootstrap
+      # verifies before swapping its worker. SHA256SUMS covers the archives a human
+      # or the controller downloads; it is not a types.Manifest and the update chain
+      # cannot consume it. Without these, `genezactl release publish` has nothing to
+      # upload, the rollout rings stay empty, /v1/updates/desired answers 204, and
+      # every already-enrolled node is pinned to whatever it first installed
+      # (docs/update-trust.md "Not built (2026-08)").
+      #
+      # Tags only: the version is stamped into the binary from the tag, and a
+      # manifest whose version does not match what the agent reports would pin a
+      # rollout ring to a target no node can ever converge to.
+      - name: Sign agent manifests (self-update chain)
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GENEZA_RELEASE_SIGNING_KEY: ${{ secrets.GENEZA_RELEASE_SIGNING_KEY }}
+        run: |
+          if [ -z "$GENEZA_RELEASE_SIGNING_KEY" ]; then
+            echo "::warning::GENEZA_RELEASE_SIGNING_KEY unset — no signed manifests, so agents cannot self-update to this release"
+            exit 0
+          fi
+          v="${GITHUB_REF_NAME#v}"
+          go build -o /tmp/geneza-sign ./cmd/geneza-sign
+          umask 077; printf '%s' "$GENEZA_RELEASE_SIGNING_KEY" > /tmp/signer.key
+          trap 'rm -f /tmp/signer.key' EXIT
+          for arch in amd64 arm64; do
+            tgz="dist/geneza-node_linux_${arch}.tar.gz"
+            if [ ! -f "$tgz" ]; then
+              echo "::warning::$tgz missing — no manifest for linux/$arch"
+              continue
+            fi
+            rm -rf /tmp/unpack && mkdir -p /tmp/unpack
+            tar -xzf "$tgz" -C /tmp/unpack
+            bin="$(find /tmp/unpack -type f -name geneza-agent | head -1)"
+            [ -n "$bin" ] || { echo "::error::no geneza-agent inside $tgz"; exit 1; }
+            /tmp/geneza-sign manifest \
+              --key /tmp/signer.key --binary "$bin" \
+              --product geneza-agent --version "$v" --os linux --arch "$arch" \
+              --out "dist/geneza-agent_linux_${arch}.manifest.json"
+          done
+          echo "signed manifests:"; ls -la dist/*.manifest.json
       - uses: actions/upload-artifact@v4
         with:
           name: SHA256SUMS
@@ -110,6 +151,7 @@ jobs:
             dist/SHA256SUMS
             dist/SHA256SUMS.sig
             dist/root-keys.json
+            dist/*.manifest.json
           if-no-files-found: warn
 
       - name: Attach to Release
@@ -122,4 +164,5 @@ jobs:
             dist/SHA256SUMS
             dist/SHA256SUMS.sig
             dist/root-keys.json
+            dist/*.manifest.json
           fail_on_unmatched_files: false
