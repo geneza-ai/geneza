@@ -101,6 +101,11 @@ func (c *consoleAPI) handler() http.Handler {
 	// SPA swaps the returned single-use code for a session.
 	mux.HandleFunc("POST /openstack/{svc}", c.handleTrustedDashboard)
 	mux.HandleFunc("POST /api/v1/session/handoff", c.handleSessionHandoff)
+	// Portal console handoff: the same capability as trusted_dashboard, but minted
+	// server-to-server so a portal holding the keystone token server-side never has
+	// to publish it to its own DOM.
+	mux.HandleFunc("POST /openstack/{svc}/console", c.handlePortalConsoleMint)
+	mux.HandleFunc("GET /console-bind", c.handlePortalConsoleBind)
 	// Hosted-UI launch: the cloud's tenant portal mints a single-use, node-scoped
 	// URL (server-to-server, carrying the tenant's OWN keystone token); the embed
 	// page swaps the code for a scoped session.
