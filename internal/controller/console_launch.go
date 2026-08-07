@@ -36,9 +36,14 @@ import (
 const launchCookie = "geneza_launch"
 
 const (
-	// launchInstanceLabel / launchProjectLabel are the TRUSTED enrollment labels
-	// (vendordata.go stamps them from Nova's authoritative callback, not from
-	// anything the VM claimed — tenant hints live under the os.claim: namespace).
+	// launchInstanceLabel / launchProjectLabel are the TRUSTED enrollment labels:
+	// vendordata.go stamps them from Nova's authoritative callback, and the enroll
+	// path DROPS any os:-namespaced label an agent asserts (mergeEnrollLabels), so
+	// only enrollment evidence can set them. Tenant hints live under os.claim:.
+	//
+	// That drop is load-bearing, not hygiene: these two keys are the entire match
+	// for a hosted-UI launch, so an agent able to set os:instance would receive
+	// another VM's shell sessions.
 	launchInstanceLabel = "os:instance"
 	launchProjectLabel  = "os:project"
 )

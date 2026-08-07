@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -141,15 +142,7 @@ func (e *enrollmentService) Enroll(ctx context.Context, req *genezav1.EnrollRequ
 	if name == "" {
 		name = nodeID
 	}
-	// Provider labels override the agent's self-asserted labels: enrollment
-	// evidence (token/instance doc) is the more trusted source.
-	labels := make(map[string]string, len(req.GetLabels())+len(provLabels))
-	for k, v := range req.GetLabels() {
-		labels[k] = v
-	}
-	for k, v := range provLabels {
-		labels[k] = v
-	}
+	labels := mergeEnrollLabels(req.GetLabels(), provLabels)
 
 	certPEM, err := s.ca.IssueFromCSR(req.GetCsrPem(), ca.Profile{
 		Kind:      ca.KindNode,
@@ -243,4 +236,35 @@ func (e *enrollmentService) Enroll(ctx context.Context, req *genezav1.EnrollRequ
 		TrustAnchors:        anchors,
 		RoutineMap:          routineMap,
 	}, nil
+}
+
+// reservedLabelPrefix marks the label namespace that only ENROLLMENT EVIDENCE may
+// write: os:project and os:instance are what resolveLaunchNode matches a hosted-UI
+// launch on, and os:cloud names the trust root. vendordata.go fills them from Nova's
+// authoritative callback; a tenant hint belongs under os.claim: instead.
+const reservedLabelPrefix = "os:"
+
+// mergeEnrollLabels combines the agent's self-asserted labels with the provider's.
+//
+// Provider labels are enrollment EVIDENCE (a join token's pinned labels, or a
+// verified instance document) and are authoritative. The agent's are a convenience
+// and are not trusted, so a reserved-namespace key from the agent is DROPPED rather
+// than merely shadowed: letting the provider overwrite is not enough, because a
+// provider only sets the keys it knows. A plain join token pins no os: labels at
+// all, so an agent key like os:instance would otherwise survive untouched — and a
+// node wearing another VM's os:instance receives that VM's shell sessions.
+func mergeEnrollLabels(agent, provider map[string]string) map[string]string {
+	labels := make(map[string]string, len(agent)+len(provider))
+	for k, v := range agent {
+		if strings.HasPrefix(k, reservedLabelPrefix) {
+			slog.Warn("enroll: dropping agent-supplied reserved label",
+				"key", k, "reason", "only enrollment evidence may set the "+reservedLabelPrefix+" namespace")
+			continue
+		}
+		labels[k] = v
+	}
+	for k, v := range provider {
+		labels[k] = v
+	}
+	return labels
 }
