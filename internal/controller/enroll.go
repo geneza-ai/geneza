@@ -142,6 +142,13 @@ func (e *enrollmentService) Enroll(ctx context.Context, req *genezav1.EnrollRequ
 	if name == "" {
 		name = nodeID
 	}
+	// Cross-check the agent's own view of which instance it is against the one the
+	// enrollment evidence pinned. See crossCheckInstanceClaim: this only ever
+	// narrows, never grants.
+	if err := crossCheckInstanceClaim(req.GetLabels(), provLabels); err != nil {
+		return deny("instance claim mismatch: "+err.Error(),
+			status.Error(codes.PermissionDenied, "enrollment evidence does not match this machine"))
+	}
 	labels := mergeEnrollLabels(req.GetLabels(), provLabels)
 
 	certPEM, err := s.ca.IssueFromCSR(req.GetCsrPem(), ca.Profile{
@@ -267,4 +274,36 @@ func mergeEnrollLabels(agent, provider map[string]string) map[string]string {
 		labels[k] = v
 	}
 	return labels
+}
+
+// claimedInstanceLabel is where an agent reports what the OpenStack metadata
+// service told it about itself. It sits in the UNTRUSTED os.claim: namespace
+// because vanilla Nova metadata is unsigned plaintext (docs/openstack-integration.md
+// §3): reading it proves nothing to anyone but the reader, and a machine that is
+// not an OpenStack VM at all asserts it identically.
+const claimedInstanceLabel = "os.claim:instance"
+
+// crossCheckInstanceClaim refuses an enrollment whose evidence was minted for a
+// different instance than the machine believes itself to be.
+//
+// It is a NARROWING check, never a grant. The trusted os:instance still comes only
+// from enrollment evidence; this cannot create or change it. What it adds is a way
+// to catch a token being redeemed somewhere it was not issued for: the vendordata
+// path mints a single-use token keyed to one instance and hands it to Nova, which
+// delivers it into that one VM's metadata — so possession of that token is evidence
+// of BEING that VM. If the redeeming machine's own metadata says otherwise, the
+// token has moved, and the honest cases (it really is that VM) all agree.
+//
+// Silent when either side is absent: a plain operator-minted token pins no
+// instance, and a non-OpenStack machine claims none. Neither is suspicious, and
+// demanding a claim would break every bare-metal and non-OpenStack enrollment.
+func crossCheckInstanceClaim(agent, provider map[string]string) error {
+	pinned, claimed := provider[launchInstanceLabel], agent[claimedInstanceLabel]
+	if pinned == "" || claimed == "" {
+		return nil
+	}
+	if pinned != claimed {
+		return fmt.Errorf("evidence pins instance %s but the machine reports %s", pinned, claimed)
+	}
+	return nil
 }

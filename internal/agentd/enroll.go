@@ -89,6 +89,14 @@ func Enroll(ctx context.Context, log *slog.Logger, cfg *Config, opts EnrollOptio
 	for k, v := range opts.Labels {
 		labels[k] = v
 	}
+	// What the local OpenStack metadata service says this machine is. Reported in
+	// the untrusted os.claim: namespace so the controller can cross-check it against
+	// the instance its enrollment evidence was minted for; it can never become the
+	// trusted os:instance, which only enrollment evidence sets. Absent on anything
+	// that is not an OpenStack VM, which is not an error.
+	for k, v := range OpenStackClaims(ctx) {
+		labels[k] = v
+	}
 
 	if err := os.MkdirAll(cfg.StateDir, 0o700); err != nil {
 		return err
