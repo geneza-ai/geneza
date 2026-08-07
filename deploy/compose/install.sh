@@ -257,7 +257,10 @@ if [ "$IS_CONTROLLER" = 1 ]; then
   fi
   [ -n "$PUBLIC_IP" ] || PUBLIC_IP="127.0.0.1"
   # advertise + relay endpoints: localhost always works on-host; add the public face when given.
-  ADV_DNS="[localhost]"; [ -n "$SITE" ] && ADV_DNS="[localhost, $SITE]"
+  # The PUBLIC face goes FIRST: the controller's advertisedHost() takes dns_names[0]
+  # and embeds it in every enrollment code the console mints, so "localhost" in front
+  # hands each remote node an endpoint that resolves to itself.
+  ADV_DNS="[localhost]"; [ -n "$SITE" ] && ADV_DNS="[$SITE, localhost]"
   ADV_IPS="[127.0.0.1]"; [ "$PUBLIC_IP" != "127.0.0.1" ] && ADV_IPS="[127.0.0.1, $PUBLIC_IP]"
   # The relay's advertised address MUST be routable, never loopback: the controller's
   # own session-host runs in a container where 127.0.0.1 is ITS loopback, not the relay
@@ -450,7 +453,10 @@ $( [ -z "$SITE" ] && echo "    tls internal" )
 
     # Agent enrollment + updates, RFC 8628 device login is brokered by the console,
     # the OpenStack vendordata callback, and the one-line agent installer.
-    @api path /openstack/* /v1/* /install.sh
+    # ONLY the vendordata callback lives on :7402 — the other /openstack/* routes
+    # (POST /openstack/{svc} websso, POST /openstack/{svc}/launch) are registered on
+    # the CONSOLE mux, so a blanket /openstack/* here 404s the hosted-UI launch plane.
+    @api path /openstack/vendordata/* /v1/* /install.sh
     handle @api {
         reverse_proxy https://controller:7402 {
             transport http {
@@ -741,8 +747,18 @@ EOF
     ( cd "$DIR" && "${DC[@]}" run --rm -v "$DIR/generated/admin:/out" controller \
         issue-user-cert --config /etc/geneza/controller.yaml \
         --name admin --roles admin,platform-admin --ttl 168h --out-dir /out )
+    # `geneza node enroll` embeds THESE endpoints verbatim into the enrollment code
+    # it prints, so loopback here hands every remote node an endpoint that resolves
+    # to itself. Prefer the public face; the installer-fetch base is the TLS front
+    # (publicly-trusted, so curl on a bare host trusts it without a CA bundle).
+    PROFILE_GRPC="127.0.0.1:7401"; PROFILE_HTTP="https://127.0.0.1:7402"
+    if [ -n "$SITE" ]; then
+      PROFILE_GRPC="${SITE}:7401"; PROFILE_HTTP="https://${SITE}"
+    elif [ "$PUBLIC_IP" != "127.0.0.1" ]; then
+      PROFILE_GRPC="${PUBLIC_IP}:7401"; PROFILE_HTTP="https://${PUBLIC_IP}:7402"
+    fi
     cat > "$DIR/generated/admin/profile.json" <<EOF
-{ "controller_grpc": "127.0.0.1:7401", "controller_http": "https://127.0.0.1:7402" }
+{ "controller_grpc": "${PROFILE_GRPC}", "controller_http": "${PROFILE_HTTP}" }
 EOF
     chown -R "$NONROOT_UID:$NONROOT_UID" "$DIR/generated/admin"
   fi
