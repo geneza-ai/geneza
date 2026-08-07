@@ -218,7 +218,8 @@ func DialSession(ctx context.Context, api genezav1.WorkspaceAPIClient, pool *x50
 // does not strand the session. The single one-time relay_token pairs on whichever
 // answers. dialAddr, when set (the in-process web proxy dialing locally to avoid a
 // NAT hairpin), overrides the dial target for the first floor entry while its host
-// stays the TLS ServerName.
+// stays the TLS ServerName — and is retried against the grant's own address if that
+// override fails, since it is only ever an inference about where the relay lives.
 func dialRelayClient(ctx context.Context, pool *x509.CertPool, resp *genezav1.CreateSessionResponse, dialAddr string) (net.Conn, error) {
 	floor := relayFloor(resp)
 	if len(floor) == 0 || resp.GetRelayToken() == "" {
@@ -231,11 +232,27 @@ func dialRelayClient(ctx context.Context, pool *x509.CertPool, resp *genezav1.Cr
 			target = dialAddr // dial locally; ServerName stays the public relay host
 		}
 		raw, err := dialRelayFloorOnce(ctx, pool, addr, target, resp.GetRelayToken())
-		if err != nil {
-			lastErr = err
-			continue
+		if err == nil {
+			return raw, nil
 		}
-		return raw, nil
+		lastErr = err
+		// The local-dial override is an INFERENCE ("the relay is on this host, so it
+		// answers on loopback"), and it is wrong whenever the controller and the relay
+		// sit in separate network namespaces — the compose and Kubernetes deployments
+		// both do, where 127.0.0.1 is the controller container's own loopback. Falling
+		// back to the address the grant carries keeps the hairpin optimisation as a
+		// preference rather than a hard dependency: the grant address is reachable by
+		// construction, since every agent and native client already dials it.
+		var dialErr relayDialError
+		if target != addr && errors.As(err, &dialErr) {
+			slog.Debug("relay local-dial override unreachable; retrying the grant address",
+				"override", target, "grant", addr, "err", err)
+			raw, ferr := dialRelayFloorOnce(ctx, pool, addr, addr, resp.GetRelayToken())
+			if ferr == nil {
+				return raw, nil
+			}
+			lastErr = ferr
+		}
 	}
 	return nil, lastErr
 }
@@ -252,6 +269,16 @@ func relayFloor(resp *genezav1.CreateSessionResponse) []string {
 	return nil
 }
 
+// relayDialError marks a failure to REACH the relay — the TCP connect or the TLS
+// handshake, both of which happen before the hello is written. It is the exact
+// boundary at which another target may still be tried: once the hello lands, the
+// relay is holding a single-use rendezvous slot for that token and a second hello
+// is refused ("endpoint with this role already waiting"), so a retry past this
+// point would replace a real error with a confusing one.
+type relayDialError struct{ error }
+
+func (e relayDialError) Unwrap() error { return e.error }
+
 // dialRelayFloorOnce dials one relay floor address (host names its cert SAN /
 // ServerName, target is where the TCP connect goes) and completes the initiator
 // rendezvous. Closes the conn on any failure.
@@ -267,7 +294,7 @@ func dialRelayFloorOnce(ctx context.Context, pool *x509.CertPool, host, target, 
 	}}
 	raw, err := dialer.DialContext(ctx, "tcp", target)
 	if err != nil {
-		return nil, fmt.Errorf("relay connect %s: %w", target, err)
+		return nil, relayDialError{fmt.Errorf("relay connect %s: %w", target, err)}
 	}
 	if err := wire.WriteJSON(raw, wire.RelayHello{V: 1, Token: token, Role: wire.RoleInitiator}); err != nil {
 		raw.Close()

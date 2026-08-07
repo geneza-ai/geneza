@@ -70,6 +70,13 @@ func (s *Server) localRelayAddr() string {
 	// which reads like the relay is down rather than like the controller dialled
 	// the wrong machine. Empty means "no override": use the address the grant
 	// carries, which is the relay's real one.
+	//
+	// "Same host" is NOT the same as "same network namespace": under compose and
+	// Kubernetes the controller and the relay are colocated by this test yet
+	// 127.0.0.1 is the controller CONTAINER's loopback, so the override points at
+	// nothing. dialRelayClient therefore treats the override as a preference and
+	// retries the grant address when it fails — this stays a latency optimisation
+	// and never a correctness dependency.
 	if !s.relayColocated(host) {
 		return ""
 	}
