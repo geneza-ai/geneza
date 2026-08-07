@@ -133,11 +133,11 @@ func TestAQuietSyncAdvancesTheWatermarkInsteadOfResettingIt(t *testing.T) {
 	}
 }
 
-// An interrupted drain must not advance the feed watermark (that would skip the
-// unprocessed packages forever) and must resume where it stopped rather than
-// redoing the window — the difference between a fleet that eventually gets
-// verdicts and one that never does.
-func TestInterruptedRematchResumesAndWithholdsTheWatermark(t *testing.T) {
+// An interrupted drain must resume where it stopped rather than redoing the window
+// — the difference between a fleet that eventually gets verdicts and one that
+// restarts the same work forever. The queue, not the feed watermark, is what
+// durably remembers the outstanding match.
+func TestInterruptedRematchResumesInsteadOfLosingWork(t *testing.T) {
 	srv, _ := rematchTestServer(t, map[string]string{
 		"openssl.json": `{
 			"id": "USN-1", "modified": "2024-01-01T00:00:00Z", "aliases": ["CVE-2022-0778"],
@@ -175,9 +175,6 @@ func TestInterruptedRematchResumesAndWithholdsTheWatermark(t *testing.T) {
 	}
 	if len(srv.loadRematchQueue().Pending) != 2 {
 		t.Fatalf("cancelled before any work, but the queue lost entries: %+v", srv.loadRematchQueue())
-	}
-	if got := srv.vulnSyncWatermark(); !got.IsZero() {
-		t.Fatalf("watermark advanced past unprocessed packages: %v", got)
 	}
 
 	// Resume: the same queue drains to completion and the verdict lands.
@@ -225,5 +222,69 @@ func TestEveryConfiguredFeedReportsChangedPackages(t *testing.T) {
 		if _, ok := feed.(changedFeed); !ok {
 			t.Fatalf("%s: %T does not report changed packages, so nothing is ever re-matched", source, feed)
 		}
+	}
+}
+
+// countingFeed wraps a feed and counts Sync calls.
+type countingFeed struct {
+	vulnfeed.Feed
+	syncs int
+}
+
+func (c *countingFeed) Sync(ctx context.Context, since time.Time) (int, error) {
+	c.syncs++
+	return c.Feed.Sync(ctx, since)
+}
+
+func (c *countingFeed) ChangedPackages() []vulnfeed.Package {
+	if cf, ok := c.Feed.(changedFeed); ok {
+		return cf.ChangedPackages()
+	}
+	return nil
+}
+
+// A tick that still has queued re-match work must DRAIN, not re-fetch. The
+// advisories are already stored; only the match is outstanding. Re-fetching each
+// tick re-downloads the entire feed for as long as the backlog takes to drain —
+// on a first OSV sync that is hours of redundant transfer, and it is invisible
+// because the rows land in the store either way.
+func TestATickWithQueuedWorkDrainsInsteadOfRefetching(t *testing.T) {
+	srv, _ := rematchTestServer(t, nil)
+	cf := &countingFeed{Feed: srv.inventoryFeed}
+	srv.inventoryFeed = cf
+
+	// Tick 1: empty queue, so it fetches.
+	srv.syncAndRematch(context.Background())
+	if cf.syncs != 1 {
+		t.Fatalf("first tick did not fetch: syncs=%d", cf.syncs)
+	}
+
+	// Queue work by hand (as a large first sync would have), then tick again.
+	if _, err := srv.enqueueRematch([]vulnfeed.Package{
+		{Ecosystem: "npm", Name: "lodash"},
+	}, 1); err != nil {
+		t.Fatal(err)
+	}
+	// A cancelled context leaves the item queued, so the queue is still non-empty
+	// on the next tick — the state a partially-drained backlog is in.
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	srv.syncAndRematch(cancelled)
+	if cf.syncs != 1 {
+		t.Fatalf("a tick with %d queued packages re-fetched the feed (syncs=%d)",
+			len(srv.loadRematchQueue().Pending), cf.syncs)
+	}
+	if len(srv.loadRematchQueue().Pending) == 0 {
+		t.Fatal("test setup: the queue drained, so nothing was proven")
+	}
+
+	// Once it drains, fetching resumes.
+	srv.syncAndRematch(context.Background())
+	if len(srv.loadRematchQueue().Pending) != 0 {
+		t.Fatalf("queue did not drain: %+v", srv.loadRematchQueue())
+	}
+	srv.syncAndRematch(context.Background())
+	if cf.syncs != 2 {
+		t.Fatalf("fetching did not resume after the queue drained: syncs=%d", cf.syncs)
 	}
 }

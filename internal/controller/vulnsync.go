@@ -201,7 +201,16 @@ func (s *Server) runVulnSync(ctx context.Context) {
 			return
 		case <-t.C:
 			s.vulnSyncTick(ctx)
-			t.Reset(interval)
+			// A first sync leaves far more re-match work than one tick's budget can
+			// drain. Coming back on the FULL interval would leave the fleet without
+			// verdicts for hours while a full queue sat there, so keep working at a
+			// short cadence until it empties. Those follow-up ticks skip the fetch:
+			// the advisories are already stored, what is outstanding is the match.
+			next := interval
+			if len(s.loadRematchQueue().Pending) > 0 {
+				next = rematchDrainInterval
+			}
+			t.Reset(next)
 		}
 	}
 }
@@ -254,6 +263,22 @@ func (s *Server) vulnSyncTick(ctx context.Context) {
 // re-syncs the same window next tick — but the queue keeps what it already did, so
 // "re-sync the window" costs a feed fetch, not the whole re-match again.
 func (s *Server) syncAndRematch(ctx context.Context) (fetched, rematched int) {
+	// Outstanding re-match work means the advisories are already stored and only the
+	// match is owed, so skip the fetch entirely and spend the tick draining. Without
+	// this a big backlog re-downloads the whole feed on every tick for as long as it
+	// takes to drain — hours of redundant transfer, because the watermark cannot
+	// move while work remains.
+	if len(s.loadRematchQueue().Pending) > 0 {
+		w, _, err := s.drainRematchQueue(ctx, s.inventoryVEX)
+		if err != nil {
+			slog.Warn("vuln sync: re-match", "err", err)
+			s.setVulnSyncLastError(err.Error())
+		} else {
+			s.setVulnSyncLastError("")
+		}
+		return 0, w
+	}
+
 	since := s.vulnSyncWatermark()
 	startedUnix := time.Now().Unix()
 	n, err := s.inventoryFeed.Sync(ctx, since)
@@ -272,24 +297,22 @@ func (s *Server) syncAndRematch(ctx context.Context) (fetched, rematched int) {
 			return n, 0
 		}
 	}
-	w, drained, err := s.drainRematchQueue(ctx, s.inventoryVEX)
+	// The watermark records what has been FETCHED, and the fetch just succeeded, so
+	// it advances now — the outstanding re-match is the queue's job to remember, and
+	// the queue is persisted. Holding the watermark back for it too would be double
+	// bookkeeping that costs a full re-download of data already in the store.
+	if err := s.setVulnSyncWatermark(startedUnix); err != nil {
+		slog.Warn("vuln sync: persist watermark", "err", err)
+		s.setVulnSyncLastError(err.Error())
+		return n, 0
+	}
+	w, _, err := s.drainRematchQueue(ctx, s.inventoryVEX)
 	if err != nil {
 		slog.Warn("vuln sync: re-match", "err", err)
 		s.setVulnSyncLastError(err.Error())
 		return n, w
 	}
 	s.setVulnSyncLastError("")
-	if !drained {
-		return n, w
-	}
-	// The cursor is the moment this sync STARTED, not the queue's candidate: a feed
-	// that does not report changed advisories never writes a queue, and reading the
-	// watermark back from an absent queue would reset it to zero and re-sync the
-	// whole feed on every tick.
-	if err := s.setVulnSyncWatermark(startedUnix); err != nil {
-		slog.Warn("vuln sync: persist watermark", "err", err)
-		s.setVulnSyncLastError(err.Error())
-	}
 	return n, w
 }
 

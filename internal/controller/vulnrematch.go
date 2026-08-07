@@ -47,6 +47,12 @@ const rematchChunk = 25
 // Whatever is left stays queued for the next tick.
 const rematchBudget = 2 * time.Minute
 
+// rematchDrainInterval is how soon the chore comes back while the queue still has
+// work. A first full OSV sync queues far more than one budget can drain, and
+// waiting the whole sync interval between attempts would leave the fleet with a
+// complete advisory store and no verdicts for hours.
+const rematchDrainInterval = time.Minute
+
 // rematchQueue is the persisted work list. Pending keys are "<ecosystem>\x00<name>".
 type rematchQueue struct {
 	// Watermark is the candidate feed cursor: it is written to
@@ -155,9 +161,18 @@ func (s *Server) drainRematchQueue(ctx context.Context, vex engine.VEXSource) (w
 		}
 	}
 	drained = len(q.Pending) == 0
-	if !drained {
+	// Say something whenever real work happened. A drain that matches 200k packages
+	// and writes no verdicts (a fleet whose inventory simply does not carry those
+	// packages) is the common case, and reporting only the verdict count made it
+	// indistinguishable from an idle controller for minutes at a time.
+	switch {
+	case !drained:
 		slog.Info("vuln sync: re-match paused with work remaining",
-			"component", "vulnsync", "done", start-len(q.Pending), "remaining", len(q.Pending))
+			"component", "vulnsync", "done", start-len(q.Pending), "remaining", len(q.Pending),
+			"verdicts", written)
+	case start > 0:
+		slog.Info("vuln sync: re-match complete",
+			"component", "vulnsync", "packages", start, "verdicts", written)
 	}
 	return written, drained, nil
 }
