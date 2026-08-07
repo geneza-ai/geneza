@@ -779,6 +779,13 @@ service WorkspaceAPI {
   // workspace; ApproveNode gates admission; RemoveNode decommissions.
   rpc CreateJoinToken(CreateJoinTokenRequest) returns (CreateJoinTokenResponse);
   rpc ApproveNode(ApproveNodeRequest) returns (Empty);
+  // RebaselineNode blesses the binary a node is CURRENTLY running as its new
+  // measurement baseline. It is the escape hatch for a legitimate out-of-band
+  // agent update: re-approval alone cannot fix that, because the baseline is
+  // deliberately preserved across it, so the node re-quarantines on its next
+  // beat forever. Explicit, reason-required and audited under its own type, so
+  // blessing an unverified binary is never mistaken for an ordinary approval.
+  rpc RebaselineNode(RebaselineNodeRequest) returns (RebaselineNodeResponse);
   rpc RemoveNode(RemoveNodeRequest) returns (Empty);
   // RevokeSession force-terminates one of this workspace's live sessions ("kick").
   rpc RevokeSession(RevokeSessionRequest) returns (Empty);
@@ -1314,6 +1321,22 @@ message ApproveNodeRequest {
   // never a bare unexplained click. Optional for a first approval of a pending
   // node.
   string reason = 3;
+}
+
+message RebaselineNodeRequest {
+  string node = 1;    // node id or name
+  // reason is mandatory and recorded verbatim: this accepts a binary the
+  // controller never published, so the audit trail must carry why.
+  string reason = 2;
+  // expect_hash optionally pins WHICH measurement is being blessed (hex sha256).
+  // When set it must equal the node's latest reported hash, so an admin acting on
+  // a stale console view cannot bless a binary that changed underneath them.
+  string expect_hash = 3;
+}
+
+message RebaselineNodeResponse {
+  string binary_hash = 1;  // hex sha256 now pinned as the baseline
+  bool approved = 2;       // whether the node was returned to service
 }
 
 message RemoveNodeRequest {

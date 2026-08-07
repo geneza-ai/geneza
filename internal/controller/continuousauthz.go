@@ -19,6 +19,18 @@ import (
 // to InvalidArgument / 400.
 var errReasonRequired = errors.New("a reason is required to re-approve a quarantined node")
 
+// Rebaseline outcomes each surface maps to its own status code. Kept as sentinels
+// for the same reason as errReasonRequired: this layer must not import gRPC.
+var (
+	// errRebaselineReason: blessing an unpublished binary is never a bare click.
+	errRebaselineReason = errors.New("a reason is required: this blesses a binary the controller never published")
+	// errNoMeasurement: nothing to bless yet, and pinning an empty hash would
+	// silently disable drift detection for the node.
+	errNoMeasurement = errors.New("node has not reported a binary measurement yet")
+	// errMeasurementChanged: the admin confirmed a hash the node no longer runs.
+	errMeasurementChanged = errors.New("the node's reported binary changed since you confirmed it")
+)
+
 // Continuous authorization: re-evaluate every in-flight session against the
 // CURRENT policy on a tick, and revoke (tear down over the control channel) any
 // that are no longer permitted. This turns Geneza from per-session zero trust
@@ -738,4 +750,69 @@ func (s *Server) revokeUserInWorkspace(ws, user, reason string) (int, error) {
 		}
 	}
 	return n, nil
+}
+
+// rebaselineNode accepts the binary a node is CURRENTLY running as its blessed
+// measurement baseline and returns it to service. It is the single entrypoint
+// shared by the gRPC WorkspaceAPI and the console, so both surfaces enforce the
+// same guards and write the same audit record.
+//
+// This is the ONLY path that moves ApprovedBinaryHash without a
+// controller-published release, and it exists because otherwise there is none:
+// re-approval preserves the baseline by design, so a node whose agent was updated
+// out of band re-quarantines on its next beat, forever, behind a re-approve button
+// that appears to work and silently undoes itself seconds later.
+//
+// The blessed hash is the node's OWN last reported measurement, never a
+// caller-supplied one — an admin may say "the binary this node is running is
+// fine", not "pretend it is running this". expectHash optionally pins WHICH
+// measurement is being blessed, so an admin acting on a stale view cannot bless
+// something that changed underneath them.
+func (s *Server) rebaselineNode(ws, nodeRef, reason, expectHash, by string) (hash string, approved bool, err error) {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return "", false, errRebaselineReason
+	}
+	node, err := s.store.FindNode(ws, nodeRef)
+	if err != nil {
+		return "", false, err
+	}
+	if len(node.LastBinaryHash) == 0 {
+		return "", false, errNoMeasurement
+	}
+	measured := hex.EncodeToString(node.LastBinaryHash)
+	if want := strings.TrimSpace(expectHash); want != "" && !strings.EqualFold(want, measured) {
+		return "", false, fmt.Errorf("%w: it reports %s, you confirmed %s", errMeasurementChanged, measured, want)
+	}
+	// createdUnix 0: a binary the controller never published has no release
+	// ordering, so there is no anti-rollback floor to enforce against it. A later
+	// move to a published release re-establishes one through the normal verdict.
+	if err := s.store.RepinBaseline(ws, node.ID, node.LastBinaryHash, 0); err != nil {
+		return "", false, fmt.Errorf("repin baseline: %w", err)
+	}
+	// Loudly, and under its OWN type: this must never read as a routine approval
+	// when someone reviews the trail later.
+	if aerr := s.audit.AppendWS(ws, "node_rebaselined", by, node.ID, "", map[string]string{
+		"binary_hash":   measured,
+		"previous_hash": hex.EncodeToString(node.ApprovedBinaryHash),
+		"reason":        reason,
+	}); aerr != nil {
+		return "", false, fmt.Errorf("audit append: %w", aerr)
+	}
+	slog.Warn("node binary re-baselined by an admin (unpublished binary accepted)",
+		"node", node.ID, "hash", measured, "by", by, "reason", reason)
+
+	// Return it to service in the same call: the baseline was the thing keeping it
+	// out, and leaving the operator to guess that a second, differently-named
+	// action is still required is how the re-approve button misleads today.
+	approved = node.Approved
+	if !approved {
+		if err := s.approveNodeWithReason(ws, node, true, "rebaseline: "+reason, by); err != nil {
+			// The baseline moved and is audited; report the partial outcome rather
+			// than implying nothing happened.
+			return measured, false, fmt.Errorf("baseline re-pinned but re-approval failed: %w", err)
+		}
+		approved = true
+	}
+	return measured, approved, nil
 }

@@ -493,6 +493,7 @@ const (
 	WorkspaceAPI_ListWorkspaceCVEs_FullMethodName      = "/geneza.v1.WorkspaceAPI/ListWorkspaceCVEs"
 	WorkspaceAPI_CreateJoinToken_FullMethodName        = "/geneza.v1.WorkspaceAPI/CreateJoinToken"
 	WorkspaceAPI_ApproveNode_FullMethodName            = "/geneza.v1.WorkspaceAPI/ApproveNode"
+	WorkspaceAPI_RebaselineNode_FullMethodName         = "/geneza.v1.WorkspaceAPI/RebaselineNode"
 	WorkspaceAPI_RemoveNode_FullMethodName             = "/geneza.v1.WorkspaceAPI/RemoveNode"
 	WorkspaceAPI_RevokeSession_FullMethodName          = "/geneza.v1.WorkspaceAPI/RevokeSession"
 	WorkspaceAPI_QueryAudit_FullMethodName             = "/geneza.v1.WorkspaceAPI/QueryAudit"
@@ -570,6 +571,13 @@ type WorkspaceAPIClient interface {
 	// workspace; ApproveNode gates admission; RemoveNode decommissions.
 	CreateJoinToken(ctx context.Context, in *CreateJoinTokenRequest, opts ...grpc.CallOption) (*CreateJoinTokenResponse, error)
 	ApproveNode(ctx context.Context, in *ApproveNodeRequest, opts ...grpc.CallOption) (*Empty, error)
+	// RebaselineNode blesses the binary a node is CURRENTLY running as its new
+	// measurement baseline. It is the escape hatch for a legitimate out-of-band
+	// agent update: re-approval alone cannot fix that, because the baseline is
+	// deliberately preserved across it, so the node re-quarantines on its next
+	// beat forever. Explicit, reason-required and audited under its own type, so
+	// blessing an unverified binary is never mistaken for an ordinary approval.
+	RebaselineNode(ctx context.Context, in *RebaselineNodeRequest, opts ...grpc.CallOption) (*RebaselineNodeResponse, error)
 	RemoveNode(ctx context.Context, in *RemoveNodeRequest, opts ...grpc.CallOption) (*Empty, error)
 	// RevokeSession force-terminates one of this workspace's live sessions ("kick").
 	RevokeSession(ctx context.Context, in *RevokeSessionRequest, opts ...grpc.CallOption) (*Empty, error)
@@ -773,6 +781,16 @@ func (c *workspaceAPIClient) ApproveNode(ctx context.Context, in *ApproveNodeReq
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(Empty)
 	err := c.cc.Invoke(ctx, WorkspaceAPI_ApproveNode_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *workspaceAPIClient) RebaselineNode(ctx context.Context, in *RebaselineNodeRequest, opts ...grpc.CallOption) (*RebaselineNodeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RebaselineNodeResponse)
+	err := c.cc.Invoke(ctx, WorkspaceAPI_RebaselineNode_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -989,6 +1007,13 @@ type WorkspaceAPIServer interface {
 	// workspace; ApproveNode gates admission; RemoveNode decommissions.
 	CreateJoinToken(context.Context, *CreateJoinTokenRequest) (*CreateJoinTokenResponse, error)
 	ApproveNode(context.Context, *ApproveNodeRequest) (*Empty, error)
+	// RebaselineNode blesses the binary a node is CURRENTLY running as its new
+	// measurement baseline. It is the escape hatch for a legitimate out-of-band
+	// agent update: re-approval alone cannot fix that, because the baseline is
+	// deliberately preserved across it, so the node re-quarantines on its next
+	// beat forever. Explicit, reason-required and audited under its own type, so
+	// blessing an unverified binary is never mistaken for an ordinary approval.
+	RebaselineNode(context.Context, *RebaselineNodeRequest) (*RebaselineNodeResponse, error)
 	RemoveNode(context.Context, *RemoveNodeRequest) (*Empty, error)
 	// RevokeSession force-terminates one of this workspace's live sessions ("kick").
 	RevokeSession(context.Context, *RevokeSessionRequest) (*Empty, error)
@@ -1070,6 +1095,9 @@ func (UnimplementedWorkspaceAPIServer) CreateJoinToken(context.Context, *CreateJ
 }
 func (UnimplementedWorkspaceAPIServer) ApproveNode(context.Context, *ApproveNodeRequest) (*Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method ApproveNode not implemented")
+}
+func (UnimplementedWorkspaceAPIServer) RebaselineNode(context.Context, *RebaselineNodeRequest) (*RebaselineNodeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RebaselineNode not implemented")
 }
 func (UnimplementedWorkspaceAPIServer) RemoveNode(context.Context, *RemoveNodeRequest) (*Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method RemoveNode not implemented")
@@ -1392,6 +1420,24 @@ func _WorkspaceAPI_ApproveNode_Handler(srv interface{}, ctx context.Context, dec
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(WorkspaceAPIServer).ApproveNode(ctx, req.(*ApproveNodeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WorkspaceAPI_RebaselineNode_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RebaselineNodeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkspaceAPIServer).RebaselineNode(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkspaceAPI_RebaselineNode_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkspaceAPIServer).RebaselineNode(ctx, req.(*RebaselineNodeRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1724,6 +1770,10 @@ var WorkspaceAPI_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ApproveNode",
 			Handler:    _WorkspaceAPI_ApproveNode_Handler,
+		},
+		{
+			MethodName: "RebaselineNode",
+			Handler:    _WorkspaceAPI_RebaselineNode_Handler,
 		},
 		{
 			MethodName: "RemoveNode",

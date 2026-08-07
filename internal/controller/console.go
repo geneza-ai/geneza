@@ -138,6 +138,7 @@ func (c *consoleAPI) handler() http.Handler {
 	mux.Handle("DELETE /api/v1/funnels/{hostname}", c.authAdmin(c.handleDeleteFunnel))
 	mux.Handle("DELETE /api/v1/sessions/{id}", c.authAdmin(c.handleRevokeSession))
 	mux.Handle("POST /api/v1/nodes/{id}/approve", c.authAdmin(c.handleApproveNode))
+	mux.Handle("POST /api/v1/nodes/{id}/rebaseline", c.authAdmin(c.handleRebaselineNode))
 	mux.Handle("DELETE /api/v1/nodes/{id}", c.authAdmin(c.handleRemoveNode))
 	// Monitoring: Prometheus-shaped query API (any role) + per-node module toggle (admin).
 	mux.Handle("GET /api/v1/metrics/query", c.auth(c.handleMetricsQuery))
@@ -439,6 +440,7 @@ func (c *consoleAPI) certHandler() http.Handler {
 	mux.Handle("POST /api/v1/tokens", c.certAuthAdmin(c.handleMintToken))
 	mux.Handle("DELETE /api/v1/sessions/{id}", c.certAuthAdmin(c.handleRevokeSession))
 	mux.Handle("POST /api/v1/nodes/{id}/approve", c.certAuthAdmin(c.handleApproveNode))
+	mux.Handle("POST /api/v1/nodes/{id}/rebaseline", c.certAuthAdmin(c.handleRebaselineNode))
 	mux.Handle("DELETE /api/v1/nodes/{id}", c.certAuthAdmin(c.handleRemoveNode))
 	mux.Handle("PUT /api/v1/nodes/{id}/modules", c.certAuthAdmin(c.handleSetNodeModules))
 	return secHeaders(mux)
@@ -989,6 +991,33 @@ func (c *consoleAPI) handleRevokeSession(w http.ResponseWriter, r *http.Request,
 
 // handleApproveNode flips a machine's admission gate from the console (admin).
 // Body: {"approve": true|false}.
+// handleRebaselineNode blesses the binary a node is currently running.
+//
+// It is a SEPARATE action from approve on purpose. Approve cannot resolve a
+// binary-drift quarantine — the baseline is preserved across it — so offering
+// only approve is what makes the console appear to fix the node for one sweep
+// and then silently re-quarantine it.
+func (c *consoleAPI) handleRebaselineNode(w http.ResponseWriter, r *http.Request, u *consoleUser) {
+	var body struct {
+		Reason     string `json:"reason"`
+		ExpectHash string `json:"expectHash"`
+	}
+	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body)
+	hash, approved, err := c.s.rebaselineNode(u.Workspace, r.PathValue("id"), body.Reason, body.ExpectHash, "console:"+u.Name)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrNotFound):
+			writeErr(w, http.StatusNotFound, "node not found")
+		case errors.Is(err, errRebaselineReason), errors.Is(err, errNoMeasurement), errors.Is(err, errMeasurementChanged):
+			writeErr(w, http.StatusBadRequest, err.Error())
+		default:
+			writeErr(w, http.StatusInternalServerError, "rebaseline")
+		}
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true, "binaryHash": hash, "approved": approved})
+}
+
 func (c *consoleAPI) handleApproveNode(w http.ResponseWriter, r *http.Request, u *consoleUser) {
 	id := r.PathValue("id")
 	node, err := c.s.store.FindNode(u.Workspace, id)

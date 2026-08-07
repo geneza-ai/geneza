@@ -230,6 +230,17 @@ export const api = {
       {},
       { approve, reason }
     ),
+  // Blesses the binary the node is CURRENTLY running as its new measurement
+  // baseline and returns it to service. Distinct from approveNode on purpose:
+  // approval preserves the old baseline, so it cannot resolve a binary-drift
+  // quarantine — the node simply re-quarantines on the next sweep.
+  rebaselineNode: (id: string, reason: string, expectHash?: string) =>
+    request<{ ok: boolean; binaryHash: string; approved: boolean }>(
+      "POST",
+      `/nodes/${encodeURIComponent(id)}/rebaseline`,
+      {},
+      { reason, expectHash }
+    ),
   removeNode: (id: string) =>
     request<{ ok: boolean }>("DELETE", `/nodes/${encodeURIComponent(id)}`),
 

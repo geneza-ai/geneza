@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -26,6 +27,7 @@ func newNodeCmd() *cobra.Command {
 		newNodeEnrollCmd(),
 		newNodeApproveCmd(),
 		newNodeQuarantineCmd(),
+		newNodeRebaselineCmd(),
 		newNodeRetireCmd(),
 		newNodePendingCmd(),
 		newNodeMonitorCmd(),
@@ -177,6 +179,60 @@ func newNodeQuarantineCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&reason, "reason", "", "reason for the manual quarantine (recorded in the audit log)")
+	return cmd
+}
+
+// newNodeRebaselineCmd builds `geneza node rebaseline NODE` — accept the binary
+// the node is currently running as its blessed baseline.
+//
+// It exists because `approve` cannot resolve a drift quarantine: the baseline is
+// deliberately preserved across re-approval, so an out-of-band agent update
+// re-quarantines on the next beat and `approve` looks like it worked for about
+// fifteen seconds. This is the deliberate, audited way to say "I checked this
+// binary myself".
+func newNodeRebaselineCmd() *cobra.Command {
+	var reason, expect string
+	cmd := &cobra.Command{
+		Use:   "rebaseline NODE",
+		Short: "Bless the binary a node is currently running (resolves a binary_tamper quarantine)",
+		Long: "Accept the node's CURRENT self-measured binary as its new blessed baseline and\n" +
+			"return it to service.\n\n" +
+			"Use this only for a binary you updated out of band and have verified yourself:\n" +
+			"it accepts a build the controller never published, which is exactly what the\n" +
+			"drift detector is there to catch. --reason is recorded verbatim in the audit\n" +
+			"log under its own event type. Pass --expect-hash to pin which measurement you\n" +
+			"are blessing, so a stale view cannot bless something that changed since.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if strings.TrimSpace(reason) == "" {
+				return fmt.Errorf("--reason is required: this accepts a binary the controller never published")
+			}
+			e, err := loadEnv()
+			if err != nil {
+				return err
+			}
+			cc, api, _, err := dialUser(e)
+			if err != nil {
+				return err
+			}
+			defer cc.Close()
+			ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
+			defer cancel()
+			resp, err := api.RebaselineNode(ctx, &genezav1.RebaselineNodeRequest{
+				Node: args[0], Reason: reason, ExpectHash: expect,
+			})
+			if err != nil {
+				return client.Humanize(err)
+			}
+			fmt.Printf("re-baselined %s to %s\n", args[0], resp.GetBinaryHash())
+			if resp.GetApproved() {
+				fmt.Println("node returned to service")
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&reason, "reason", "", "human justification, recorded verbatim in the audit log (required)")
+	cmd.Flags().StringVar(&expect, "expect-hash", "", "only bless this exact hex sha256 (guards against a stale view)")
 	return cmd
 }
 

@@ -123,6 +123,47 @@ func (a *workspaceAPIService) ApproveNode(ctx context.Context, req *genezav1.App
 	return &genezav1.Empty{}, nil
 }
 
+// RebaselineNode accepts the binary a node is CURRENTLY running as its blessed
+// measurement baseline, then returns the node to service.
+//
+// This is the one path that can move ApprovedBinaryHash without a
+// controller-published release, and it exists because otherwise there is none:
+// re-approval preserves the baseline by design, so a node whose agent was updated
+// out of band re-quarantines on its next beat, forever, with a re-approve button
+// that appears to work and silently undoes itself seconds later.
+//
+// The blessed hash is the node's OWN last reported measurement, never a
+// caller-supplied one — an admin may say "the binary this node is running is
+// fine", not "pretend it is running this". expect_hash lets a caller pin which
+// measurement they are blessing so a stale console view cannot bless something
+// that changed underneath them.
+func (a *workspaceAPIService) RebaselineNode(ctx context.Context, req *genezav1.RebaselineNodeRequest) (*genezav1.RebaselineNodeResponse, error) {
+	if err := requireWSAdmin(ctx); err != nil {
+		return nil, err
+	}
+	ws := actorWorkspace(ctx)
+	hash, approved, err := a.s.rebaselineNode(ws, req.GetNode(), req.GetReason(), req.GetExpectHash(), adminActor(ctx))
+	if err != nil {
+		return nil, rebaselineStatus(err)
+	}
+	return &genezav1.RebaselineNodeResponse{BinaryHash: hash, Approved: approved}, nil
+}
+
+// rebaselineStatus maps the rebaseline sentinels onto gRPC codes at the API
+// boundary, so the domain layer stays free of transport types.
+func rebaselineStatus(err error) error {
+	switch {
+	case errors.Is(err, errRebaselineReason):
+		return status.Error(codes.InvalidArgument, err.Error())
+	case errors.Is(err, ErrNotFound):
+		return status.Error(codes.NotFound, "node not found")
+	case errors.Is(err, errNoMeasurement), errors.Is(err, errMeasurementChanged):
+		return status.Error(codes.FailedPrecondition, err.Error())
+	default:
+		return status.Errorf(codes.Internal, "rebaseline: %v", err)
+	}
+}
+
 // requirePlatformAdmin gates hub-graph mutations (bindings, cloud registration)
 // on the platform-admin role: cross-tenant authority that must be strictly above
 // a per-deployment admin and is issued only out-of-band. An IdP/policy-granted
