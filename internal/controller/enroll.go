@@ -150,6 +150,26 @@ func (e *enrollmentService) Enroll(ctx context.Context, req *genezav1.EnrollRequ
 		return deny("instance claim mismatch: "+err.Error(),
 			status.Error(codes.PermissionDenied, "enrollment evidence does not match this machine"))
 	}
+	// An instance-pinned token auto-approves only if the machine redeeming it proves
+	// it IS that instance. The token names a VM but is still a bearer credential:
+	// whoever holds it could redeem it anywhere, and that machine would inherit the
+	// verified labels and so receive the named VM's shell sessions.
+	//
+	// crossCheckInstanceClaim already refuses a machine that claims a DIFFERENT
+	// instance, so what reaches here is a machine that claims nothing — bare metal,
+	// or somewhere the metadata service and config drive are both unavailable. That
+	// is not proof of anything, so it lands PENDING for a human to look at rather
+	// than being refused outright, since a legitimate VM can end up there.
+	if autoApprove && provLabels[launchInstanceLabel] != "" &&
+		req.GetLabels()[claimedInstanceLabel] != provLabels[launchInstanceLabel] {
+		autoApprove = false
+		slog.Warn("instance-pinned token redeemed by a machine that cannot prove it is that instance; forcing pending",
+			"instance", provLabels[launchInstanceLabel], "claimed", req.GetLabels()[claimedInstanceLabel])
+		_ = s.audit.Append("enroll_unproven_instance", provider.Name(), "", "", map[string]string{
+			"instance": provLabels[launchInstanceLabel],
+			"claimed":  req.GetLabels()[claimedInstanceLabel],
+		})
+	}
 	labels := mergeEnrollLabels(req.GetLabels(), provLabels)
 	// One live node per OpenStack instance: these labels are what routes a launch,
 	// so two nodes wearing the same one is an ambiguity resolved by store order.

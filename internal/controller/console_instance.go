@@ -210,9 +210,20 @@ func (c *consoleAPI) handleInstanceEnrollToken(w http.ResponseWriter, r *http.Re
 		ttl = time.Hour
 	}
 	expires := time.Now().Add(ttl).Unix()
+	// Auto-approve, unlike the plain operator-minted token that inherits the cloud's
+	// setting. The evidence here is stronger than a bearer token: Nova confirmed,
+	// against the caller's own credential, that this instance exists and is theirs.
+	// Requiring an operator to then approve their own VM would leave the customer
+	// having run the command and still unable to open a shell, which is the whole
+	// point of the flow.
+	//
+	// It is not unconditional: the enroll path downgrades this to PENDING unless the
+	// machine redeeming the token proves it is the instance the token names (see
+	// the auto-approve gate in Enroll). So the admission decision follows how well
+	// the redeemer can prove possession, not merely who minted it.
 	if err := c.s.store.PutToken(token, &TokenRecord{
 		WorkspaceID: v.Workspace, Labels: labels, ExpiresUnix: expires,
-		MaxUses: 1, AutoApprove: cl.AutoApprove,
+		MaxUses: 1, AutoApprove: true,
 	}); err != nil {
 		writeErr(w, http.StatusInternalServerError, "store token")
 		return
