@@ -109,6 +109,10 @@ func (c *consoleAPI) handler() http.Handler {
 	// Hosted-UI launch: the cloud's tenant portal mints a single-use, node-scoped
 	// URL (server-to-server, carrying the tenant's OWN keystone token); the embed
 	// page swaps the code for a scoped session.
+	// Tenant-driven enrollment: is this instance enrolled, and mint a join token for
+	// it. The instance is verified against Nova with the CALLER own token.
+	mux.HandleFunc("POST /openstack/{svc}/instance-status", c.handleInstanceStatus)
+	mux.HandleFunc("POST /openstack/{svc}/enroll-token", c.handleInstanceEnrollToken)
 	mux.HandleFunc("POST /openstack/{svc}/launch", c.handleLaunchMint)
 	mux.HandleFunc("GET /launch", c.handleLaunchBind)
 	mux.HandleFunc("POST /api/v1/session/launch", c.handleSessionLaunch)
