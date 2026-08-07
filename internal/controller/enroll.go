@@ -353,8 +353,13 @@ func (s *Server) enforceInstanceUniqueness(ws string, labels map[string]string) 
 		if n.Labels[launchInstanceLabel] != instance {
 			continue
 		}
-		if n.Labels[osCloudLabel] != labels[osCloudLabel] {
-			continue // same UUID on a different cloud is a different instance
+		// Same UUID on a DIFFERENT cloud is a different instance. But only an
+		// EXPLICIT difference counts: a node that declares no cloud (labelled before
+		// os:cloud existed, or by hand) still occupies the slot, and treating its
+		// silence as "some other cloud" would let a duplicate through — which is
+		// exactly how a hand-labelled node slipped past this check in practice.
+		if ec := n.Labels[osCloudLabel]; ec != "" && ec != labels[osCloudLabel] {
+			continue
 		}
 		return fmt.Errorf("instance %s is already enrolled as node %q (%s); retire it before re-enrolling",
 			instance, n.Name, n.ID)

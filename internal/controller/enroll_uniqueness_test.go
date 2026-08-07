@@ -58,6 +58,18 @@ func TestEnrollRefusesADuplicateInstance(t *testing.T) {
 		}
 	})
 
+	// Caught live: the node had been labelled by hand before os:cloud existed, so a
+	// strict comparison read its silence as "some other cloud" and minted a second
+	// credential for an instance that was already enrolled.
+	t.Run("a node declaring no cloud still occupies the slot", func(t *testing.T) {
+		seed("n-legacy", "legacy-01", map[string]string{launchInstanceLabel: "legacy-instance"})
+		if err := srv.enforceInstanceUniqueness(ws, map[string]string{
+			launchInstanceLabel: "legacy-instance", osCloudLabel: "acvile",
+		}); err == nil {
+			t.Fatal("a hand-labelled node with no os:cloud was treated as free")
+		}
+	})
+
 	t.Run("same UUID on a different cloud is a different instance", func(t *testing.T) {
 		// Instance UUIDs are unique only within one Nova (residual risk #22).
 		if err := srv.enforceInstanceUniqueness(ws, map[string]string{
