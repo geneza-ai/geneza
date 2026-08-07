@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -359,4 +360,22 @@ func (s *Server) enforceInstanceUniqueness(ws string, labels map[string]string) 
 			instance, n.Name, n.ID)
 	}
 	return nil
+}
+
+// reservedLabelIn returns the first reserved-namespace key in labels, or "".
+// Used to refuse a claim on inputs the controller cannot verify.
+func reservedLabelIn(labels map[string]string) string {
+	// Sorted so the message names the same key every time for a given input,
+	// rather than whichever the map iteration happened to yield first.
+	keys := make([]string, 0, len(labels))
+	for k := range labels {
+		if strings.HasPrefix(k, reservedLabelPrefix) {
+			keys = append(keys, k)
+		}
+	}
+	if len(keys) == 0 {
+		return ""
+	}
+	sort.Strings(keys)
+	return keys[0]
 }

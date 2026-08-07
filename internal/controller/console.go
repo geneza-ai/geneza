@@ -918,6 +918,22 @@ func (c *consoleAPI) handleMintToken(w http.ResponseWriter, r *http.Request, u *
 		AutoApprove bool              `json:"autoApprove"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
+	// A token's labels become the node's TRUSTED labels at enrollment, and
+	// os:instance is the entire match for a hosted-UI launch. The controller cannot
+	// check such a claim here: it holds no Nova credential of its own (reader_creds
+	// is config-only) and keeps only a hash of the caller's keystone token, so there
+	// is nothing to verify against — and an unverifiable claim must not grant.
+	//
+	// Refused specifically for KEYSTONE sessions, which are tenants: Fleet management
+	// makes the first human in a project a ws-admin, so otherwise any of them could
+	// mint a token pinning a CO-MEMBER's instance and collect that VM's shells. An
+	// operator signing in locally or by OIDC is the cloud operator, not a tenant, and
+	// may still pre-label a machine.
+	if k := reservedLabelIn(req.Labels); k != "" && u.Provider == providerKeystone {
+		writeErr(w, http.StatusForbidden, "label "+k+" may not be set here: the "+
+			reservedLabelPrefix+" namespace is set from OpenStack enrollment evidence (vendordata), not claimed")
+		return
+	}
 	ttl := time.Duration(req.TTLSeconds) * time.Second
 	if ttl <= 0 {
 		ttl = time.Hour
