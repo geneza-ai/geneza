@@ -188,7 +188,10 @@ EOF
 
 systemctl daemon-reload
 if [ "$NO_START" = 0 ]; then
-  systemctl enable --now geneza-relay.service
+  # Same reason as the agent installer: enable --now cannot pick up a rewritten
+  # config or a re-issued cert, because it does nothing to an already-running unit.
+  systemctl enable geneza-relay.service
+  systemctl restart geneza-relay.service
   echo "geneza-relay installed and started ($CONFIG)"
 else
   systemctl enable geneza-relay.service

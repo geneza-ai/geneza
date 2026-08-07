@@ -194,7 +194,13 @@ RestartSec=2
 WantedBy=multi-user.target
 EOF
   systemctl daemon-reload
-  systemctl enable --now geneza-bootstrap
+  # "enable --now" only STARTS the unit, so it is a no-op when one is already
+  # running — and re-running this script is exactly how a node is re-enrolled
+  # after being retired. The enroll above rewrote the identity and certs, but a
+  # supervisor left running would keep presenting the retired ones: the node
+  # enrolls, never connects, and shows offline until someone restarts it by hand.
+  systemctl enable geneza-bootstrap
+  systemctl restart geneza-bootstrap
   echo "==> started geneza-bootstrap.service"
 else
   echo "==> no systemd detected; start manually:"

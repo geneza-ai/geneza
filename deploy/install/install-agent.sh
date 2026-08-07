@@ -272,7 +272,12 @@ if [ "$NO_START" = 1 ]; then
   systemctl enable geneza-agent.service >/dev/null 2>&1 || true
   log "installed geneza-agent.service (not started; --no-start)"
 else
-  systemctl enable --now geneza-agent.service
+  # enable --now only STARTS the unit, so it does nothing when one is already
+  # running — which is exactly the re-enrollment case. The enroll above rewrote
+  # the identity; a supervisor left running would keep presenting the retired one
+  # and the node would sit offline until restarted by hand.
+  systemctl enable geneza-agent.service
+  systemctl restart geneza-agent.service
   log "started geneza-agent.service"
 fi
 
