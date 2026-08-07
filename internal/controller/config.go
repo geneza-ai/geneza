@@ -821,6 +821,23 @@ func (c CloudConfig) mapKeystoneRoles(ksRoles []string) []string {
 	return out
 }
 
+// applyRootKeysDefault points RootKeysFile at the root-keys document the agent pull
+// mirrors into InstallDir.
+//
+// Agents pin the release root and refuse every update until the controller serves
+// them the signing SET that root authorizes, so an unset root_keys_file silently
+// disables fleet self-update — the node reports "the controller served no root-keys
+// doc" and stays on its installed version forever. Defaulting is safe: that file is
+// only ever written by a pull that verified it against this build's own pinned root.
+// An explicit root_keys_file always wins, and without the pull nothing writes the
+// file, so defaulting there would only point at a path that never appears.
+func (c *Config) applyRootKeysDefault() {
+	if c.RootKeysFile != "" || c.InstallDir == "" || !c.AgentRelease.Pull {
+		return
+	}
+	c.RootKeysFile = filepath.Join(c.InstallDir, rootKeysFile)
+}
+
 // autoProvisionPolicyFile is the policy a dynamically-provisioned workspace uses
 // (role-name grants); falls back to the top-level policy file.
 func (c *Config) autoProvisionPolicyFile() string {
@@ -1193,6 +1210,7 @@ func (c *Config) applyDefaults() {
 	if c.VulnFeed.Enabled() && c.VulnFeed.SyncInterval == 0 {
 		c.VulnFeed.SyncInterval = Duration(6 * time.Hour)
 	}
+	c.applyRootKeysDefault()
 	// Clouds registry. require_nova_service_token is NON-OVERRIDABLE for
 	// kind:openstack: the enrollment plane must only ever accept a Nova
 	// service-scoped token, so we force it true here regardless of the file.

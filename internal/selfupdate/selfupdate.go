@@ -448,44 +448,58 @@ func Fetch(ctx context.Context, dl *http.Client, url string, limit int64) ([]byt
 // caller to persist as the new floor; callers then look up a per-asset digest
 // with ExpectedDigest. Shared by the client self-update and the controller pull.
 func VerifiedSums(ctx context.Context, dl *http.Client, rel *Release, floor int64) ([]byte, int64, error) {
+	sums, _, ver, err := VerifiedSumsAndRootKeys(ctx, dl, rel, floor)
+	return sums, ver, err
+}
+
+// VerifiedSumsAndRootKeys is VerifiedSums plus the root-keys document it verified.
+//
+// A controller needs those bytes, not just the verdict: agents pin the release
+// root and refuse an update unless the controller serves them the signing SET
+// that root authorizes. Handing back the doc that was just checked against this
+// build's own pinned root lets the controller serve exactly what it trusts,
+// rather than an operator separately sourcing a file nobody verified.
+//
+// rootKeys is nil on an unpinned/dev build, where there is no chain to serve.
+func VerifiedSumsAndRootKeys(ctx context.Context, dl *http.Client, rel *Release, floor int64) (sums, rootKeys []byte, version int64, err error) {
 	sumsAsset := findAsset(rel.Assets, checksumManifest)
 	if sumsAsset == nil {
-		return nil, 0, fmt.Errorf("release %s has no %s; refusing unverified binaries", rel.TagName, checksumManifest)
+		return nil, nil, 0, fmt.Errorf("release %s has no %s; refusing unverified binaries", rel.TagName, checksumManifest)
 	}
 	if err := assertHTTPS(sumsAsset.URL); err != nil {
-		return nil, 0, err
+		return nil, nil, 0, err
 	}
-	sums, err := download(ctx, dl, sumsAsset.URL, 1<<20)
+	sums, err = download(ctx, dl, sumsAsset.URL, 1<<20)
 	if err != nil {
-		return nil, 0, fmt.Errorf("download %s: %w", checksumManifest, err)
+		return nil, nil, 0, fmt.Errorf("download %s: %w", checksumManifest, err)
 	}
 	if releasetrust.RootPub == nil {
-		return sums, 0, nil // dev build: no pinned root, integrity-only
+		return sums, nil, 0, nil // dev build: no pinned root, integrity-only
 	}
 	rkAsset := findAsset(rel.Assets, rootKeysAsset)
 	sigAsset := findAsset(rel.Assets, sumsSigAsset)
 	if rkAsset == nil || sigAsset == nil {
-		return nil, 0, fmt.Errorf("release %s lacks %s/%s but this build requires a signed release", rel.TagName, rootKeysAsset, sumsSigAsset)
+		return nil, nil, 0, fmt.Errorf("release %s lacks %s/%s but this build requires a signed release", rel.TagName, rootKeysAsset, sumsSigAsset)
 	}
 	if err := assertHTTPS(rkAsset.URL); err != nil {
-		return nil, 0, err
+		return nil, nil, 0, err
 	}
 	if err := assertHTTPS(sigAsset.URL); err != nil {
-		return nil, 0, err
+		return nil, nil, 0, err
 	}
-	rootKeys, err := download(ctx, dl, rkAsset.URL, 1<<20)
+	rootKeys, err = download(ctx, dl, rkAsset.URL, 1<<20)
 	if err != nil {
-		return nil, 0, fmt.Errorf("download %s: %w", rootKeysAsset, err)
+		return nil, nil, 0, fmt.Errorf("download %s: %w", rootKeysAsset, err)
 	}
 	sig, err := download(ctx, dl, sigAsset.URL, 1<<20)
 	if err != nil {
-		return nil, 0, fmt.Errorf("download %s: %w", sumsSigAsset, err)
+		return nil, nil, 0, fmt.Errorf("download %s: %w", sumsSigAsset, err)
 	}
 	ver, err := releasetrust.VerifySums(rootKeys, sums, sig, rel.TagName, floor, time.Now())
 	if err != nil {
-		return nil, 0, fmt.Errorf("release signature: %w", err)
+		return nil, nil, 0, fmt.Errorf("release signature: %w", err)
 	}
-	return sums, ver, nil
+	return sums, rootKeys, ver, nil
 }
 
 // ExpectedDigest returns the hex sha256 for assetName from a SHA256SUMS manifest.

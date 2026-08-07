@@ -334,6 +334,23 @@ func TestVerifiedSumsPinned(t *testing.T) {
 	if err != nil || ver != 1 || !bytes.Equal(gotSums, sums) {
 		t.Fatalf("valid signed release: ver=%d err=%v", ver, err)
 	}
+
+	// The controller has to SERVE the signing set to its fleet, not just decide the
+	// release is trustworthy: an agent that pins the root refuses every update while
+	// the controller has no root-keys doc. Hand back the document that was verified,
+	// so what the fleet is told to trust is the same bytes this build checked.
+	gotSums, gotRK, ver, err := VerifiedSumsAndRootKeys(context.Background(), dl, rel, 0)
+	if err != nil || ver != 1 || !bytes.Equal(gotSums, sums) {
+		t.Fatalf("VerifiedSumsAndRootKeys on a valid release: ver=%d err=%v", ver, err)
+	}
+	if !bytes.Equal(gotRK, rkJSON) {
+		t.Fatalf("returned root-keys doc is not the one that was verified:\n got %s\nwant %s", gotRK, rkJSON)
+	}
+	// A rejected chain must yield no doc at all — serving root-keys from a release
+	// that failed verification would hand the fleet an unchecked trust anchor.
+	if _, rk, _, err := VerifiedSumsAndRootKeys(context.Background(), dl, rel, 2); err == nil || rk != nil {
+		t.Fatalf("rolled-back release returned a root-keys doc (err=%v)", err)
+	}
 	if _, _, err := VerifiedSums(context.Background(), dl, rel, 2); err == nil {
 		t.Fatal("rolled-back root-keys (floor above doc version) accepted")
 	}

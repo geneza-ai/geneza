@@ -18,6 +18,11 @@ import (
 // containerized controller pulls both regardless of its own arch.
 var nodeArchs = []string{"amd64", "arm64"}
 
+// rootKeysFile is where a pull mirrors the release's verified root-keys document,
+// inside InstallDir beside the anti-rollback floor. RootKeysFile defaults here when
+// the operator has not pointed it somewhere else.
+const rootKeysFile = "root-keys.json"
+
 // startAgentPull keeps InstallDir populated with the signed geneza-node binaries
 // from GitHub Releases. It runs one pull on startup and, if a refresh interval
 // is configured, re-pulls on a ticker — so the served agent tracks the latest
@@ -84,9 +89,20 @@ func (s *Server) pullNodeBinaries(ctx context.Context, installDir, tag string) e
 	// anti-rollback floor (highest root-keys version served) lives beside the
 	// served binaries.
 	floorPath := filepath.Join(installDir, ".release-rootkeys-version")
-	sums, rkVersion, err := selfupdate.VerifiedSums(ctx, dl, rel, releasetrust.LoadVersionFloor(floorPath))
+	sums, rootKeys, rkVersion, err := selfupdate.VerifiedSumsAndRootKeys(ctx, dl, rel, releasetrust.LoadVersionFloor(floorPath))
 	if err != nil {
 		return fmt.Errorf("verify release %s: %w", rel.TagName, err)
+	}
+	// Serve the fleet the signing SET this release was verified against. Agents pin
+	// the release root and refuse every update while the controller has no root-keys
+	// doc ("node pins a root key but the controller served no root-keys doc"), so
+	// without this a deployment self-updates nothing no matter what is published.
+	// The bytes were just checked against this build's own pinned root, so writing
+	// them is a mirror of a verified document, not a new trust decision.
+	if len(rootKeys) > 0 {
+		if err := writeFileAtomic(filepath.Join(installDir, rootKeysFile), rootKeys, 0o644); err != nil {
+			slog.Warn("agent-pull: could not store root-keys", "err", err)
+		}
 	}
 
 	pulled := 0
