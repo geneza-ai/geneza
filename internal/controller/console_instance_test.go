@@ -200,3 +200,47 @@ func TestEnrollTokenRefusesAnAlreadyEnrolledInstance(t *testing.T) {
 		t.Fatalf("status = %+v, want enrolled web-01", st)
 	}
 }
+
+// The response drives what the portal tells the customer, so it must describe what
+// the token actually does. Reporting the cloud's vendordata auto_approve setting
+// here made the portal warn that every enrolment would land pending, when this path
+// mints an auto-approving token regardless of that setting.
+func TestEnrollTokenReportsTheTokensOwnAutoApprove(t *testing.T) {
+	const mine = "proj-uuid-abcdef01"
+	srv, api, fake := buildInstanceServer(t)
+	// The cloud's vendordata setting is false, as it is on a production cloud.
+	cl := srv.cfg.Clouds["kolla1"]
+	cl.AutoApprove = false
+	srv.cfg.Clouds["kolla1"] = cl
+	fake.session = &fakeSession{
+		caller:  instanceCaller(mine),
+		servers: map[string]osServer{"i-77": {TenantID: mine, Status: "ACTIVE"}},
+	}
+
+	rr := postPortalJSON(t, api.handler(), "/openstack/kolla1/enroll-token",
+		`{"token":"gAAAA-token","instance_id":"i-77"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d (%s)", rr.Code, rr.Body.String())
+	}
+	var out enrollTokenResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if !out.AutoApprove {
+		t.Error("response says the enrolment will land pending, but the token auto-approves")
+	}
+	f, ok := enrollcode.Decode(out.EnrollCode)
+	if !ok {
+		t.Fatal("code does not decode")
+	}
+	rec, err := srv.store.UseToken(f.Token, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rec.AutoApprove {
+		t.Error("the minted token does not auto-approve, so the customer must wait for an operator")
+	}
+	if rec.AutoApprove != out.AutoApprove {
+		t.Errorf("response (%v) disagrees with the token (%v)", out.AutoApprove, rec.AutoApprove)
+	}
+}

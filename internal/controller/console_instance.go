@@ -233,9 +233,14 @@ func (c *consoleAPI) handleInstanceEnrollToken(w http.ResponseWriter, r *http.Re
 		"auto_approve": boolStr(cl.AutoApprove), "portal_ip": remoteIP(r),
 	})
 
+	// Report what the TOKEN carries, not the cloud's vendordata setting: this path
+	// mints an auto-approving token regardless of it. Still conditional, because the
+	// enroll path downgrades to PENDING when the redeeming machine cannot prove which
+	// instance it is — so a portal should present this as the expected outcome, not a
+	// guarantee.
 	out := enrollTokenResponse{
 		ExpiresUnix: expires, Workspace: v.Workspace, Instance: v.Instance,
-		Project: v.Project, AutoApprove: cl.AutoApprove,
+		Project: v.Project, AutoApprove: true,
 	}
 	// The code binds the token to the pinned root fingerprint and the runtime
 	// endpoints, which is what makes the curl|sh verifiable rather than blind.
